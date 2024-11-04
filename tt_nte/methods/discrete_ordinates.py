@@ -46,6 +46,9 @@ class DiscreteOrdinates:
         num_groups = self._xs_server.num_groups
         num_ordinates = self._num_ordinates
 
+        # Determine if we have a fixed source problem
+        self._is_fixed_source = True if np.sum(self._xs_server.chi) == 0 else False
+
         # Differential and interpolation operators
         D = []
         Ip = []
@@ -113,11 +116,14 @@ class DiscreteOrdinates:
                     else:
                         spatial_cores.append(D[k][dir_idx[k]])
 
+                # Remove boundary from spatial cores
+                if bcs[int(j + 3 * dir_idx[j])] == "variable":
+                    # Remove boundary condition
+                    sp_idx = num_dim - 1 - j
+                    spatial_cores[sp_idx][-dir_idx[j], :] = 0
+
                 # Append dimension streaming operator
-                if self._H is None:
-                    self._H = TensorTrain([Q, Ig] + spatial_cores)
-                else:
-                    self._H += TensorTrain([Q, Ig] + spatial_cores)
+                self._H = self._append_TT(self._H, TensorTrain([Q, Ig] + spatial_cores))
 
                 # Add reflective boundary condition
                 if bcs[int(j + 3 * dir_idx[j])] == "reflective":
@@ -142,6 +148,18 @@ class DiscreteOrdinates:
                     # Append boundary condition
                     self._H += TensorTrain([Q_ref, Ig] + spatial_cores)
 
+                elif bcs[int(j + 3 * dir_idx[j])] == "variable":
+                    # Add boundary only train
+                    sp_idx = num_dim - 1 - j
+                    spatial_cores[sp_idx][-dir_idx[j], -dir_idx[j]] = 1
+                    bc_mask = np.zeros((spatial_cores[sp_idx].shape[0], 1))
+                    bc_mask[-dir_idx[j], 0] = 1
+                    spatial_cores[sp_idx] = bc_mask * np.copy(spatial_cores[sp_idx])
+
+                    # Append TT for variable boundary
+                    In = np.kron(C, np.identity(self._octant_ords.shape[0]))
+                    self._H += TensorTrain([In, Ig] + spatial_cores, threshold=0)
+
             # Get spatial cores
             spatial_cores = []
             for j in range(num_dim - 1, -1, -1):
@@ -159,24 +177,27 @@ class DiscreteOrdinates:
             # Fission integral operator
             A = np.zeros((num_octants, num_octants), dtype=float)
             A[i, :] = 1
-            F_Intg = np.kron(
-                A,
-                np.outer(np.ones(self._octant_ords.shape[0]), self._octant_ords[:, 0]),
-            )
 
-            # Append fission operator
-            def nu_fission(mat):
-                return np.outer(self._xs_server.chi, self._xs_server.nu_fission(mat))
-
-            if self._F is None:
-                self._F = TensorTrain([F_Intg]).concatenate(
-                    self._xs_operator(nu_fission, dir_idx)
-                    @ TensorTrain([Ig] + spatial_cores)
+            if not self._is_fixed_source:
+                F_Intg = np.kron(
+                    A,
+                    np.outer(
+                        np.ones(self._octant_ords.shape[0]), self._octant_ords[:, 0]
+                    ),
                 )
-            else:
-                self._F += TensorTrain([F_Intg]).concatenate(
-                    self._xs_operator(nu_fission, dir_idx)
-                    @ TensorTrain([Ig] + spatial_cores)
+
+                # Append fission operator
+                def nu_fission(mat):
+                    return np.outer(
+                        self._xs_server.chi, self._xs_server.nu_fission(mat)
+                    )
+
+                self._F = self._append_TT(
+                    self._F,
+                    TensorTrain([F_Intg]).concatenate(
+                        self._xs_operator(nu_fission, dir_idx)
+                        @ TensorTrain([Ig] + spatial_cores)
+                    ),
                 )
 
             # Number of ordinates in an octant
@@ -209,7 +230,7 @@ class DiscreteOrdinates:
 
             for l in range(self._xs_server.num_moments):
                 # Scattering integral operator
-                S_Intg = np.zeros(F_Intg.shape)
+                S_Intg = np.zeros(np.kron(C, IL).shape)
 
                 # Outgoing ordinates
                 out_ords = np.copy(self._octant_ords)
@@ -256,34 +277,33 @@ class DiscreteOrdinates:
                 def scatter_gtg(mat):
                     return self._xs_server.scatter_gtg(mat)[l,]
 
-                if self._S is None:
-                    self._S = TensorTrain([S_Intg]).concatenate(
+                self._S = self._append_TT(
+                    self._S,
+                    TensorTrain([S_Intg]).concatenate(
                         self._xs_operator(scatter_gtg, dir_idx)
                         @ TensorTrain([Ig] + spatial_cores)
-                    )
-                else:
-                    self._S += TensorTrain([S_Intg]).concatenate(
-                        self._xs_operator(scatter_gtg, dir_idx)
-                        @ TensorTrain([Ig] + spatial_cores)
-                    )
+                    ),
+                )
 
         # Construct TT objects
         self._H = self._H.squeeze()
-        self._F = self._F.squeeze()
         self._S = self._S.squeeze()
+        self._F = self._F.squeeze() if not self._is_fixed_source else None
 
         # Ensure we only have real component
         self._H._train.cores = [np.real(core) for core in self._H.cores]
-        self._F._train.cores = [np.real(core) for core in self._F.cores]
         self._S._train.cores = [np.real(core) for core in self._S.cores]
+        if not self._is_fixed_source:
+            self._F._train.cores = [np.real(core) for core in self._F.cores]
 
         if self._tt_fmt == "qtt":
             self._H.tt2qtt(self._qtt_threshold)
-            self._F.tt2qtt(self._qtt_threshold)
             self._S.tt2qtt(self._qtt_threshold)
+            if not self._is_fixed_source:
+                self._F.tt2qtt(self._qtt_threshold)
 
     # =====================================================================
-    # Utility methods
+    # Methods
 
     def update_settings(
         self,
@@ -354,6 +374,43 @@ class DiscreteOrdinates:
             [psi.cores[0]] + [psi.cores[1][:, [g], :, :]] + psi.cores[2:]
         )
 
+    def _xs_operator(self, xs_method, dir_idx):
+        num_dim = self._geometry.num_dim
+
+        # Create XS tensor containing all material types
+        xs = np.zeros(
+            [self._xs_server.num_groups] * 2
+            + [d.size for d in self._geometry.diff if d is not None]
+        )
+        for region, mat in self._regions.items():
+            xs += np.tensordot(
+                xs_method(mat), self._geometry.region_mask(region), axes=0
+            )
+
+        # Transpose
+        xs = np.transpose(
+            xs, axes=[0] + np.arange(2, len(xs.shape))[::-1].tolist() + [1]
+        )
+
+        # Add additional dimensions for matrix operator
+        for _ in range(num_dim):
+            xs = xs[..., np.newaxis]
+
+        # Apply tensor decomposition
+        xs_tt = TensorTrain(xs, threshold=self._xs_threshold)
+
+        # Append boundary conditions
+        for i in range(num_dim - 1, -1, -1):
+            core = xs_tt.cores[1 + i]
+            xs_tt.cores[1 + i] = (
+                np.concatenate((np.zeros(core[:, [0], :, :].shape), core), axis=1)
+                if dir_idx[num_dim - 1 - i] == 0
+                else np.concatenate((core, np.zeros(core[:, [0], :, :].shape)), axis=1)
+            )
+
+        # Return operator
+        return xs_tt.diag(np.arange(1, xs_tt.order).tolist())
+
     # =====================================================================
     # Quadrature sets
 
@@ -422,59 +479,17 @@ class DiscreteOrdinates:
 
         return ordinates
 
-    def _xs_operator(self, xs_method, dir_idx):
-        num_dim = self._geometry.num_dim
+    # =====================================================================
+    # Static methods
 
-        # Create XS tensor containing all material types
-        xs = np.zeros(
-            [self._xs_server.num_groups] * 2
-            + [d.size for d in self._geometry.diff if d is not None]
-        )
-        for region, mat in self._regions.items():
-            xs += np.tensordot(
-                xs_method(mat), self._geometry.region_mask(region), axes=0
-            )
+    @staticmethod
+    def _append_TT(train, add_train):
+        if train is None:
+            train = add_train
+        else:
+            train += add_train
 
-        # import matplotlib.pyplot as plt
-        # import itertools
-        #
-        # X = np.array(
-        #     list(itertools.accumulate([0] + self._geometry.dx.flatten().tolist()))
-        # )
-        # Y = np.array(
-        #     list(itertools.accumulate([0] + self._geometry.dy.flatten().tolist()))
-        # )
-        # c = plt.pcolormesh(
-        #     X,
-        #     Y,
-        #     xs[0, 0, :, :],
-        # )
-        # plt.colorbar(c)
-        # plt.show()
-
-        # Transpose
-        xs = np.transpose(
-            xs, axes=[0] + np.arange(2, len(xs.shape))[::-1].tolist() + [1]
-        )
-
-        # Add additional dimensions for matrix operator
-        for _ in range(num_dim):
-            xs = xs[..., np.newaxis]
-
-        # Apply tensor decomposition
-        xs_tt = TensorTrain(xs, threshold=self._xs_threshold)
-
-        # Append boundary conditions
-        for i in range(num_dim - 1, -1, -1):
-            core = xs_tt.cores[1 + i]
-            xs_tt.cores[1 + i] = (
-                np.concatenate((np.zeros(core[:, [0], :, :].shape), core), axis=1)
-                if dir_idx[num_dim - 1 - i] == 0
-                else np.concatenate((core, np.zeros(core[:, [0], :, :].shape)), axis=1)
-            )
-
-        # Return operator
-        return xs_tt.diag(np.arange(1, xs_tt.order).tolist())
+        return train
 
     # =====================================================================
     # Getters

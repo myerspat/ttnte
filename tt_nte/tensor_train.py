@@ -155,7 +155,20 @@ class TensorTrain(object):
 
         # Transform operator into QTT format with threshold
         # for SVD decomposition
-        self._train = self._train.tt2qtt(new_dims, new_dims, threshold=threshold)
+        if self._train.row_dims == self._train.col_dims:
+            self._train = self._train.tt2qtt(new_dims, new_dims, threshold=threshold)
+        else:
+            # Transform vector into QTT format
+            new_col_dims = copy.deepcopy(new_dims)
+            for i in range(len(new_col_dims)):
+                for j in range(len(new_col_dims[i])):
+                    new_col_dims[i][j] = 1
+
+            self._train = self._train.tt2qtt(
+                new_dims,
+                new_col_dims,
+                threshold=threshold,
+            )
 
     def qtt2tt(self, modes):
         """QTT to TT format, must provide the modes (degree) if we have a 4th order TT
