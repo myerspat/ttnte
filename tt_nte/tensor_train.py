@@ -277,7 +277,7 @@ class TensorTrain(object):
         ]
 
         # Create tensor train
-        train = TensorTrain(cores)
+        train = TensorTrain(cores, threshold=0)
 
         return train
 
