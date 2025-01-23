@@ -179,7 +179,7 @@ class TensorTrain(object):
         """Calculate the Manhattan norm (p=1) or Euclidean norm (p=2) of a TT."""
         return self._train.norm(p)
 
-    def ortho(self, threshold=0.0, max_rank=np.infty):
+    def ortho(self, threshold=0.0, max_rank=np.inf):
         self._train.ortho(threshold=threshold, max_rank=max_rank)
         return self
 
@@ -211,6 +211,7 @@ class TensorTrain(object):
     @staticmethod
     def from_quimb(train):
         if isinstance(train, MatrixProductState):
+            train.permute_arrays("lrp")
             return TensorTrain(
                 [
                     np.transpose(
@@ -237,6 +238,7 @@ class TensorTrain(object):
             )
 
         elif isinstance(train, MatrixProductOperator):
+            train.permute_arrays("lrud")
             return TensorTrain(
                 [np.transpose(train[0].data[np.newaxis,], axes=(0, 2, 3, 1))]
                 + [np.transpose(train[1:-1].data, axes=(0, 2, 3, 1))]
@@ -338,13 +340,13 @@ class TensorTrain(object):
         if tt_driver == "scikit_tt":
             return self._train
 
-        elif tt_driver == "ttpy":
-            import tt as ttpy
-
-            if self._train.col_dims == self._train.row_dims:
-                return ttpy.matrix.from_list(self.cores)
-            else:
-                return ttpy.vector.from_list(self.cores)
+        # elif tt_driver == "ttpy":
+        #     import tt as ttpy
+        #
+        #     if self._train.col_dims == self._train.row_dims:
+        #         return ttpy.matrix.from_list(self.cores)
+        #     else:
+        #         return ttpy.vector.from_list(self.cores)
 
         else:
             raise RuntimeError(

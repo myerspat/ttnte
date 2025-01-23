@@ -26,6 +26,7 @@ class DiscreteOrdinates:
         octant_ords=None,
         regions=None,
         xs_threshold=1e-8,
+        cores=None,
     ):
         self.update_settings(
             xs_server=xs_server,
@@ -36,6 +37,7 @@ class DiscreteOrdinates:
             octant_ords=octant_ords,
             regions=regions,
             xs_threshold=xs_threshold,
+            cores=cores,
         )
 
     def _construct_tensor_trains(self):
@@ -166,8 +168,17 @@ class DiscreteOrdinates:
                 spatial_cores.append(Ip[j][dir_idx[j]])
 
             # Append total interaction operator
-            def total(mat):
-                return np.diag(self._xs_server.total(mat))
+            def total(mat=None):
+                if mat:
+                    return np.diag(self._xs_server.total(mat))
+                else:
+                    xs = self._xs_server.total()
+                    xs_tensor = np.zeros((num_groups, num_groups, *xs.shape[1:]))
+
+                    for g in range(num_groups):
+                        xs_tensor[g, g, ...] = xs[g, ...]
+
+                    return xs_tensor
 
             assert isinstance(self._H, TensorTrain)
             self._H += TensorTrain([np.kron(C, IL)]).concatenate(
@@ -187,10 +198,22 @@ class DiscreteOrdinates:
                 )
 
                 # Append fission operator
-                def nu_fission(mat):
-                    return np.outer(
-                        self._xs_server.chi, self._xs_server.nu_fission(mat)
-                    )
+                def nu_fission(mat=None):
+                    if mat:
+                        return np.outer(
+                            self._xs_server.chi, self._xs_server.nu_fission(mat)
+                        )
+                    else:
+                        xs = self._xs_server.nu_fission()
+                        xs_tensor = np.zeros((num_groups, num_groups, *xs.shape[1:]))
+
+                        for g_out in range(num_groups):
+                            for g_in in range(num_groups):
+                                xs_tensor[g_out, g_in, ...] = (
+                                    self._xs_server.chi[g_out] * xs[g_in, ...]
+                                )
+
+                        return xs_tensor
 
                 self._F = self._append_TT(
                     self._F,
@@ -274,8 +297,11 @@ class DiscreteOrdinates:
                             )
 
                 # Append train to scattering operator
-                def scatter_gtg(mat):
-                    return self._xs_server.scatter_gtg(mat)[l,]
+                def scatter_gtg(mat=None):
+                    if mat:
+                        return self._xs_server.scatter_gtg(mat)[l,]
+                    else:
+                        return self._xs_server.scatter_gtg()[l,]
 
                 self._S = self._append_TT(
                     self._S,
@@ -297,10 +323,10 @@ class DiscreteOrdinates:
             self._F._train.cores = [np.real(core) for core in self._F.cores]
 
         if self._tt_fmt == "qtt":
-            self._H.tt2qtt(self._qtt_threshold)
-            self._S.tt2qtt(self._qtt_threshold)
+            self._H.tt2qtt(self._qtt_threshold, cores=self._cores)
+            self._S.tt2qtt(self._qtt_threshold, cores=self._cores)
             if not self._is_fixed_source:
-                self._F.tt2qtt(self._qtt_threshold)
+                self._F.tt2qtt(self._qtt_threshold, cores=self._cores)
 
     # =====================================================================
     # Methods
@@ -315,6 +341,7 @@ class DiscreteOrdinates:
         octant_ords=None,
         regions=None,
         xs_threshold=None,
+        cores=None,
     ):
         """Update SN settings."""
         self._xs_server = self._xs_server if xs_server is None else xs_server
@@ -326,16 +353,17 @@ class DiscreteOrdinates:
         self._qtt_threshold = (
             self._qtt_threshold if qtt_threshold is None else qtt_threshold
         )
+        self._cores = cores if cores else None
 
         # Assert supported TT formats
         assert self._tt_fmt == "tt" or self._tt_fmt == "qtt"
 
-        # Assert dimensions are power of 2
-        check_dim_size("ordinates", self._num_ordinates)
-        for i in range(self._geometry.num_dim):
-            check_dim_size("spatial edges", self._geometry.diff[i].size + 1)
-        if self._xs_server.num_groups != 1:
-            check_dim_size("energy groups", self._xs_server.num_groups)
+        # # Assert dimensions are power of 2
+        # check_dim_size("ordinates", self._num_ordinates)
+        # for i in range(self._geometry.num_dim):
+        #     check_dim_size("spatial edges", self._geometry.diff[i].size + 1)
+        # if self._xs_server.num_groups != 1:
+        #     check_dim_size("energy groups", self._xs_server.num_groups)
 
         # Get quadrature set
         # 1D = (N, 2): w, mu
@@ -358,12 +386,18 @@ class DiscreteOrdinates:
             / np.sum(self._octant_ords[:, 0])
         )
 
-        if regions is None:
-            self._regions = {region: region for region in self._geometry.regions}
-        else:
-            self._regions = regions
+        if self._xs_server.by_mat:
+            if regions is None:
+                self._regions = {region: region for region in self._geometry.regions}
+            else:
+                self._regions = regions
 
-        self._xs_threshold = xs_threshold if xs_threshold else self._xs_threshold
+        else:
+            self._regions = None
+
+        self._xs_threshold = (
+            xs_threshold if xs_threshold is not None else self._xs_threshold
+        )
 
         # Construct operator tensors
         self._construct_tensor_trains()
@@ -382,10 +416,14 @@ class DiscreteOrdinates:
             [self._xs_server.num_groups] * 2
             + [d.size for d in self._geometry.diff if d is not None]
         )
-        for region, mat in self._regions.items():
-            xs += np.tensordot(
-                xs_method(mat), self._geometry.region_mask(region), axes=0
-            )
+        if self._xs_server.by_mat:
+            for region, mat in self._regions.items():
+                xs += np.tensordot(
+                    xs_method(mat), self._geometry.region_mask(region), axes=0
+                )
+
+        else:
+            xs = xs_method()
 
         # Transpose
         xs = np.transpose(

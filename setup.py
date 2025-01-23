@@ -8,7 +8,7 @@ setup(
     name="tt_nte",
     version=version,
     packages=find_packages(include=["tt_nte", "tt_nte.*"]),
-    install_requires=["numpy", "scikit_tt", "ttpy", "scipy", "gmsh"],
+    install_requires=["numpy", "scikit_tt", "scipy", "gmsh"],
     extras_require={
         "dev": [
             "pytest",

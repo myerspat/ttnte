@@ -6,9 +6,12 @@ import tt_nte.experimental.solvers as exp
 from tt_nte.benchmarks import bwr_assembly
 from tt_nte.methods import DiscreteOrdinates
 
+import scipy.io
+
 with cu.cuda.Device(1):
     # Get benchmark XSs and geometry
-    xs_server, geometry, ordinates = bwr_assembly(64)
+    xs_server, geometry, ordinates = bwr_assembly(128)
+    print("hello")
 
     # Build TT operators
     start = time.time()
@@ -16,8 +19,6 @@ with cu.cuda.Device(1):
         xs_server=xs_server,
         geometry=geometry,
         num_ordinates=4,
-        tt_fmt="qtt",
-        qtt_threshold=1e-8,
         xs_threshold=1e-5,
     )
     print(f"Setup time = {time.time() - start}")
@@ -25,6 +26,15 @@ with cu.cuda.Device(1):
     SN.H.ortho(1e-8)
     SN.F.ortho(1e-8)
     SN.S.ortho(1e-8)
+
+    H = SN.H.to_quimb()
+    S = SN.S.to_quimb()
+    F = SN.F.to_quimb()
+
+    scipy.io.savemat("H.mat", {f"c{i}": H[i] for i in range(H.L)})
+    scipy.io.savemat("F.mat", {f"c{i}": S[i] for i in range(F.L)})
+    scipy.io.savemat("S.mat", {f"c{i}": F[i] for i in range(S.L)})
+    assert 0 == 1
 
     size = 0
     for tn in [SN.H, SN.F, SN.S]:

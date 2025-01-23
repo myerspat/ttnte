@@ -1,13 +1,10 @@
 import itertools
 import warnings
-from typing import List, Optional, Union
+from typing import Optional, Union
 
 import cupy as cu
 import numpy as np
-import scipy
-import torch
 from autoray import do
-from cupy.linalg import svd as cu_svd
 from cupyx.scipy.sparse.linalg import gmres as cu_gmres
 from quimb.core import prod
 from quimb.tensor import (
@@ -15,11 +12,12 @@ from quimb.tensor import (
     MatrixProductState,
     MPS_rand_state,
     Tensor,
-    TensorNetwork,
 )
 from quimb.tensor.tensor_core import Tensor
-from scipy.linalg import svd as sc_svd
 from scipy.sparse.linalg import gmres as sc_gmres
+from scipy.linalg import svd as sc_svd
+from scipy.linalg import qr
+from cupy.linalg import svd as cu_svd
 
 from tt_nte.experimental.solvers._dmrg import MovingEnvironment
 from tt_nte.experimental.solvers.gpu_manager import GPUManager
@@ -61,75 +59,6 @@ class AMEn(object):
             if opts.get("use_gpu", False)
             else None
         )
-
-    # =============================================================
-    # Methods
-
-    def solve(
-        self,
-        A: MatrixProductOperator,
-        B: MatrixProductState,
-        x0: Optional[MatrixProductState] = None,
-        z0: Optional[MatrixProductState] = None,
-        tol: float = 1e-5,
-        max_ranks=1000,
-        max_sweeps: int = 50,
-        kickrank: int = 4,
-        kicktype: str = "als",
-        kickrank2: int = 0,
-        virtual: bool = True,
-        verbose: Optional[bool] = None,
-        **opts,
-    ):
-        """"""
-        self._verbose = verbose if verbose else self._verbose
-        if opts:
-            self._set_opts(opts)
-
-        # Determine initial rank
-        self._max_rank, max_ranks = self._set_seq(max_ranks)
-
-        # Setup AMEn solver
-        self._setup(
-            A=A,
-            B=B,
-            x0=x0,
-            z0=z0,
-            tol=tol,
-            kickrank=kickrank,
-            kicktype=kicktype,
-            kickrank2=kickrank2,
-            virtual=virtual,
-        )
-
-        # Begin AMEn sweeps
-        for i in range(max_sweeps - 1):
-            # Get next rank
-            self._max_rank = next(max_ranks)
-
-            # Print pre-sweep
-            self._print_pre_sweep(i)
-
-            # Run sweep
-            self._sweep()
-
-            # Print post sweep
-            self._print_post_sweep()
-
-            # Check convergence
-            if self._max_res < self._tol:
-                self._converged = True
-                break
-
-        # # Run final sweep
-        # self._print_pre_sweep(i)
-        # self._sweep()
-        # self._print_post_sweep()
-
-        # Equalize norms in solution
-        self._x.equalize_norms(inplace=True)
-
-        return self.x, self._converged
 
     def _setup(
         self,
@@ -173,9 +102,9 @@ class AMEn(object):
                 bond_dim=2,
                 phys_dim=self._phys_dims,
                 dist="uniform",
+                normalize="left",
             )
         )
-
         z = (
             z0.copy()
             if z0
@@ -184,14 +113,19 @@ class AMEn(object):
                 bond_dim=self._kickrank + self._kickrank2,
                 phys_dim=self._phys_dims,
                 dist="uniform",
+                normalize="left",
             )
         )
 
+        # Ensure correct rank
+        # self._x.compress(max_bond=2)
+        # z.compress(max_bond=self._kickrank + self._kickrank2)
+
         # Permuate arrays to lpr and ludr
-        self._A.permute_arrays()
-        self._B.permute_arrays()
-        self._x.permute_arrays()
-        z.permute_arrays()
+        self._A.permute_arrays("ludr")
+        self._B.permute_arrays("lpr")
+        self._x.permute_arrays("lpr")
+        z.permute_arrays("lpr")
 
         # Equalize Norms
         self._A.equalize_norms(inplace=True)
@@ -200,7 +134,7 @@ class AMEn(object):
         z.equalize_norms(inplace=True)
 
         # Save original physical index tags
-        self._inds = [core.inds[-1] for core in self._x]
+        self._inds = [self._x[0].inds[0]] + [core.inds[1] for core in self._x[1:]]
 
         # Create conjugate transposes
         self._xH = self._x.H
@@ -209,8 +143,8 @@ class AMEn(object):
         # Left and right orthogonalize z and x
         self._x.left_canonize(bra=self._xH, inplace=True)
         z.left_canonize(bra=self._zH, inplace=True)
-        # self._x.right_canonize(bra=self._xH, inplace=True)
-        # z.right_canonize(bra=self._zH, inplace=True)
+        self._x.right_canonize(bra=self._xH, inplace=True)
+        z.right_canonize(bra=self._zH, inplace=True)
 
         # Tag all TNs
         self._A.add_tag("_A")
@@ -235,16 +169,106 @@ class AMEn(object):
         self._max_dx = 0
         self._max_res = 0
 
+    def _check_tns(self, B, x0, z0):
+        assert self._order
+        assert self._phys_dims
+        assert B
+
+        # Check shapes of given data
+        check = self._order == B.L
+        check = self._phys_dims == [B.phys_dim(site=site) for site in B.sites]
+        if x0:
+            check = self._order == x0.L
+            check = self._phys_dims == [x0.phys_dim(site=site) for site in x0.sites]
+        if z0:
+            check = self._order == z0.L
+            check = self._phys_dims == [z0.phys_dim(site=site) for site in z0.sites]
+
+        if not check:
+            raise RuntimeError(
+                "A, B, x0, and z0 must have the same order and physical dimensions"
+            )
+
     # =============================================================
-    # Sweep Methods
+    # Base solve method
+
+    def solve(
+        self,
+        A: MatrixProductOperator,
+        B: MatrixProductState,
+        x0: Optional[MatrixProductState] = None,
+        z0: Optional[MatrixProductState] = None,
+        tol: float = 1e-5,
+        max_ranks=1000,
+        max_sweeps: int = 50,
+        kickrank: int = 4,
+        kicktype: str = "als",
+        kickrank2: int = 0,
+        virtual: bool = True,
+        verbose: Optional[bool] = None,
+        **opts,
+    ):
+        """"""
+        self._verbose = verbose if verbose else self._verbose
+        if opts:
+            self._set_opts(opts)
+
+        # Determine initial rank
+        self._max_rank, max_ranks = self._set_seq(max_ranks)
+
+        # Setup AMEn solver
+        self._setup(
+            A=A,
+            B=B,
+            x0=x0,
+            z0=z0,
+            tol=tol,
+            kickrank=kickrank,
+            kicktype=kicktype,
+            kickrank2=kickrank2,
+            virtual=virtual,
+        )
+
+        # Begin AMEn sweeps
+        i = 0
+        for i in range(max_sweeps - 1):
+            # Get next rank
+            self._max_rank = next(max_ranks)
+
+            # Print pre-sweep
+            self._print_pre_sweep(i)
+
+            # Run sweep
+            self._sweep()
+
+            # Print post sweep
+            self._print_post_sweep()
+
+            # Check convergence
+            if self._max_res < self._tol:
+                self._converged = True
+                break
+
+        # Run final sweep
+        self._print_pre_sweep(i + 1)
+        self._sweep()
+        self._print_post_sweep()
+
+        # Equalize norms in solution
+        self._x.equalize_norms(inplace=True)
+
+        return self.x, self._converged
+
+    # =============================================================
+    # Sweep methods
 
     def _sweep(self):
         """"""
         # Orthogonalize x
-        # self._x.right_canonize(bra=self._xH, inplace=True)
-        self._right_canonize_x()
+        self._x.right_canonize(bra=self._xH, inplace=True)
+        # self._right_canonize_x()
 
-        if not self._converged:
+        if not self._converged and self._kickrank + self._kickrank2 > 0:
             if self._sweep_num > 0:
                 # Create left moving environment
                 self._zLHS_ME = MovingEnvironment(
@@ -272,43 +296,12 @@ class AMEn(object):
         self._max_res = 0
         self._max_dx = 0
 
+        # Run local problems
         for i in range(self._order):
             self._update_local_x(i)
 
-    def _right_canonize_x(self):
-        for i in reversed(range(1, self._order)):
-            # Get core and right matricize
-            xeff, shape, lix, uix = self._right_matricize(i, self._x[i], self._x)
-            xeff = do("transpose", xeff)
-
-            # Run QR
-            xeff, rv = do("linalg.qr", xeff)
-            xeff = do("transpose", xeff)
-
-            # Place back into core
-            shape[0] = xeff.shape[0]
-            xeff = self._right_tensorize(i, xeff, self._x, shape, lix, uix)
-            self._x[i].modify(data=xeff.data)
-            self._xH[i].modify(data=xeff.conj().data)
-
-            # Compute left tensor orthogonalization
-            xeff, shape, lix, uix = self._left_matricize(i - 1, self._x[i - 1], self._x)
-            xeff = xeff @ do("transpose", rv)
-
-            # Place back into left core
-            shape[-1] = xeff.shape[-1]
-            xeff = self._left_tensorize(i - 1, xeff, self._x, shape, lix, uix)
-            self._x[i - 1].modify(data=xeff.data)
-            self._xH[i - 1].modify(data=xeff.conj().data)
-
-    def _right_canonize_z(self):
-        """"""
-        for i in reversed(range(1, self._order)):
-            self._right_canonize_z_site(i, do("reshape", self._x[i].data, (-1, 1)))
-
     def _update_local_x(self, i):
         """"""
-        # Get previous solution
         xeff_prev = do("reshape", self._x[i].to_dense(self._x[i].inds), (-1, 1))
 
         # Solve local linear system
@@ -332,67 +325,12 @@ class AMEn(object):
             else:
                 Aeff = self._gpu_manager.from_gpu(Aeff)
 
-        if not self._converged:
+        if not self._converged and self._kickrank + self._kickrank2 > 0:
             # Calculate residual, truncate, and enrich residual (if kickrank2 > 0)
             self._left_canonize_z_site(i, xeff)
 
         # Enrich core in x
         self._enrich(i, xeff, u, v)
-
-    def _solve_local_system(self, i, xeff_prev):
-        # Move environments
-        self._LHS_ME.move_to(i)
-        self._RHS_ME.move_to(i)
-
-        # Get index pointers for projections
-        inds = {
-            "ldims": self._xH[i].shape,
-            "lix": self._xH[i].inds,
-            "rdims": self._x[i].shape,
-            "uix": self._x[i].inds,
-        }
-
-        # Form local operators
-        Aeff, Beff, dense, use_gpu = self._form_local_ops(
-            self._LHS_ME(), self._RHS_ME(), inds
-        )
-        if use_gpu:
-            xeff_prev = self._gpu_manager.to_gpu(xeff_prev)
-
-        # Compute norm of RHS
-        self._norm_rhs = do("linalg.norm", Beff)
-
-        # Solve system
-        if dense:
-            xeff = do("linalg.solve", Aeff, Beff)
-        else:
-            if self._norm_rhs > 0:
-                res = Beff - Aeff.matvec(xeff_prev)
-                res_norm = do("linalg.norm", res)
-
-                # Get gmres for device
-                gmres = cu_gmres if use_gpu else sc_gmres
-
-                # Calculate gmres relative tolerance
-                real_tol = self._real_tol * self._norm_rhs / res_norm
-
-                if real_tol < 1:
-                    # TODO: Add preconditioning
-                    xeff, _ = gmres(
-                        A=Aeff,
-                        b=res,
-                        atol=real_tol,
-                        restart=self._local_restart,
-                        maxiter=self._local_iters,
-                    )
-                    xeff = xeff_prev + do("reshape", xeff, (-1, 1))
-                else:
-                    xeff = xeff_prev
-
-            else:
-                xeff = do("zeros", do("shape", xeff_prev))
-
-        return Aeff, Beff, xeff, xeff_prev, use_gpu
 
     def _compute_residuals(self, Aeff, Beff, xeff, xeff_prev):
         # Compute norm of RHS, previous residual, new residual, norm of change,
@@ -425,6 +363,7 @@ class AMEn(object):
 
             # Run SVD if we're truncating
             u, s, v = self._svd(xeff, use_gpu)
+            # u, s, v = do("linalg.svd", xeff)
 
             # Determine rank of acceptable compression
             r = 0
@@ -459,9 +398,64 @@ class AMEn(object):
 
         return None, None, xeff
 
+    def _solve_local_system(self, i, xeff_prev):
+        # Move environments
+        self._LHS_ME.move_to(i)
+        self._RHS_ME.move_to(i)
+
+        # Get index pointers for projections
+        inds = {
+            "ldims": self._xH[i].shape,
+            "lix": self._xH[i].inds,
+            "rdims": self._x[i].shape,
+            "uix": self._x[i].inds,
+        }
+
+        # Form local operators
+        Aeff, Beff, dense, use_gpu = self._form_local_ops(
+            self._LHS_ME(), self._RHS_ME(), inds
+        )
+        if use_gpu:
+            xeff_prev = self._gpu_manager.to_gpu(xeff_prev)
+
+        # Compute norm of RHS
+        self._norm_rhs = do("linalg.norm", Beff)
+
+        # Solve system
+        if dense:
+            xeff = do("linalg.solve", Aeff, Beff)
+        else:
+            if self._norm_rhs > 0:
+                res = Beff - Aeff.matvec(xeff_prev)
+                res_norm = do("linalg.norm", res)
+
+                # Calculate gmres relative tolerance
+                real_tol = self._real_tol * self._norm_rhs / res_norm
+
+                if real_tol < 1:
+                    # TODO: Add preconditioning
+                    xeff, _ = self._gmres(
+                        A=Aeff,
+                        b=res,
+                        rtol=real_tol,
+                        restart=self._local_restart,
+                        maxiter=self._local_iters,
+                        use_gpu=use_gpu,
+                    )
+                    xeff = xeff_prev + do("reshape", xeff, (-1, 1))
+                else:
+                    xeff = xeff_prev
+
+            else:
+                xeff = do("zeros", do("shape", xeff_prev))
+
+        return Aeff, Beff, xeff, xeff_prev, use_gpu
+
     def _enrich(self, i, xeff, u, v):
-        if i < self._order - 1 and self._kickrank > 0 and not self._converged:
-            if self._kickrank > 0:
+        if i < self._order - 1:
+            _, shape, lix, uix = self._left_matricize(i, self._x[i], self._x)
+
+            if self._kickrank > 0 and not self._converged:
                 # Get indices and TN
                 inds = {
                     "left_inds": list(self._zH[i].inds),
@@ -479,8 +473,8 @@ class AMEn(object):
                     tn = self._LHS_ME()["_LEFT"] | tn
 
                 # Correct shape to old rank
-                inds["ldims"][-2] = self._zLHS_ME()["_RIGHT"].ind_size(
-                    inds["left_inds"][-2]
+                inds["ldims"][-1] = self._zLHS_ME()["_RIGHT"].ind_size(
+                    inds["left_inds"][-1]
                 )
 
                 # Compute LHS
@@ -502,7 +496,8 @@ class AMEn(object):
                 uk, shape, lix, uix = self._left_matricize(i, uk, self._x)
 
                 # Apply enrichment
-                u, rv = do("linalg.qr", do("concatenate", [u, uk], axis=-1))
+                # u, rv = do("linalg.qr", do("concatenate", [u, uk], axis=-1))
+                u, rv = qr(do("concatenate", [u, uk], axis=-1), mode="economic")
                 v = do(
                     "concatenate",
                     [v, do("zeros", (self._x.bond_size(i, i + 1), uk.shape[-1]))],
@@ -534,6 +529,104 @@ class AMEn(object):
             self._x[i].modify(data=xeff)
             self._xH[i].modify(data=xeff)
 
+    def _form_local_ops(self, LHS_eff, RHS_eff, inds, dense=None):
+        """"""
+        # Use dense solve if system is less than 800x800
+        n = prod(inds["ldims"])
+        m = prod(inds["rdims"])
+        if n * m < self._max_full_size:
+            # Check if system will fit on GPU
+            use_gpu = (
+                self._gpu_manager.check_available(
+                    num_elements=[n * m, n, n],
+                    types=[LHS_eff.dtype, RHS_eff.dtype, self._x.dtype],
+                )
+                if self._gpu_manager
+                else False
+            )
+
+            if use_gpu:
+                self._gpu_manager.to_gpu((LHS_eff["_A"], RHS_eff["_B"]))
+
+            # Compute RHS vector
+            RHS_eff_dense = do(
+                "reshape", (RHS_eff ^ "_B")["_B"].to_dense(inds["lix"]), (-1, 1)
+            )
+
+            # Contract to form matrix operator
+            LHS_eff_dense = (LHS_eff ^ "_A")["_A"].to_dense(inds["lix"], inds["uix"])
+
+            # Take TNs off GPU
+            if use_gpu:
+                self._gpu_manager.from_gpu([LHS_eff["_A"], RHS_eff["_B"]])
+
+            return LHS_eff_dense, RHS_eff_dense, True, use_gpu
+
+        else:
+            # Check if system will fit on GPU
+            use_gpu = (
+                self._gpu_manager.check_available(
+                    0, [n, n], [RHS_eff.dtype, self._x.dtype], LHS_eff["_A"]
+                )
+                if self._gpu_manager
+                else False
+            )
+
+            if use_gpu:
+                self._gpu_manager.to_gpu((LHS_eff["_A"], RHS_eff["_B"]))
+
+            LHS_eff_op = TNLinearOperator(
+                LHS_eff["_A"],
+                ldims=inds["ldims"],
+                rdims=inds["rdims"],
+                left_inds=inds["lix"],
+                right_inds=inds["uix"],
+            )
+
+            # Compute RHS vector
+            RHS_eff_dense = do(
+                "reshape", (RHS_eff ^ "_B")["_B"].to_dense(inds["lix"]), (-1, 1)
+            )
+
+            # Remove RHS from GPU
+            if use_gpu:
+                self._gpu_manager.from_gpu([RHS_eff["_B"]])
+
+            return LHS_eff_op, RHS_eff_dense, False, use_gpu
+
+    def _right_canonize_x(self):
+        for i in reversed(range(1, self._order)):
+            # Get core and right matricize
+            xeff, shape, lix, uix = self._right_matricize(i, self._x[i], self._x)
+            xeff = do("transpose", xeff)
+
+            # Run QR
+            # xeff, rv = do("linalg.qr", xeff)
+            xeff, rv = qr(xeff, mode="economic")
+            xeff = do("transpose", xeff)
+
+            # Place back into core
+            shape[0] = xeff.shape[0]
+            xeff = self._right_tensorize(i, xeff, self._x, shape, lix, uix)
+            self._x[i].modify(data=xeff.data)
+            self._xH[i].modify(data=xeff.conj().data)
+
+            # Compute left tensor orthogonalization
+            xeff, shape, lix, uix = self._left_matricize(i - 1, self._x[i - 1], self._x)
+
+            xeff = xeff @ do("transpose", rv)
+
+            # Place back into left core
+            shape[-1] = xeff.shape[-1]
+            xeff = self._left_tensorize(i - 1, xeff, self._x, shape, lix, uix)
+            self._x[i - 1].modify(data=xeff.data)
+            self._xH[i - 1].modify(data=xeff.conj().data)
+
+    def _right_canonize_z(self):
+        """"""
+        for i in reversed(range(1, self._order)):
+            self._right_canonize_z_site(i, do("reshape", self._x[i].data, (-1, 1)))
+
     def _right_canonize_z_site(self, i, xeff):
         use_gpu = False
 
@@ -551,7 +644,7 @@ class AMEn(object):
             }
 
             if i < self._order - 1:
-                inds["ldims"][-2] = self._zH[i + 1].shape[0]
+                inds["ldims"][-1] = self._zH[i + 1].shape[0]
 
             # Form local operators for residual system
             Aeff, Beff, dense, use_gpu = self._form_local_ops(
@@ -611,8 +704,8 @@ class AMEn(object):
             zeff, shape, lix, uix = self._right_matricize(i, self._zH[i], self._zH)
             zeff = do("transpose", zeff)
 
-        zeff, _ = do("linalg.qr", zeff)
-        # zeff, _, _ = qr(zeff, mode="economic", pivoting=True)
+        # zeff, _ = do("linalg.qr", zeff)
+        zeff, _ = qr(zeff, mode="economic")
         zeff = do("transpose", zeff)
 
         shape[0] = zeff.shape[0]
@@ -644,7 +737,7 @@ class AMEn(object):
             if i > 0:
                 inds["ldims"][0] = self._zLHS_ME()["_LEFT"].shape[0]
             if i < self._order - 1:
-                inds["ldims"][-2] = self._zLHS_ME()["_RIGHT"].shape[0]
+                inds["ldims"][-1] = self._zLHS_ME()["_RIGHT"].shape[0]
 
             # Form local operators for residual system
             Aeff, Beff, dense, use_gpu = self._form_local_ops(
@@ -669,7 +762,6 @@ class AMEn(object):
 
             # Run SVD if we're truncating
             zeff, _, _ = self._svd(zeff, use_gpu)
-            # zeff, _, _ = svd(zeff, full_matrices=False, lapack_driver="gesvd")
             # zeff, _, _ = do("linalg.svd", zeff)
 
             # Truncate
@@ -702,8 +794,8 @@ class AMEn(object):
             zeff, shape, lix, uix = self._left_matricize(i, self._zH[i], self._zH)
 
         # Run QR orthogonalization
-        zeff, _ = do("linalg.qr", zeff)
-        # zeff, _, _ = qr(zeff, mode="economic", pivoting=True)
+        # zeff, _ = do("linalg.qr", zeff)
+        zeff, _ = qr(zeff, mode="economic")
 
         if i < self._order - 1:
             shape[-1] = r
@@ -717,171 +809,94 @@ class AMEn(object):
 
         self._zH[i].modify(data=zeff.data)
 
-    def _form_local_ops(self, LHS_eff, RHS_eff, inds, dense=None):
-        """"""
-        # Use dense solve if system is less than 800x800
-        n = prod(inds["ldims"])
-        m = prod(inds["rdims"])
-        if n * m < self._max_full_size:
-            # Check if system will fit on GPU
-            use_gpu = (
-                self._gpu_manager.check_available(
-                    num_elements=[n * m, n, n],
-                    types=[LHS_eff.dtype, RHS_eff.dtype, self._x.dtype],
-                )
-                if self._gpu_manager
-                else False
-            )
-
-            if use_gpu:
-                self._gpu_manager.to_gpu((LHS_eff["_A"], RHS_eff["_B"]))
-
-            # Compute RHS vector
-            RHS_eff_dense = do(
-                "reshape", (RHS_eff ^ "_B")["_B"].to_dense(inds["lix"]), (-1, 1)
-            )
-
-            # Contract to form matrix operator
-            LHS_eff_dense = (LHS_eff ^ "_A")["_A"].to_dense(inds["lix"], inds["uix"])
-
-            # Take TNs off GPU
-            if use_gpu:
-                self._gpu_manager.from_gpu([LHS_eff["_A"], RHS_eff["_B"]])
-
-            return LHS_eff_dense, RHS_eff_dense, True, use_gpu
-
-        else:
-            # Check if system will fit on GPU
-            use_gpu = (
-                self._gpu_manager.check_available(
-                    0, [n, n], [RHS_eff.dtype, self._x.dtype], LHS_eff["_A"]
-                )
-                if self._gpu_manager
-                else False
-            )
-
-            if use_gpu:
-                self._gpu_manager.to_gpu((LHS_eff["_A"], RHS_eff["_B"]))
-
-                LHS_eff_op = TNLinearOperator(
-                    LHS_eff["_A"],
-                    ldims=inds["ldims"],
-                    rdims=inds["rdims"],
-                    left_inds=inds["lix"],
-                    right_inds=inds["uix"],
-                )
-
-            else:
-                LHS_eff_op = TNLinearOperator(
-                    LHS_eff["_A"],
-                    ldims=inds["ldims"],
-                    rdims=inds["rdims"],
-                    left_inds=inds["lix"],
-                    right_inds=inds["uix"],
-                )
-
-            # Compute RHS vector
-            RHS_eff_dense = do(
-                "reshape", (RHS_eff ^ "_B")["_B"].to_dense(inds["lix"]), (-1, 1)
-            )
-
-            # Remove RHS from GPU
-            if use_gpu:
-                self._gpu_manager.from_gpu([RHS_eff["_B"]])
-
-            return LHS_eff_op, RHS_eff_dense, False, use_gpu
-
     # =============================================================
-    # Other methods
+    # Matricization and tensorization methods
 
-    def _check_tns(self, B, x0, z0):
-        assert self._order
-        assert self._phys_dims
-        assert B
+    def _left_matricize(self, i, x, tn):
+        """
+        Left matricization to shape (r_left * i, r_right) where i is the physical index
+        and r are the ranks.
 
-        # Check shapes of given data
-        check = self._order == B.L
-        check = self._phys_dims == [B.phys_dim(site=site) for site in B.sites]
-        if x0:
-            check = self._order == x0.L
-            check = self._phys_dims == [x0.phys_dim(site=site) for site in x0.sites]
-        if z0:
-            check = self._order == z0.L
-            check = self._phys_dims == [z0.phys_dim(site=site) for site in z0.sites]
-
-        if not check:
-            raise RuntimeError(
-                "A, B, x0, and z0 must have the same order and physical dimensions"
-            )
-
-    @staticmethod
-    def _svd(A, use_gpu):
-        if use_gpu:
-            # u, s, v = torch.linalg.svd(torch.Tensor(A.get()), full_matrices=False, driver="gesvd")
-            # return cu.array(u.numpy()), cu.array(s.numpy()), cu.array(v.numpy())
-            return cu_svd(A, full_matrices=False, driver="gesvd")
-        else:
-            return sc_svd(A, full_matrices=False, lapack_driver="gesvd")
-
-    @staticmethod
-    def _left_matricize(i, x, tn):
+        Also known as left unfolding.
+        """
         if i < tn.L - 1:
-            uix = tn.bond(i, i + 1)
-            lix = (tn[i].inds[-1],)
-            shape = [x.ind_size(lix[0]), x.ind_size(uix)]
+            lix = []
+            shape = []
 
+            # Add left rank if applicable
             if i > 0:
-                lix = (tn.bond(i - 1, i), *lix)
-                shape = [x.ind_size(lix[0])] + shape
+                lix += [tn.bond(i - 1, i)]
+                shape += [x.ind_size(lix[-1])]
 
-            x = x.to_dense(lix, (uix,))
-            return x, shape, lix, (uix,)
+            # Add physical index
+            lix += [tn[i].inds[-2]]
+            shape += [x.ind_size(lix[-1])]
+
+            # Right rank
+            uix = [tn.bond(i, i + 1)]
+            shape += [x.ind_size(uix[-1])]
+
+            # Matricize to shape (r_left * i, r_right)
+            x = x.to_dense(lix, uix)
+            return x, shape, lix, uix
 
         else:
-            lix = tn[i].inds
+            # Matricize to shape (r_left * i, 1)
+            lix = x.inds
             shape = [x.ind_size(l) for l in lix]
             x = do("reshape", x.to_dense(lix), (-1, 1))
-            return x, shape, lix, None
+            return x, shape, lix, ()
 
-    @staticmethod
-    def _right_matricize(i, x, tn):
+    def _right_matricize(self, i, x, tn):
+        """
+        Right matricization to shape (r_left, i * r_right) where i is the physical index
+        and r are the ranks.
+
+        Also known as right unfolding.
+        """
         if i > 0:
-            lix = tn.bond(i - 1, i)
-            shape = [x.ind_size(lix)]
+            # Left rank
+            lix = [tn.bond(i - 1, i)]
+            shape = [x.ind_size(lix[-1])]
 
-            uix = (tn[i].inds[-1],)
-            shape += [x.ind_size(uix[0])]
+            # Physical index
+            uix = [tn[i].inds[1]]
+            shape += [x.ind_size(uix[-1])]
+
+            # Right rank
             if i < tn.L - 1:
-                uix = (*uix, tn.bond(i, i + 1))
+                uix += [tn.bond(i, i + 1)]
                 shape += [tn[i + 1].ind_size(uix[-1])]
 
-            x = x.to_dense((lix,), uix)
-            return x, shape, (lix,), uix
+            # Matricize to shape (r_left, i * r_right)
+            x = x.to_dense(lix, uix)
+            return x, shape, lix, uix
 
         else:
-            uix = tn[i].inds[::-1]
+            # Matricize to shape (1, i * r_right)
+            uix = x.inds
             shape = [x.ind_size(r) for r in uix]
             x = do("reshape", x.to_dense(uix), (1, -1))
-            return x, shape, None, uix
+            return x, shape, (), uix
 
-    @staticmethod
-    def _left_tensorize(i, x, tn, shape, lix, uix):
+    def _left_tensorize(self, i, x, tn, shape, lix, uix):
+        """Tensorization or folding of left matricized core."""
         x = (
             Tensor(do("reshape", x, shape), inds=(*lix, *uix))
             if i < tn.L - 1
             else Tensor(do("reshape", do("reshape", x, (-1)), shape), inds=lix)
         )
-        x.transpose(*tn[i].inds, inplace=True)
+        x.transpose_(*tn[i].inds)
         return x
 
-    @staticmethod
-    def _right_tensorize(i, x, tn, shape, lix, uix):
+    def _right_tensorize(self, i, x, tn, shape, lix, uix):
+        """Tensorization or folding of right matricized core."""
         x = (
             Tensor(do("reshape", x, shape), inds=(*lix, *uix))
             if i > 0
             else Tensor(do("reshape", do("reshape", x, (-1)), shape), inds=uix)
         )
-        x.transpose(*tn[i].inds, inplace=True)
+        x.transpose_(*tn[i].inds)
         return x
 
     # =============================================================
@@ -891,6 +906,35 @@ class AMEn(object):
     def _set_seq(seq):
         seq = (seq,) if isinstance(seq, Union[int, float]) else tuple(seq)
         return seq[0], itertools.chain(seq, itertools.repeat(seq[-1]))
+
+    @staticmethod
+    def _svd(A, use_gpu):
+        if use_gpu:
+            return cu_svd(A, full_matrices=False)
+        else:
+            return sc_svd(A, full_matrices=False, lapack_driver="gesvd")
+
+    @staticmethod
+    def _gmres(A, b, rtol, restart, maxiter, use_gpu):
+        """Solve linear system using Scipy or Cupy GMRES depending on GPU
+        availability."""
+        if use_gpu:
+            return cu_gmres(
+                A=A,
+                b=b,
+                tol=rtol,
+                restart=restart,
+                maxiter=maxiter,
+            )
+
+        else:
+            return sc_gmres(
+                A=A,
+                b=b,
+                rtol=rtol,
+                restart=restart,
+                maxiter=maxiter,
+            )
 
     # =============================================================
     # Print methods
@@ -915,7 +959,29 @@ class AMEn(object):
 
     @property
     def x(self):
-        copy = self._x.copy()
-        for i in range(self._order):
-            copy[i].modify(inds=(*copy[i].inds[:-1], self._inds[i]))
+        # copy = self._x.copy()
+        copy = MatrixProductState([core.data for core in self._x], shape="lpr")
+        # for i in range(self._order):
+        #     if i == 0:
+        #         copy[i].modify(inds=(self._inds[i], copy[i].inds[-1]))
+        #     elif i == self._order - 1:
+        #         copy[i].modify(inds=(copy[i].inds[0], self._inds[i]))
+        #     else:
+        #         copy[i].modify(
+        #             inds=(copy[i].inds[0], self._inds[i], copy[i].inds[-1]),
+        #         )
+        #
+        # copy.drop_tags("_x")
         return copy
+
+    @property
+    def tol(self):
+        return self._tol
+
+    @property
+    def max_res(self):
+        return self._max_res
+
+    @property
+    def op_type(self):
+        return MatrixProductOperator
