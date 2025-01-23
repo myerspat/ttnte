@@ -4,6 +4,7 @@ import numpy as np
 from scikit_tt.solvers.sle import mals
 
 from tt_nte.solvers.als import ALS
+from tt_nte.tensor_train import TensorTrain
 
 
 class MALS(ALS):
@@ -21,9 +22,7 @@ class MALS(ALS):
 
         # Take maximum rank of operators if not given
         if self._max_rank is None:
-            self._max_rank = np.array(
-                [self._H.ranks, self._S.ranks, self._F.ranks], dtype=int
-            ).max()
+            self._max_rank = np.array([self._M.ranks, self._F.ranks], dtype=int).max()
 
     # =======================================================================
     # Methods
@@ -31,14 +30,14 @@ class MALS(ALS):
     def ges(self, ranks=None, repeats=10):
         raise NotImplementedError()
 
-    def power(self, ranks=None, tol=1e-6, max_iter=100):
+    def power(self, ranks=None, tol=1e-6, max_iter=100, k0=None, psi0=None):
         """
         Power iteration using scikit_tt.solvers.sle.mals().
         """
         # Get minimum rank for start if None is given
         if ranks is None:
             ranks = np.array(
-                [self._H.ranks[1:-1], self._S.ranks[1:-1], self._F.ranks[1:-1]],
+                [self._M.ranks[1:-1], self._F.ranks[1:-1]],
                 dtype=int,
             ).min()
 
@@ -47,7 +46,12 @@ class MALS(ALS):
         self._verbose = False
 
         # Run initial 5 ALS iterations
-        super().power(ranks=ranks, tol=tol, max_iter=5)
+        if k0 is None and psi0 is None:
+            psi0, k0 = self._setup(ranks)
+        elif isinstance(psi0, TensorTrain):
+            psi0 = psi0.train("scikit_tt")
+
+        super().power(ranks=ranks, tol=tol, max_iter=5, k0=k0, psi0=psi0)
 
         # Reset verbose
         self._verbose = verbose
