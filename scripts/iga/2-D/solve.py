@@ -2,10 +2,8 @@ import time
 
 import numpy as np
 import torch as tn
-from scipy.sparse import csr_matrix
-from scipy.sparse.linalg import spsolve
+from operator_builder import TT
 from torchtt._iterative_solvers import gmres_restart
-from tt import TT
 
 
 def eig(
@@ -24,14 +22,12 @@ def eig(
     dtype = tn.float32 if single_precision else tn.float64
 
     # Physical dimensions
-    phys_dim = [H.phys_dim(site=site) for site in H.sites]
+    phys_dim = H.M
 
     # Create linear operators
     if not isinstance(H, TT):
         H, S, F, Int_N, Int_I = TT2LinOp(
             [H, S, F, Int_N, Int_I],
-            eps=eps,
-            single_precision=single_precision,
             sparsity_frac=sparsity_frac,
         )
 
@@ -55,14 +51,6 @@ def eig(
             if not F.cores[i].is_sparse
             else 5 * F.cores[i].coalesce().indices().shape[1]
         )
-
-    print(size_H)
-    print(size_S)
-    print(size_F)
-
-    print(H)
-    print(S)
-    print(F)
 
     # Initial guess
     k0 = 1.0
@@ -152,24 +140,11 @@ def eig(
     return k0.item(), (Int_N @ psi).numpy()[0, ...]
 
 
-def TT2LinOp(ops, eps=1e-10, single_precision=False, sparsity_frac=0.2):
-    dtype = tn.float32 if single_precision else tn.float64
-
+def TT2LinOp(ops, sparsity_frac=0.2):
     # Physical dimensions
-    order = ops[0].L
+    order = len(ops[0].cores)
 
     def _create_linop(op):
-        # Get MPS in right shape
-        op.permute_arrays("ludr")
-
-        # Convert to torchTT object
-        op = TT(
-            [tn.tensor(op[0].data[np.newaxis, ...], dtype=dtype)]
-            + [tn.tensor(op[i].data, dtype=dtype) for i in range(1, order - 1)]
-            + [tn.tensor(op[-1].data[..., np.newaxis], dtype=dtype)],
-            eps=eps,
-        ).round(eps)
-
         # Convert cores with sparsity_frac to COO matrices
         for i in range(order):
             op.cores[i] = (
@@ -182,107 +157,3 @@ def TT2LinOp(ops, eps=1e-10, single_precision=False, sparsity_frac=0.2):
         return TT(op.cores, eps=0)
 
     return list(map(_create_linop, ops))
-
-
-def fixed_source(
-    H,
-    S,
-    q,
-    Int_N,
-    tol=1e-6,
-    eps=1e-10,
-    max_iter=500,
-    single_precision=False,
-    sparsity_frac=0.2,
-    use_sparse_mat=False,
-):
-    dtype = tn.float32 if single_precision else tn.float64
-
-    # Physical dimensions
-    phys_dim = [H.phys_dim(site=site) for site in H.sites]
-
-    # Convert q to tntt and get full
-    q.permute_arrays("lpr")
-    q = (
-        TT(
-            [tn.tensor(q[0].data[np.newaxis, :, np.newaxis, :], dtype=dtype)]
-            + [
-                tn.tensor(q[i].data[:, :, np.newaxis, :], dtype=dtype)
-                for i in range(1, H.L - 1)
-            ]
-            + [tn.tensor(q[-1].data[:, :, np.newaxis, np.newaxis], dtype=dtype)]
-        )
-        .full()
-        .reshape(phys_dim)
-    )
-
-    if use_sparse_mat:
-        H, S, Int_N = TT2LinOp(
-            [H, S, Int_N],
-            eps=eps,
-            single_precision=single_precision,
-            sparsity_frac=0,
-        )
-        H = csr_matrix(H.full().numpy().reshape(2 * [np.prod(phys_dim)]))
-        S = csr_matrix(S.full().numpy().reshape(2 * [np.prod(phys_dim)]))
-
-        psi = spsolve(H - S, q.numpy().flatten())
-
-        for i in range(max_iter):
-            psi = spsolve(H, S @ psi + q.numpy().flatten())
-
-        return (Int_N @ tn.tensor(psi.reshape(phys_dim), dtype=dtype)).numpy()[0, ...]
-
-    else:
-        # Create linear operators
-        H, S, Int_N = TT2LinOp(
-            [H, S, Int_N],
-            eps=eps,
-            single_precision=single_precision,
-            sparsity_frac=sparsity_frac,
-        )
-
-        # Initial guess
-        psi = tn.ones(phys_dim, dtype=dtype)
-
-    # Calculate initial scattering source
-    s0 = S @ psi
-
-    start = time.time()
-    for i in range(max_iter):
-        # Solve linear system
-        psi = gmres_restart(
-            LinOp=H,
-            b=(s0 + q).reshape((-1, 1)),
-            x0=psi.reshape((-1, 1)),
-            N=np.prod(phys_dim),
-            max_iterations=10,
-            threshold=1e-7,
-            resets=5,
-        )[0].reshape(phys_dim)
-
-        # Calculate updated scattering source
-        s = S @ psi
-
-        # Calculate error
-        error = tn.linalg.norm((s - s0).flatten(), 2) / tn.linalg.norm(s0.flatten(), 2)
-
-        # Print progress
-        print(
-            "-- ({}): |ds| / |s| = {}, Elapsed Time = {}".format(
-                i,
-                round(error.item(), 8),
-                round(time.time() - start, 3),
-            )
-        )
-
-        # Check convergence
-        if error < tol:
-            print("-- Converged!")
-            break
-
-        # Update old
-        s0 = s
-
-    # Apply angular integration operator
-    return (Int_N @ psi).numpy()[0, ...]
