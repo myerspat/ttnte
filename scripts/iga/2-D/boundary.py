@@ -4,7 +4,7 @@ from typing import Literal, Union
 class IncidentBoundary(object):
     def __init__(
         self,
-        from_patch: Union[int, str],
+        from_patch: Union[None, int],
         orientation: Literal[-1, 1],
     ):
         """"""

@@ -3,6 +3,7 @@ from typing import List, Literal, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
+import scipy
 from boundary import IncidentBoundary
 from geomdl import NURBS
 from geomdl.helpers import basis_functions, basis_functions_ders, find_spans
@@ -122,7 +123,7 @@ class IGAMesh(object):
         self._incident_boundaries[p][
             2 * abs(const_param_idx - 1) + const_param
         ] = IncidentBoundary(
-            from_patch=condition,
+            from_patch=None if condition == "vacuum" else p,
             orientation=self.get_orientation(p, const_param_idx, const_param),
         )
 
@@ -417,8 +418,9 @@ class IGAMesh(object):
 
             # Compute normal
             normal = dv[0, 1, :-1][::-1]
-            normal[0] *= -1
-            normal /= (-1 if knots[0, i] == 0 else 1) * np.sqrt(np.sum(normal**2))
+            if (normal != 0).any():
+                normal[0] *= -1
+                normal /= (-1 if knots[0, i] == 0 else 1) * np.sqrt(np.sum(normal**2))
 
             # Save normal vector
             normals[:, i] = normal
@@ -434,8 +436,9 @@ class IGAMesh(object):
 
             # Compute normal
             normal = du[1, 0, :-1][::-1]
-            normal[0] *= -1
-            normal /= (-1 if knots[1, i] == 1 else 1) * np.sqrt(np.sum(normal**2))
+            if (normal != 0).any():
+                normal[0] *= -1
+                normal /= (-1 if knots[1, i] == 1 else 1) * np.sqrt(np.sum(normal**2))
 
             # Save normal vector
             normals[:, i] = normal
@@ -480,38 +483,37 @@ class IGAMesh(object):
         return jacobian
 
     def inverse_map(
-        self, physical_coords: np.ndarray, tol: float = 1e-8, max_iter: int = 100
+        self,
+        physical_coords: np.ndarray,
+        tol: float = 1e-8,
+        method=None,
     ):
         """"""
         assert physical_coords.ndim == 2 and physical_coords.shape[0] == 2
 
+        # TODO: add multipatch
+        p = 0
+
         # Create initial guess
         coords = 0.5 * np.ones(physical_coords.shape)
 
-        # Begin Newton's method
-        for i in range(max_iter):
-            # Calculate Jacobian
-            # TODO: This is hard coded for one patch
-            p = 0
-            J = self.jacobian(p, coords)
+        def minimize(physical_coord):
+            return scipy.optimize.minimize(
+                lambda coord: np.sum(
+                    (
+                        np.array(self.patches[p].evaluate_single((coord)))[:2]
+                        - physical_coord
+                    )
+                    ** 2
+                ),
+                0.5 * np.ones(2),
+                method=method,
+                bounds=((0, 1), (0, 1)),
+                tol=tol,
+            ).x
 
-            # Invert Jacobian
-            J /= J[0, 0, :] * J[1, 1, :] - J[0, 1, :] * J[1, 0, :]
-            J[0, 1, :] *= -1
-            J[1, 0, :] *= -1
-            J[0, 0, :], J[1, 1, :] = J[1, 1, :], J[0, 0, :]
-
-            # Update guess
-            update = np.einsum(
-                "abc,bc->ac",
-                J,
-                np.array(self.patches[p].evaluate_list(coords.T.tolist())).T[:2, :]
-                - physical_coords,
-            )
-            coords -= update
-
-            if np.max(np.abs(update)) < tol:
-                break
+        # Use scipy.optimize
+        coords = np.array(list(map(minimize, physical_coords.T))).T
 
         return coords
 
@@ -570,3 +572,12 @@ class IGAMesh(object):
     @property
     def num_dofs_axis(self):
         return (self.patches[0].ctrlpts_size_u, self.patches[0].ctrlpts_size_v)
+
+    def set_phi(self, p, phi):
+        """"""
+        patch = self.patches[p]
+        new_ctrlpts = patch.ctrlpts
+        for i in range(phi.shape[-1]):
+            new_ctrlpts[i] = [*new_ctrlpts[i][:-1], phi[i]]
+        patch.ctrlpts = new_ctrlpts
+        self.patches[p] = patch

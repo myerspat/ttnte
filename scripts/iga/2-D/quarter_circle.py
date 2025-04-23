@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import torch as tn
-from igakit.nurbs import NURBS
+from igakit import cad
 from mesh import IGAMesh
 from operator_builder import OperatorBuilder
 from solve import eig
@@ -13,72 +13,33 @@ tn.set_default_dtype(tn.float64)
 tn.set_num_threads(14)
 
 
-def circle(radius):
-    """"""
-    # Control points and weights
-    ctrlpts = radius * np.array(
-        [
-            [-1 / np.sqrt(2), -1 / np.sqrt(2), 0],
-            [0, -np.sqrt(2), 0],
-            [1 / np.sqrt(2), -1 / np.sqrt(2), 0],
-            [-np.sqrt(2), 0, 0],
-            [0, 0, 0],
-            [np.sqrt(2), 0, 0],
-            [-1 / np.sqrt(2), 1 / np.sqrt(2), 0],
-            [0, np.sqrt(2), 0],
-            [1 / np.sqrt(2), 1 / np.sqrt(2), 0],
-        ]
-    ).reshape((3, 3, 3))
-    weights = np.array(
-        [
-            [1, 1 / np.sqrt(2), 1],
-            [1 / np.sqrt(2), 1, 1 / np.sqrt(2)],
-            [1, 1 / np.sqrt(2), 1],
-        ]
-    )
-
-    return NURBS(
-        knots=[[0, 0, 0, 1, 1, 1], [0, 0, 0, 1, 1, 1]], control=ctrlpts, weights=weights
-    )
-
-
 def evaluate_boundary(patch):
-    # Plot and evaluate boundary flux
-    center_flux = patch.evaluate_single((0.5, 0.5))[-1]
-    points = np.zeros((2, 400))
-    points[0, :100] = np.linspace(0, 1, 100)
-    points[0, 100:200] = 1
-    points[1, 100:200] = np.linspace(0, 1, 100)
-    points[0, 200:300] = np.linspace(0, 1, 100)[::-1]
-    points[1, 200:300] = 1
-    points[1, 300:400] = np.linspace(0, 1, 100)[::-1]
+    # Calculate flux in the center
+    center_flux = patch.evaluate_single((0, 0))[-1]
 
-    points = np.array(patch.evaluate_list(points.T.tolist()))
+    # Evaluate boundary flux
+    points = np.ones((2, 400))
+    points[0, :] = np.linspace(0, 1, 400)
+    points = np.array(patch.evaluate_list(points.copy().T.tolist()))
+
+    # Normalize boundary
     points[:, -1] /= center_flux
 
     # Convert to angle
     angular_points = np.zeros((points.shape[0], 2))
     angular_points[:, -1] = points[:, -1]
-    angular_points[(points[:, 0] >= 0), 0] = np.arcsin(
-        points[(points[:, 0] >= 0), 1] / rc
-    )
-    angular_points[(points[:, 0] < 0) & (points[:, 1] >= 0), 0] = (
-        -np.arcsin(points[(points[:, 0] < 0) & (points[:, 1] >= 0), 1] / rc) + np.pi
-    )
-    angular_points[(points[:, 0] < 0) & (points[:, 1] < 0), 0] = (
-        -np.arcsin(points[(points[:, 0] < 0) & (points[:, 1] < 0), 1] / rc) - np.pi
-    )
+    angular_points[:, 0] = np.arcsin(points[(points[:, 0] >= 0), 1] / rc)
     return angular_points[angular_points[:, 0].argsort()]
 
 
-def evaluate_radius(mesh, patch, radius, tol=1e-8):
+def evaluate_radius(mesh, patch, radius, tol=1e-10):
     # Plot and evaluate boundary flux
-    center_flux = patch.evaluate_single((0.5, 0.5))[-1]
+    center_flux = patch.evaluate_single((0, 0))[-1]
 
     # Calculate physical locations
     points = radius * np.ones((2, 400))
     angular_points = np.zeros((2, 400))
-    angular_points[0, :] = np.linspace(-np.pi, np.pi, 400)
+    angular_points[0, :] = np.linspace(0, np.pi / 2, 400)
     points[0, :] *= np.cos(angular_points[0, :])
     points[1, :] *= np.sin(angular_points[0, :])
 
@@ -111,8 +72,12 @@ if __name__ == "__main__":
     # Critical radius
     rc = 4.279960  # cm
 
+    # Create quarter circle NURBS surface
+    c0 = cad.circle(radius=rc, angle=np.pi / 2)
+    l0 = cad.line(p0=(0, 0), p1=(0, 0))
+    patch = cad.ruled(l0, c0)
+
     # NURBS surfaces
-    patch = circle(rc)
     patches = {}
     patches[patch] = "fuel"
 
@@ -120,7 +85,7 @@ if __name__ == "__main__":
     mesh = IGAMesh(patches)
 
     # Refine mesh
-    mesh.refine(0, factor=7, degree=3)
+    mesh.refine(0, factor=[3, 9], degree=3)
 
     # Finalize mesh
     mesh.finalize_patches()
@@ -128,8 +93,8 @@ if __name__ == "__main__":
     # Set boundary conditions
     mesh.set_boundary_condition(0, 1, 0, "vacuum")
     mesh.set_boundary_condition(0, 1, 1, "vacuum")
-    mesh.set_boundary_condition(0, 0, 0, "vacuum")
-    mesh.set_boundary_condition(0, 0, 1, "vacuum")
+    mesh.set_boundary_condition(0, 0, 0, "reflective")
+    mesh.set_boundary_condition(0, 0, 1, "reflective")
 
     # Connect patches
     mesh.connect()
@@ -138,7 +103,7 @@ if __name__ == "__main__":
     ax = mesh.plot()
     ax.view_init(90, -90, 0)
     plt.tight_layout()
-    plt.savefig("./figs/circle/circle.png", dpi=300)
+    plt.savefig("./figs/quarter_circle/quarter_circle.png", dpi=300)
 
     # Initialize builder
     builder = OperatorBuilder(
@@ -155,7 +120,7 @@ if __name__ == "__main__":
     H, S, F = builder.build(use_tt=True)
 
     # Save TT info
-    builder.save_tt_info("./tt_info/circle.csv")
+    builder.save_tt_info("./tt_info/quarter_circle.csv")
 
     # Run IGA solver
     k, phi = eig(
@@ -172,7 +137,7 @@ if __name__ == "__main__":
     )
     phi = phi.flatten()
 
-    # Print eigenvalue error
+    # Calculate eigenvalue error
     print("keff error: {} pcm".format((k - 1) * 1e5))
 
     # Change control points for phi
@@ -183,22 +148,24 @@ if __name__ == "__main__":
     points = evaluate_boundary(patch)
     plt.clf()
     plt.plot(points[:, 0], points[:, 1])
-    plt.hlines(0.2926, -np.pi, np.pi, color="black", linestyles="--")
+    plt.hlines(0.2926, 0, np.pi / 2, color="black", linestyles="--")
+    plt.legend(["IGA", "Benchmark"])
     plt.ylabel("$\\phi(r = r_c) / \\phi(r = 0)$")
     plt.xlabel("Angle")
     plt.tight_layout()
-    plt.savefig("./figs/circle/r_1.png", dpi=300)
+    plt.savefig("./figs/quarter_circle/r_1.png", dpi=300)
     plt.show()
 
     # Plot scalar flux solution at 0.5rc
-    points = evaluate_radius(mesh, patch, 0.5 * rc, tol=1e-10)
+    points = evaluate_radius(mesh, patch, radius=0.5 * rc)
     plt.clf()
     plt.plot(points[0, :], points[1, :])
-    plt.hlines(0.8093, -np.pi, np.pi, color="black", linestyles="--")
+    plt.hlines(0.8093, 0, np.pi / 2, color="black", linestyles="--")
     plt.ylabel("$\\phi(r = 0.5r_c) / \\phi(r = 0)$")
     plt.xlabel("Angle")
+    plt.legend(["IGA", "Benchmark"])
     plt.tight_layout()
-    plt.savefig("./figs/circle/r_0.5.png", dpi=300)
+    plt.savefig("./figs/quarter_circle/r_0.5.png", dpi=300)
     plt.show()
 
     # Plot solution
@@ -206,5 +173,5 @@ if __name__ == "__main__":
     ax = mesh.plot()
     ax.set_zlabel("$\\phi(x, y)$")
     plt.tight_layout()
-    plt.savefig("./figs/circle/phi_1.png", dpi=300)
+    plt.savefig("./figs/quarter_circle/phi_1.png", dpi=300)
     plt.show()

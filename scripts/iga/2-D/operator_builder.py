@@ -3,6 +3,7 @@ import time
 from typing import Optional, Tuple
 
 import numpy as np
+import pandas as pd
 import torch as tn
 import torchtt as tntt
 from mesh import IGAMesh
@@ -60,7 +61,7 @@ class OperatorBuilder(object):
         if self._verbose:
             print(f"Assembling Patch {p}")
             print(
-                "{:10s} {:25s} {:10s}  {:15s}".format(
+                "{:15s} {:25s} {:10s}  {:15s}".format(
                     "Step", "Ranks", "Compression", "Elapsed Time (s)"
                 )
             )
@@ -117,6 +118,12 @@ class OperatorBuilder(object):
         R, dR = self._basis()
 
         if self._use_tt:
+            # Save TT info
+            self._append_tt_info("J", J)
+            self._append_tt_info("J_det", J_det)
+            self._append_tt_info("R", R)
+            self._append_tt_info("dR", dR)
+
             # Append basis function support matrices
             J_det = tntt.TT(
                 J_det.cores
@@ -249,6 +256,190 @@ class OperatorBuilder(object):
         Ox, Oy = self._angular(dir=1.0)
 
         if self._use_tt:
+            # Save TT information
+            self._append_tt_info("Jx_det_out", Jx_det)
+            self._append_tt_info("Jy_det_out", Jy_det)
+            self._append_tt_info("Rx_out", Rx)
+            self._append_tt_info("Ry_out", Ry)
+            self._append_tt_info("Ox_out", Oy)
+            self._append_tt_info("Oy_out", Oy)
+
+        # Build boundary integral
+        local_Intg_x, local_Intg_y = self._build_boundary_Intg(
+            (Jx_det, Jy_det), (Rx, Ry), (Ox, Oy), "out"
+        )
+
+        if self._use_tt:
+            Intg = (
+                self._calc_Intg_bound([0, 1], local_Intg_x)
+                + self._calc_Intg_bound([2, 3], local_Intg_y)
+            ).round(self._eps)
+            Intg.reduce_dims()
+
+        else:
+            Intg = tn.zeros(
+                (
+                    4,
+                    self._ordinates.shape[0],
+                    self._patch.ctrlpts_size_u,
+                    self._patch.ctrlpts_size_v,
+                    self._patch.ctrlpts_size_u,
+                    self._patch.ctrlpts_size_v,
+                )
+            )
+
+            # Fill array based on subelement index
+            for boundary_idx, i1 in itertools.product(range(2), range(self._I1)):
+                i2 = 0 if boundary_idx == 0 else self._I2 - 1
+                Intg[
+                    ...,
+                    i1 : i1 + self._patch.degree_u + 1,
+                    i2 : i2 + self._patch.degree_v + 1,
+                    i1 : i1 + self._patch.degree_u + 1,
+                    i2 : i2 + self._patch.degree_v + 1,
+                ] += local_Intg_x[:, :, boundary_idx, i1, ...]
+            for boundary_idx, i2 in itertools.product(range(2), range(self._I2)):
+                i1 = 0 if boundary_idx == 0 else self._I1 - 1
+                Intg[
+                    ...,
+                    i1 : i1 + self._patch.degree_u + 1,
+                    i2 : i2 + self._patch.degree_v + 1,
+                    i1 : i1 + self._patch.degree_u + 1,
+                    i2 : i2 + self._patch.degree_v + 1,
+                ] += local_Intg_y[:, :, boundary_idx, i2, ...]
+
+            # Create TTs
+            Intg = tntt.TT(
+                Intg.reshape((*Intg.shape[:-2], 1, 1, *Intg.shape[-2:])),
+                shape=[(Intg.shape[i], 1) for i in range(2)]
+                + [(Intg.shape[i], Intg.shape[i]) for i in range(2, 4)],
+                eps=self._eps,
+            )
+
+        # Save boundary integral TT info
+        self._append_tt_info("Intg_bound_out", Intg)
+
+        # Append energy identity matrix and permute TT
+        H_bound = tntt.permute(
+            tntt.TT(
+                [tn.eye(self._xs_server.num_groups).unsqueeze_(0).unsqueeze_(-1)]
+                + Intg.cores,
+                eps=0,
+            ),
+            [1, 2, 0, 3, 4],
+            eps=self._eps,
+        ).round(self._eps)
+        H_bound.reduce_dims()
+        self._append_tt_info("H_bound_out", H_bound)
+        return self.diagonalize(H_bound, [0, 1])
+
+    def _build_incident_boundary(self):
+        """"""
+        # Compute Jacobian of the boundary integral
+        Jx_det, Jy_det = self._boundary_jacobian_det()
+
+        # Get basis data
+        Rx, Ry = self._boundary_basis()
+
+        # Get angular data
+        Ox, Oy = self._angular(dir=-1.0)
+
+        # Apply mask to vacuum boundary conditions
+        if self._use_tt:
+            for boundary_idx in range(2):
+                xboundary = self._mesh.get_boundary(self._p, 1, boundary_idx)
+                yboundary = self._mesh.get_boundary(self._p, 0, boundary_idx)
+
+                # Make mask
+                mask = tn.tensor([0, 1] if boundary_idx == 0 else [1, 0]).reshape(
+                    (1, -1, 1)
+                )
+
+                if xboundary.from_patch is None:
+                    # Apply mask
+                    Jx_det.set_core(0, Jx_det.cores[0].clone() * mask)
+                    Rx.set_core(0, Rx.cores[0].clone() * mask)
+                    Ox.set_core(2, Ox.cores[2].clone() * mask)
+
+                if yboundary.from_patch is None:
+                    # Apply mask
+                    Jy_det.set_core(0, Jy_det.cores[0].clone() * mask)
+                    Ry.set_core(0, Ry.cores[0].clone() * mask)
+                    Oy.set_core(2, Oy.cores[2].clone() * mask)
+
+            # Round results
+            Jx_det, Jy_det = Jx_det.round(self._eps), Jy_det.round(self._eps)
+            Rx, Ry = Rx.round(self._eps), Ry.round(self._eps)
+            Ox, Oy = Ox.round(self._eps), Oy.round(self._eps)
+
+            # Save TT information
+            self._append_tt_info("Jx_det_in", Jx_det)
+            self._append_tt_info("Jy_det_in", Jy_det)
+            self._append_tt_info("Rx_in", Rx)
+            self._append_tt_info("Ry_in", Ry)
+            self._append_tt_info("Ox_in", Oy)
+            self._append_tt_info("Oy_in", Oy)
+
+        else:
+            for boundary_idx in range(2):
+                xboundary = self._mesh.get_boundary(self._p, 1, boundary_idx)
+                yboundary = self._mesh.get_boundary(self._p, 0, boundary_idx)
+
+                if xboundary.from_patch is None:
+                    Jx_det[boundary_idx, ...] = 0
+                if yboundary.from_patch is None:
+                    Jy_det[boundary_idx, ...] = 0
+
+        # Build boundary operator
+        local_Intg_x, local_Intg_y = self._build_boundary_Intg(
+            (Jx_det, Jy_det), (Rx, Ry), (Ox, Oy), "in"
+        )
+
+        if self._use_tt:
+            Intg = (
+                self._calc_Intg_bound(
+                    [0, 1],
+                    local_Intg_x,
+                    incident_boundaries=[
+                        self._mesh.get_boundary(self._p, 1, i) for i in range(2)
+                    ],
+                )
+                + self._calc_Intg_bound(
+                    [2, 3],
+                    local_Intg_y,
+                    incident_boundaries=[
+                        self._mesh.get_boundary(self._p, 0, i) for i in range(2)
+                    ],
+                )
+            ).round(self._eps)
+            Intg.reduce_dims()
+
+        else:
+            raise NotImplementedError()
+
+        # Save boundary integral TT info
+        self._append_tt_info("Intg_bound_in", Intg)
+
+        H_bound = tntt.permute(
+            tntt.TT(
+                [tn.eye(self._xs_server.num_groups).unsqueeze_(0).unsqueeze_(-1)]
+                + Intg.cores,
+                eps=0,
+            ),
+            [1, 2, 0, 3, 4],
+            eps=self._eps,
+        ).round(self._eps)
+        H_bound.reduce_dims()
+        self._append_tt_info("H_bound_in", H_bound)
+        return self.diagonalize(H_bound, [1])
+
+    def _build_boundary_Intg(self, J_det, R, On, tag):
+        """"""
+        Jx_det, Jy_det = J_det
+        Rx, Ry = R
+        Ox, Oy = On
+
+        if self._use_tt:
             # Add angular component to basis
             Rx = tntt.TT(
                 [
@@ -289,8 +480,8 @@ class OperatorBuilder(object):
             ORx = tntt.fast_hadammard(Ox, Rx, self._eps)
             ORy = tntt.fast_hadammard(Oy, Ry, self._eps)
             del Ox, Oy
-            self._append_tt_info("ORx", ORx)
-            self._append_tt_info("ORy", ORy)
+            self._append_tt_info(f"ORx_{tag}", ORx)
+            self._append_tt_info(f"ORy_{tag}", ORy)
 
             # Hadamard product with the weights
             Jx_det.cores[-1] *= tn.tensor(self._wx).reshape((1, -1, 1))
@@ -326,8 +517,8 @@ class OperatorBuilder(object):
             ORJx_det = tntt.fast_hadammard(ORx, Jx_det, self._eps)
             ORJy_det = tntt.fast_hadammard(ORy, Jy_det, self._eps)
             del Jx_det, Jy_det
-            self._append_tt_info("ORJx_det", ORJx_det)
-            self._append_tt_info("ORJy_det", ORJy_det)
+            self._append_tt_info(f"ORJx_det_{tag}", ORJx_det)
+            self._append_tt_info(f"ORJy_det_{tag}", ORJy_det)
 
             # Diagonalize angular and local region components
             ORJx_det = self.diagonalize(ORJx_det, np.arange(len(ORJx_det.cores) - 3))
@@ -338,23 +529,21 @@ class OperatorBuilder(object):
             ORJy_det.set_core(4, tn.permute(ORJy_det.cores[4], (0, 2, 1, 3)))
 
             # Transpose basis functions
-            ORTx = self.diagonalize(ORx, [0, 1])
+            ORTx = ORx.to_ttm()
             ORTx.set_core(5, tn.permute(ORTx.cores[5], (0, 2, 1, 3)))
             ORTx.set_core(6, tn.permute(ORTx.cores[6], (0, 2, 1, 3)))
-            ORTy = self.diagonalize(ORy, [0, 1])
+            ORTy = ORy.to_ttm()
             ORTy.set_core(5, tn.permute(ORTy.cores[5], (0, 2, 1, 3)))
             ORTy.set_core(6, tn.permute(ORTy.cores[6], (0, 2, 1, 3)))
             del ORx, ORy
 
             # Calculate local surface integral
-            Intg = self._calc_Intg_bound(
-                [0, 1],
-                tntt.amen_mm(ORJx_det, ORTx, nswp=20, eps=self._eps).round(self._eps),
-            ) + self._calc_Intg_bound(
-                [2, 3],
-                tntt.amen_mm(ORJy_det, ORTy, nswp=20, eps=self._eps).round(self._eps),
+            local_Intg_x = tntt.amen_mm(ORJx_det, ORTx, nswp=50, eps=self._eps).round(
+                self._eps
             )
-            Intg.reduce_dims()
+            local_Intg_y = tntt.amen_mm(ORJy_det, ORTy, nswp=50, eps=self._eps).round(
+                self._eps
+            )
 
         else:
             # Calculate local spatial integrals
@@ -369,60 +558,7 @@ class OperatorBuilder(object):
             del Jx_det, Ox, Rx
             del Jy_det, Oy, Ry
 
-            Intg = tn.zeros(
-                (
-                    4,
-                    self._ordinates.shape[0],
-                    self._patch.ctrlpts_size_u,
-                    self._patch.ctrlpts_size_v,
-                    self._patch.ctrlpts_size_u,
-                    self._patch.ctrlpts_size_v,
-                )
-            )
-
-            # Fill array based on subelement index
-            for boundary_idx, i1 in itertools.product(range(2), range(self._I1)):
-                i2 = 0 if boundary_idx == 0 else self._I2 - 1
-                Intg[
-                    ...,
-                    i1 : i1 + self._patch.degree_u + 1,
-                    i2 : i2 + self._patch.degree_v + 1,
-                    i1 : i1 + self._patch.degree_u + 1,
-                    i2 : i2 + self._patch.degree_v + 1,
-                ] += local_Intg_x[:, :, boundary_idx, i1, ...]
-            for boundary_idx, i2 in itertools.product(range(2), range(self._I2)):
-                i1 = 0 if boundary_idx == 0 else self._I1 - 1
-                Intg[
-                    ...,
-                    i1 : i1 + self._patch.degree_u + 1,
-                    i2 : i2 + self._patch.degree_v + 1,
-                    i1 : i1 + self._patch.degree_u + 1,
-                    i2 : i2 + self._patch.degree_v + 1,
-                ] += local_Intg_y[:, :, boundary_idx, i2, ...]
-
-            # Create TTs
-            Intg = tntt.TT(
-                Intg.reshape((*Intg.shape[:-2], 1, 1, *Intg.shape[-2:])),
-                shape=[(Intg.shape[i], 1) for i in range(2)]
-                + [(Intg.shape[i], Intg.shape[i]) for i in range(2, 4)],
-                eps=self._eps,
-            )
-            Intg = self.diagonalize(Intg, [0, 1])
-
-        # Append energy identity matrix and permute TT
-        self._append_tt_info("Intg_bound", Intg)
-        H_bound = tntt.permute(
-            tntt.TT(
-                [tn.eye(self._xs_server.num_groups).unsqueeze_(0).unsqueeze_(-1)]
-                + Intg.cores,
-                eps=0,
-            ),
-            [1, 2, 0, 3, 4],
-            eps=self._eps,
-        )
-        H_bound.reduce_dims()
-        self._append_tt_info("H_bound", H_bound)
-        return H_bound
+        return local_Intg_x, local_Intg_y
 
     def _build_LHS(self, Intg_x, streaming_Intg_x):
         """"""
@@ -500,6 +636,9 @@ class OperatorBuilder(object):
         ).round(self._eps)
         S.reduce_dims()
 
+        # Calculate incident bounary operator
+        boundary = self._build_incident_boundary()
+
         # Fission operator
         F = tntt.TT(
             [
@@ -522,7 +661,8 @@ class OperatorBuilder(object):
         ).round(self._eps)
         F.reduce_dims()
 
-        return S, F
+        # return S, F
+        return (S + boundary).round(self._eps), F
 
     # ========================================================================
     # Assembly steps
@@ -540,7 +680,7 @@ class OperatorBuilder(object):
                             lambda idxs: self._sample_jacobian(idxs)[i, j, :],
                             [self._I1, self._I2, *self._num_points],
                             eps=self._eps,
-                            nswp=10,
+                            nswp=50,
                         )
                         .to_ttm()
                         .cores
@@ -583,9 +723,6 @@ class OperatorBuilder(object):
                     eps=self._eps,
                 )
 
-            # Add step information
-            self._append_tt_info("J", J)
-
         else:
             # Evaluate Jacobian at each subelement
             J = tn.empty((self._I1, self._I2, *self._num_points, 2, 2))
@@ -604,7 +741,7 @@ class OperatorBuilder(object):
                     self._sample_jacobian_det,
                     [self._I1, self._I2, *self._num_points],
                     eps=self._eps,
-                    nswp=10,
+                    nswp=50,
                 ).round(self._eps)
 
             else:
@@ -615,9 +752,6 @@ class OperatorBuilder(object):
                 J_det = sum(
                     map(self._calc_jacobian_det, i1.flatten(), i2.flatten())
                 ).round(self._eps)
-
-            # Append TT info
-            self._append_tt_info("J_det", J_det)
 
         else:
             # Evaluate Jacobian determinant at each subelement
@@ -640,10 +774,6 @@ class OperatorBuilder(object):
                 R, dR = sum(x[0] for x in result).round(self._eps), sum(
                     x[1] for x in result
                 ).round(self._eps)
-
-            # Append TT info
-            self._append_tt_info("R", R)
-            self._append_tt_info("dR", dR)
 
         else:
             R = tn.empty(
@@ -691,7 +821,7 @@ class OperatorBuilder(object):
                             if i < 2
                             else [self._I2, self._num_points[1]],
                             eps=self._eps,
-                            nswp=10,
+                            nswp=50,
                         ).cores,
                         eps=0,
                     ),
@@ -722,10 +852,6 @@ class OperatorBuilder(object):
                 ).round(
                     self._eps
                 )
-
-            # Append TT info
-            self._append_tt_info("Jx_det", Jx_det)
-            self._append_tt_info("Jy_det", Jy_det)
 
         else:
             # Evaluate boundary Jacobian determinant for each subelement
@@ -769,10 +895,6 @@ class OperatorBuilder(object):
                 ).round(
                     self._eps
                 )
-
-            # Append TT info
-            self._append_tt_info("Rx", Rx)
-            self._append_tt_info("Ry", Ry)
 
         else:
             # Evaluate boundary Jacobian determinant for each subelement
@@ -842,10 +964,6 @@ class OperatorBuilder(object):
                 )
 
                 Ox, Oy = Ox.round(self._eps), Oy.round(self._eps)
-
-            # Append TT info
-            self._append_tt_info("Ox", Ox)
-            self._append_tt_info("Oy", Oy)
 
         else:
             # Evaluate boundary angular component
@@ -1082,22 +1200,76 @@ class OperatorBuilder(object):
             )
         ).round(self._eps)
 
-    def _calc_Intg_bound(self, boundary_idxs, local_Intg_bound):
+    def _calc_Intg_bound(
+        self, boundary_idxs, local_Intg_bound, incident_boundaries=None
+    ):
         """"""
-        # Create TT for subelement on boundary
-        boundary_idxs, idxs = np.meshgrid(
-            boundary_idxs, np.arange(self._I1 if boundary_idxs[0] == 0 else self._I2)
-        )
+        # Get integrals over each boundary
+        Intg = [
+            sum(
+                map(
+                    self._get_local_boundary_Intg,
+                    itertools.repeat(boundary_idx),
+                    np.arange(self._I1 if boundary_idx < 2 else self._I2),
+                    itertools.repeat(local_Intg_bound),
+                )
+            ).round(self._eps)
+            for boundary_idx in boundary_idxs
+        ]
 
-        # Sum and round
-        return sum(
-            map(
-                self._get_local_boundary_Intg,
-                boundary_idxs.flatten(),
-                idxs.flatten(),
-                itertools.repeat(local_Intg_bound),
-            )
-        ).round(self._eps)
+        # Handle incident boundary conditions
+        if incident_boundaries is not None:
+            for boundary_idx, boundary in zip(boundary_idxs, incident_boundaries):
+                if boundary.from_patch == self._p:
+                    # Handle reflective boundary condition
+                    # Initialize core
+                    quadrant_core = tn.zeros((1, 4, 4, Intg[boundary_idx % 2].R[1]))
+
+                    # Iterate through quadrants
+                    for quad in range(4):
+                        # Handle reflective boundary condition
+                        quadrant = self._quadrants[quad, :].copy()
+
+                        # Calculate normal at axis aligned boundary
+                        coords = self._calc_boundary_coords(
+                            boundary_idx,
+                            self._num_points[0 if boundary_idx < 2 else 1] * [0],
+                            list(range(self._num_points[0 if boundary_idx < 2 else 1])),
+                        )
+                        normals = np.round(self._mesh.normal(self._p, coords)[-1], 10)
+
+                        # Check reflective boundaries are axis aligned
+                        if (normals[0, :] != normals[0, 0]).all() and (
+                            normals[1, :] != normals[1, 0]
+                        ).all():
+                            raise RuntimeError(
+                                "Reflective boundary conditions must be axis aligned"
+                            )
+
+                        # Reflect quadrant ordinates
+                        quadrant[1 if normals[0, 0] == 0 else 0] *= -1
+
+                        # Find reflected index
+                        ref_quad = (
+                            (self._quadrants == tuple(quadrant))
+                            .all(axis=1)
+                            .nonzero()[0][0]
+                        )
+
+                        # Place quadrant
+                        quadrant_core[0, quad, ref_quad, :] = Intg[
+                            boundary_idx % 2
+                        ].cores[0][0, quad, 0, :]
+
+                    # Replace quadrant core
+                    Intg[boundary_idx % 2].set_core(0, quadrant_core)
+
+                else:
+                    Intg[boundary_idx % 2] = self.diagonalize(
+                        Intg[boundary_idx % 2], [0]
+                    )
+
+        return sum(Intg).round(self._eps)
 
     def _get_local_Intg(self, i1, i2, Intg):
         """"""
@@ -1163,8 +1335,8 @@ class OperatorBuilder(object):
         yhat = tn.zeros(
             (
                 Intg_bound.R[-2],
-                self._patch.ctrlpts_size_u,
-                self._patch.ctrlpts_size_u,
+                self._patch.ctrlpts_size_v,
+                self._patch.ctrlpts_size_v,
                 Intg_bound.R[-1],
             )
         )
@@ -1316,7 +1488,7 @@ class OperatorBuilder(object):
             "qj,nj,ji->qni", self._quadrants, self._ordinates[:, 1:], normals
         )
         products[(dir * products) < 0] = 0
-        return tn.tensor(products)
+        return tn.abs(tn.tensor(products))
 
     # ========================================================================
     # Mappings
@@ -1396,18 +1568,33 @@ class OperatorBuilder(object):
         return tntt.TT(cores, eps=0)
 
     # ========================================================================
-    # Printing
+    # I/O
 
     def _print_tt(self, name):
         """"""
         print(
-            "{:10s} {:25s} {:10.2f}  {:10.2f}".format(
+            "{:15s} {:25s} {:10.2f}  {:10.2f}".format(
                 name,
-                ",".join(map(str, self._assembly_info[name]["ranks"][1:-1])),
+                ",".join(map(str, self._assembly_info[name]["ranks"])),
                 self._assembly_info[name]["compression"],
-                self._assembly_info[name]["time"],
+                self._assembly_info[name]["elapsed time"],
             )
         )
+
+    def save_tt_info(self, path, round_data=True):
+        """"""
+        info = pd.DataFrame(self._assembly_info).transpose()
+
+        # Round numbers
+        if round_data:
+            info["compression"] = info["compression"].apply(lambda x: round(x, 2))
+            info["elapsed time"] = info["elapsed time"].apply(lambda x: round(x, 3))
+
+        info.index.name = "Name"
+        info.columns = [s.capitalize() for s in info.columns[:-1]] + [
+            "Elapsed Time (s)"
+        ]
+        info.to_csv(path)
 
     # ========================================================================
     # Other
@@ -1417,13 +1604,13 @@ class OperatorBuilder(object):
         entries = sum([tn.numel(c) for c in tt.cores])
         self._assembly_info[name] = {
             "shape": tt.shape,
-            "ranks": tt.R,
+            "ranks": tt.R[1:-1],
             "entries": entries,
             "compression": (
                 np.prod(tt.N) if not tt.is_ttm else np.prod(tt.N) * np.prod(tt.M)
             )
             / entries,
-            "time": time.time() - self._start_time,
+            "elapsed time": time.time() - self._start_time,
         }
 
         # Print info if verbose is on

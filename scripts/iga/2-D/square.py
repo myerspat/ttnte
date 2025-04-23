@@ -87,10 +87,10 @@ if __name__ == "__main__":
     mesh.finalize_patches()
 
     # Define boundary conditions
-    mesh.set_boundary_condition(0, 1, 0, "vacuum")  # Bottom
-    mesh.set_boundary_condition(0, 1, 1, "vacuum")  # Top
-    mesh.set_boundary_condition(0, 0, 0, "vacuum")  # Left
-    mesh.set_boundary_condition(0, 0, 1, "vacuum")  # Right
+    mesh.set_boundary_condition(0, 1, 0, "vacuum")
+    mesh.set_boundary_condition(0, 1, 1, "vacuum")
+    mesh.set_boundary_condition(0, 0, 0, "vacuum")
+    mesh.set_boundary_condition(0, 0, 1, "vacuum")
 
     # Connect patches
     mesh.connect()
@@ -113,6 +113,9 @@ if __name__ == "__main__":
     builder.interp_boundary_jacobian_det = False
     H, S, F = builder.build()
 
+    # Save TT info
+    builder.save_tt_info("./tt_info/square.csv")
+
     # Run IGA solver
     k_iga, phi_iga = eig(
         H=H,
@@ -124,7 +127,7 @@ if __name__ == "__main__":
         eps=eps,
         max_fission_iter=500,
         max_scatter_iter=20,
-        # sparsity_frac=0,
+        sparsity_frac=0,
     )
     phi_iga = phi_iga.reshape((2, -1))
 
@@ -157,7 +160,8 @@ if __name__ == "__main__":
 
         # Plot result
         plt.clf()
-        mesh.plot()
+        ax = mesh.plot()
+        ax.set_zlabel(f"$\\phi_{g + 1}(x, y)$")
         plt.tight_layout()
         plt.savefig(f"./figs/square/phi_{g + 1}.png", dpi=300)
 
