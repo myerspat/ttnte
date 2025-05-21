@@ -1,15 +1,28 @@
 from setuptools import find_packages, setup
 
 # Get version from tt_nte/__init__.py (always last line)
-with open("tt_nte/__init__.py") as f:
+with open("ttnte/__init__.py") as f:
     version = f.readlines()[-1].split()[-1][1:-1]
 
 setup(
-    name="tt_nte",
+    name="ttnte",
     version=version,
-    packages=find_packages(include=["tt_nte", "tt_nte.*"]),
-    install_requires=["numpy", "scikit_tt", "scipy", "gmsh"],
+    packages=find_packages(include=["ttnte", "ttnte.*"]),
+    install_requires=[
+        "torch",
+        "torchtt",
+        "numpy",
+        "igakit",
+        "geomdl",
+        "cotengra",
+        "pandas",
+    ],
     extras_require={
+        "archive": [
+            "quimb",
+            "cupy",
+            "scikit_tt",
+        ],
         "dev": [
             "pytest",
             "pytest-cov",
@@ -23,7 +36,7 @@ setup(
             "sphinxcontrib.bibtex",
             "chardet",
             "nbsphinx",
-        ]
+        ],
     },
     discription="Tensor Trains applied to the Neutron Transport Equation",
     long_description=open("README.md").read(),
