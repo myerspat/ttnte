@@ -312,7 +312,7 @@ class IGAMesh(object):
         # Find knot spans from knotvector
         return np.array(
             find_spans(
-                self.degree[p],
+                self.degree[param_idx],
                 self.patches[p].knotvector[param_idx],
                 self.patches[p].ctrlpts_size,
                 coords,
