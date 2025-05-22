@@ -2,6 +2,8 @@ import time
 
 import numpy as np
 import torch as tn
+from scipy.sparse import csr_matrix
+from scipy.sparse.linalg import spsolve
 from torchtt._iterative_solvers import gmres_restart
 from tt import TT
 
@@ -214,34 +216,34 @@ def fixed_source(
         .reshape(phys_dim)
     )
 
-    # if use_sparse_mat:
-    #     H, S, Int_N = TT2LinOp(
-    #         [H, S, Int_N],
-    #         eps=eps,
-    #         single_precision=single_precision,
-    #         sparsity_frac=0,
-    #     )
-    #     H = csr_matrix(H.full().numpy().reshape(2 * [np.prod(phys_dim)]))
-    #     S = csr_matrix(S.full().numpy().reshape(2 * [np.prod(phys_dim)]))
-    #
-    #     psi = spsolve(H - S, q.numpy().flatten())
-    #
-    #     for i in range(max_iter):
-    #         psi = spsolve(H, S @ psi + q.numpy().flatten())
-    #
-    #     return (Int_N @ tn.tensor(psi.reshape(phys_dim), dtype=dtype)).numpy()[0, ...]
-    #
-    # else:
-    # Create linear operators
-    H, S, Int_N = TT2LinOp(
-        [H, S, Int_N],
-        eps=eps,
-        single_precision=single_precision,
-        sparsity_frac=sparsity_frac,
-    )
+    if use_sparse_mat:
+        H, S, Int_N = TT2LinOp(
+            [H, S, Int_N],
+            eps=eps,
+            single_precision=single_precision,
+            sparsity_frac=0,
+        )
+        H = csr_matrix(H.full().numpy().reshape(2 * [np.prod(phys_dim)]))
+        S = csr_matrix(S.full().numpy().reshape(2 * [np.prod(phys_dim)]))
 
-    # Initial guess
-    psi = tn.ones(phys_dim, dtype=dtype)
+        psi = spsolve(H - S, q.numpy().flatten())
+
+        for i in range(max_iter):
+            psi = spsolve(H, S @ psi + q.numpy().flatten())
+
+        return (Int_N @ tn.tensor(psi.reshape(phys_dim), dtype=dtype)).numpy()[0, ...]
+
+    else:
+        # Create linear operators
+        H, S, Int_N = TT2LinOp(
+            [H, S, Int_N],
+            eps=eps,
+            single_precision=single_precision,
+            sparsity_frac=sparsity_frac,
+        )
+
+        # Initial guess
+        psi = tn.ones(phys_dim, dtype=dtype)
 
     # Calculate initial scattering source
     s0 = S @ psi
