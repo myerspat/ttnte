@@ -5,9 +5,9 @@
   <batches>20000</batches>
   <inactive>500</inactive>
   <source particle="neutron" strength="1.0" type="independent">
-    <constraints>
-      <fissionable>true</fissionable>
-    </constraints>
+    <space type="point">
+      <parameters>0 0 0</parameters>
+    </space>
   </source>
   <output>
     <summary>true</summary>

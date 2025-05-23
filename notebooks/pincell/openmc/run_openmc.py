@@ -83,10 +83,7 @@ settings_file.batches = 20000
 settings_file.inactive = 500
 settings_file.particles = 100000
 settings_file.output = {"tallies": True, "summary": True}
-settings_file.source = openmc.IndependentSource(constraints={"fissionable": True})
-# settings_file.source = openmc.Source(
-#     space=openmc.stats.Box([0, 0, -1.0e50], [0.63, 0.63, 1.0e50], only_fissionable=True)
-# )
+settings_file.source = openmc.IndependentSource(space=openmc.stats.Point((0, 0, 0)))
 settings_file.entropy_lower_left = [0, 0, -1.0e50]
 settings_file.entropy_upper_right = [0.63, 0.63, 1.0e50]
 settings_file.entropy_dimension = [10, 10, 1]
