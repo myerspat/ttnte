@@ -1,3 +1,6 @@
+import numpy as np
+
+
 class Server:
     """
     Cross section (XS) server class. This class handles all XS information for the
@@ -11,6 +14,8 @@ class Server:
         Number of energy groups.
     num_moments: int
         Number of scattering moments.
+    materials: list of str
+        List of material names.
     """
 
     def __init__(self, xs: dict):
@@ -26,49 +31,43 @@ class Server:
             ``"scattering_gtg"`` arrays.
         """
         self._xs = xs
-        self._chi = self._xs.pop("chi")
+        self._chi = np.array(self._xs.pop("chi"))
 
         # Assert chi is 1D and get number of groups
-        assert len(self._chi.shape) == 1
+        assert self._chi.ndim == 1
         self._num_groups = self._chi.size
 
-        # Check if the XSs are given for each cell or for material type
-        if "total" in self._xs:
-            self._by_mat = False
-            self._num_moments = self._xs["scatter_gtg"].shape[0]
+        # Check shapes of groups and determine number of scattering moments
+        self._num_moments = None
+        for mat in self._xs.keys():
+            # Check all arrays are numpy arrays
+            self._xs[mat]["total"] = np.array(self.total(mat))
+            self._xs[mat]["nu_fission"] = np.array(self.nu_fission(mat))
+            self._xs[mat]["scatter_gtg"] = np.array(self.scatter_gtg(mat))
 
-            # Check shapes
-            assert self._xs["total"].shape[0] == self._num_groups
-            assert self._xs["nu_fission"].shape[0] == self._num_groups
-            assert self._xs["scatter_gtg"].shape[1:3] == (
+            assert self.total(mat).shape == (self._num_groups,)
+            assert self.nu_fission(mat).shape == (self._num_groups,)
+            assert self.scatter_gtg(mat).ndim == 3
+            assert self.scatter_gtg(mat).shape[1:] == (
                 self._num_groups,
                 self._num_groups,
             )
-            assert self._xs["total"].shape[1:] == self._xs["nu_fission"].shape[1:]
-            assert self._xs["total"].shape[1:] == self._xs["scatter_gtg"].shape[3:]
+            if "absorption" in self._xs[mat]:
+                self._xs[mat]["absorption"] = np.array(self.absorption(mat))
+                assert self.absorption(mat).shape == (self._num_groups,)
+            if "kappa_fission" in self._xs[mat]:
+                self._xs[mat]["kappa_fission"] = np.array(self.kappa_fission(mat))
+                assert self.kappa_fission(mat).shape == (self._num_groups,)
 
-        else:
-            self._by_mat = True
-            self._num_moments = None
-
-            for mat in self._xs.keys():
-                assert self.total(mat).shape == (self._num_groups,)
-                assert self.nu_fission(mat).shape == (self._num_groups,)
-                assert len(self.scatter_gtg(mat).shape) == 3
-                assert self.scatter_gtg(mat).shape[1:] == (
-                    self._num_groups,
-                    self._num_groups,
-                )
-
-                if self._num_moments is None:
-                    self._num_moments = self.scatter_gtg(mat).shape[0]
-                else:
-                    assert self._num_moments == self.scatter_gtg(mat).shape[0]
+            if self._num_moments is None:
+                self._num_moments = self.scatter_gtg(mat).shape[0]
+            else:
+                assert self._num_moments == self.scatter_gtg(mat).shape[0]
 
     # ========================================================================
     # XS accessors
 
-    def total(self, mat=None):
+    def total(self, mat):
         """
         Get total XSs.
 
@@ -80,12 +79,28 @@ class Server:
         Returns
         -------
         total: numpy.ndarray
-            Total XS array.
+            Total XS array of shape ``(Server.num_groups,)``.
         """
-        if self._by_mat:
-            return self._xs[mat]["total"]
+        return self._xs[mat]["total"]
+
+    def absorption(self, mat):
+        """
+        Get absorption XSs.
+
+        Parameters
+        ----------
+        mat: str
+            Material to retrieve XSs for.
+
+        Returns
+        -------
+        absorption: numpy.ndarray
+            Absorption XS array of shape ``(Server.num_groups,)``.
+        """
+        if "absorption" in self._xs[mat]:
+            return self._xs[mat]["absorption"]
         else:
-            return self._xs["total"]
+            raise RuntimeError("absorption XSs not provided")
 
     def nu_fission(self, mat=None):
         """
@@ -99,12 +114,28 @@ class Server:
         Returns
         -------
         nu_fission: numpy.ndarray
-            Fission XS array.
+            :math:`\\nu\\Sigma_f` XS array of shape ``(Server.num_groups,)``.
         """
-        if self._by_mat:
-            return self._xs[mat]["nu_fission"]
+        return self._xs[mat]["nu_fission"]
+
+    def kappa_fission(self, mat):
+        """
+        Get :math:`\\kappa\\Sigma_f` XSs.
+
+        Parameters
+        ----------
+        mat: str
+            Material to retrieve XSs for.
+
+        Returns
+        -------
+        kappa_fission: numpy.ndarray
+            :math:`\\kappa\\Sigma_f` XS array of shape ``(Server.num_groups,)``.
+        """
+        if "kappa_fission" in self._xs[mat]:
+            return self._xs[mat]["kappa_fission"]
         else:
-            return self._xs["nu_fission"]
+            raise RuntimeError("kappa_fission XSs not provided")
 
     def scatter_gtg(self, mat=None):
         """
@@ -118,12 +149,10 @@ class Server:
         Returns
         -------
         total: numpy.ndarray
-            Group-to-group scattering XS array.
+            Group-to-group scattering XS array of shape
+            ``(Server.num_moments, Server.num_groups, Server.num_groups)``.
         """
-        if self._by_mat:
-            return self._xs[mat]["scatter_gtg"]
-        else:
-            return self._xs["scatter_gtg"]
+        return self._xs[mat]["scatter_gtg"]
 
     # ========================================================================
     # Properties
@@ -141,5 +170,5 @@ class Server:
         return self._num_moments
 
     @property
-    def by_mat(self):
-        return self._by_mat
+    def materials(self):
+        return list(self._xs.keys())

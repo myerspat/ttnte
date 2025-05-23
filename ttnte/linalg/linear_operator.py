@@ -131,7 +131,7 @@ class LinearOperator(object):
                 )
 
             elif isinstance(self._ops[i], SparseOperator):
-                self._exprs.append(lambda x: self._ops[i] @ x)
+                self._exprs.append(lambda x, i=i: self._ops[i] @ x)
 
             else:
                 raise RuntimeError(
