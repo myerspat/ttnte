@@ -16,6 +16,8 @@ setup(
         "geomdl",
         "cotengra",
         "pandas",
+        "matplotlib",
+        "plotly",
     ],
     extras_require={
         "archive": [

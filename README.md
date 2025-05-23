@@ -14,6 +14,8 @@
 - [geomdl](https://nurbs-python.readthedocs.io/en/5.x/)
 - [cotengra](https://cotengra.readthedocs.io/en/latest/index.html)
 - [pandas](https://pandas.pydata.org/)
+- [matplotlib](https://matplotlib.org/)
+- [plotly](https://plotly.com/python/)
 
 ## Installation
 
