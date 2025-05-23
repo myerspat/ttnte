@@ -154,7 +154,7 @@ class MatrixAssembler(object):
         self._append_coo_info("S", S)
         F = self._build_fission(Intg[:, :, 0, :, :])
         self._append_coo_info("F", F)
-        B_in = self._build_outgoing_boundary()
+        B_in = self._build_incident_boundary()
         self._append_coo_info("B_in", B_in)
         B_out = self._build_outgoing_boundary()
         self._append_coo_info("B_out", B_out)
@@ -183,7 +183,7 @@ class MatrixAssembler(object):
                 tn.tensor(self._xs_server.total(self._patch.name)),
                 Intg_int,
             ).to_sparse_coo()
-            + ctg.einsum(
+            - ctg.einsum(
                 "qi,in,ik,g,abicd->qnkgabcd",
                 tn.tensor(self._quadrants),
                 tn.tensor(mu),
@@ -422,7 +422,7 @@ class MatrixAssembler(object):
                 i2 : i2 + self._patch.degree_v + 1,
                 i1 : i1 + self._patch.degree_u + 1,
                 i2 : i2 + self._patch.degree_v + 1,
-            ] = local_Intg[:, :, :, boundary_idx % 2, i, ...]
+            ] += local_Intg[:, :, :, boundary_idx % 2, i, ...]
 
         # Convert to COO
         Intg = Intg.to_sparse_coo()
@@ -464,11 +464,10 @@ class MatrixAssembler(object):
                         quadrant[1 if normals[0, 0] == 0 else 0] *= -1
 
                         # Find reflected index
-                        indices[
-                            :,
-                            (indices[0, :] == boundary_idx % 2)
-                            & (indices[1, :] == quad),
-                        ][7, :] = (
+                        mask = (indices[0, :] == boundary_idx % 2) & (
+                            indices[1, :] == quad
+                        )
+                        indices[7, mask] = (
                             (self._quadrants == tuple(quadrant))
                             .all(axis=1)
                             .nonzero()[0][0]
@@ -477,34 +476,26 @@ class MatrixAssembler(object):
                 else:
                     if p is not None:
                         # Indicate connected patch
-                        indices[
-                            :,
-                            (indices[0, :] == boundary_idx % 2)
-                            & (indices[4, :] == self._p),
-                        ][-3, :] = p
+                        mask = (indices[0, :] == boundary_idx % 2) & (
+                            indices[4, :] == self._p
+                        )
+                        indices[-3, mask] = p
 
                         # Flip indices
-                        indices[
-                            :,
-                            (indices[0, :] == boundary_idx % 2)
-                            & (indices[4, :] == self._p),
-                        ][-1 if boundary_idx < 2 else -2, :] = tn.abs(
-                            indices[
-                                :,
-                                (indices[0, :] == boundary_idx % 2)
-                                & (indices[4, :] == self._p),
-                            ][-1 if boundary_idx < 2 else -2, :]
+                        indices[-1 if boundary_idx < 2 else -2, mask] = tn.abs(
+                            indices[-1 if boundary_idx < 2 else -2, mask]
                             - (
-                                self._patch.ctrlpts_size_v
+                                self._patch.ctrlpts_size_v - 1
                                 if boundary_idx < 2
                                 else self._patch.ctrlpts_size_u - 1
                             )
                         )
 
         # Seperate two boundaries
+        mask = Intg.indices()[0, :] == boundary_idxs[0]
         Intg0 = tn.sparse_coo_tensor(
-            indices[1:, (indices[0, :] == boundary_idxs[0])],
-            Intg.values()[(indices[0, :] == boundary_idxs[0])],
+            indices[1:, mask],
+            Intg.values()[mask],
             size=(
                 *2
                 * [
@@ -518,8 +509,8 @@ class MatrixAssembler(object):
             ),
         ).coalesce()
         Intg1 = tn.sparse_coo_tensor(
-            indices[1:, (indices[0, :] == boundary_idxs[1])],
-            Intg.values()[(indices[0, :] == boundary_idxs[1])],
+            indices[1:, ~mask],
+            Intg.values()[~mask],
             size=(
                 *2
                 * [
@@ -532,7 +523,7 @@ class MatrixAssembler(object):
                 ],
             ),
         ).coalesce()
-        Intg = Intg0 + Intg1
+        Intg = (Intg0 + Intg1).coalesce()
         del Intg0, Intg1
 
         # Add group index
@@ -900,7 +891,7 @@ class MatrixAssembler(object):
         # Calculate normals at coordinates
         _, normals = self._mesh.normal(self._p, coords)
 
-        # Compute dot product with ordinates
+        # Compute dot product with ordinates0.711% 2
         mu = np.ones((2, self._ordinates[0].shape[0]))
         eta = np.ones((2, self._ordinates[1].shape[0]))
         mu[0, :] = self._ordinates[0][:, 1]
@@ -1154,7 +1145,7 @@ class MatrixAssembler(object):
     # Getters
 
     @property
-    def N(self):
+    def N(self) -> Tuple[int]:
         N = np.array(
             [
                 self._quadrants.shape[0],
@@ -1165,7 +1156,7 @@ class MatrixAssembler(object):
                 self._mesh.patches[0].ctrlpts_size_u,
                 self._mesh.patches[0].ctrlpts_size_v,
             ]
-        )
+        ).astype(int)
         return tuple(N[N > 1])
 
     @property

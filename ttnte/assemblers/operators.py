@@ -7,7 +7,7 @@ class SparseOperator(object):
         self._A = A
 
     def __matmul__(self, x):
-        return (self._A @ x.flatten()).reshape(x.shape)
+        return (self._A @ x.clone().flatten()).reshape(x.shape)
 
     def __neg__(self):
         return SparseOperator(-self._A)
@@ -21,6 +21,17 @@ class SparseOperator(object):
     def cuda(self, device):
         self._A = self._A.cuda(device)
         return self
+
+    def cpu(self):
+        self._A = self._A.cpu()
+        return self
+
+    def to_dense(self):
+        return self._A.to_dense()
+
+    @property
+    def shape(self):
+        return self._A.shape
 
 
 class ScatteringOperator(SparseOperator):

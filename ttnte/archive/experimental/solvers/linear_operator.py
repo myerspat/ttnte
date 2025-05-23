@@ -1,6 +1,6 @@
 import functools
 
-from autoray import do
+from autoray import conj, do
 from cupyx.scipy.sparse.linalg import LinearOperator as CupyLinearOperator
 from quimb.tensor.tensor_core import (
     Tensor,
@@ -11,7 +11,10 @@ from quimb.tensor.tensor_core import (
     tensor_contract,
     tensor_split,
 )
+from quimb.utils import concat
 from scipy.sparse.linalg import LinearOperator as ScipyLinearOperator
+
+TNLO_HANDLED_FUNCTIONS = {}
 
 
 class TNLinearOperator(CupyLinearOperator, ScipyLinearOperator):

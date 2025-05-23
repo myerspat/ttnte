@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from typing import Literal
 
 import numpy as np
@@ -842,3 +844,30 @@ def c5g7():
         },
     }
     return Server(xs)
+
+
+def kaist(problem: Literal["1A", "1B", "2A", "2B", "3A", "3B", "4A"] = "2B"):
+    """
+    Multigroup cross sections for the `KAIST benchmark problems
+    <https://github.com/nzcho/Nurapt-Archives/tree/master/KAIST-Benchmark-Prob
+    lems>`_.
+
+    Parameters
+    ----------
+    problem: "1A", "1B", "2A", "2B", "3A", "3B", "4A", default="2B"
+        Which KAIST problem.
+
+    Returns
+    -------
+    xs_server: ttnte.xs.Server
+        Object for accessing MGXSs.
+    """
+    if problem == "2B":
+        return Server(
+            json.load(open(Path(__file__).parent / f"data/kaist{problem}.json"))
+        )
+
+    else:
+        raise NotImplementedError(
+            "1A, 1B, 2A, 3A, 3B, and 4A cross sections have not been added"
+        )
