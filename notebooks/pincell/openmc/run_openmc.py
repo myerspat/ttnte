@@ -25,7 +25,7 @@ for mat in mats:
     xsdata[-1].set_nu_fission(xs_server.nu_fission(mat))
     xsdata[-1].set_absorption(xs_server.absorption(mat))
     xsdata[-1].set_scatter_matrix(
-        np.transpose(xs_server.scatter_gtg(mat), axes=(1, 2, 0))
+        np.transpose(xs_server.scatter_gtg(mat), axes=(2, 1, 0))
     )
 
 # Write XS data
@@ -81,9 +81,11 @@ settings_file = openmc.Settings()
 settings_file.energy_mode = "multi-group"
 settings_file.batches = 20000
 settings_file.inactive = 500
-settings_file.particles = 100000
+settings_file.particles = 25000
 settings_file.output = {"tallies": True, "summary": True}
-settings_file.source = openmc.IndependentSource(space=openmc.stats.Point((0, 0, 0)))
+settings_file.source = openmc.Source(
+    space=openmc.stats.Box([0, 0, -1.0], [0.63, 0.63, 1.0], only_fissionable=True)
+)
 settings_file.entropy_lower_left = [0, 0, -1.0e50]
 settings_file.entropy_upper_right = [0.63, 0.63, 1.0e50]
 settings_file.entropy_dimension = [10, 10, 1]
@@ -92,7 +94,7 @@ settings_file.export_to_xml()
 # =======================================================
 # Create plots.xml
 plot_1 = openmc.Plot(plot_id=1)
-plot_1.filename = "geometry.png"
+plot_1.filename = "./figs/geometry.png"
 plot_1.origin = [0.63 / 2, 0.63 / 2, 0.0]
 plot_1.width = [0.63, 0.63]
 plot_1.pixels = [500, 500]
@@ -109,17 +111,20 @@ tallies_file = openmc.Tallies()
 
 # Define regular mesh
 mesh = openmc.RegularMesh(mesh_id=0)
-mesh.dimension = [256, 256]
+mesh.dimension = [128, 128]
 mesh.lower_left = [0, 0]
 mesh.upper_right = [0.63, 0.63]
 
 # Define tallies
+energy_filter = openmc.EnergyFilter(groups.group_edges)
 tally = openmc.Tally(name="Regular Mesh")
-tally.filters = [
-    openmc.CellFilter([fuel, water]),
-    openmc.MeshFilter(mesh),
-    openmc.EnergyFilter(groups.group_edges),
-]
+tally.filters = [openmc.MeshFilter(mesh), energy_filter]
 tally.scores = ["flux"]
 tallies_file.append(tally)
+
+tally = openmc.Tally(name="Cell")
+tally.filters = [openmc.CellFilter([fuel, water]), energy_filter]
+tally.scores = ["flux"]
+tallies_file.append(tally)
+
 tallies_file.export_to_xml()
