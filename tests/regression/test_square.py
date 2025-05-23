@@ -74,3 +74,40 @@ def test_square_anisotropic():
 
     # Run checks
     run_problem(mesh, xs_server, 1.0, 256)
+
+
+def test_square_multiregion():
+    # Get XS data
+    xs_server = research_reactor()
+
+    # Create NURBS geometry
+    fuel_length = 6.696802  # cm
+    mod_length = 1.126151  # cm
+
+    # Fuel patch
+    points = np.array([[-0.5, 0], [0.5, 0], [-0.5, fuel_length], [0.5, fuel_length]])
+    patches = {cad.bilinear(points.reshape((2, 2, -1))): "Research Reactor"}
+
+    # Moderator patch
+    points[:2, 1] += fuel_length
+    points[2:, 1] += mod_length
+    patches[cad.bilinear(points.reshape((2, 2, -1)))] = "Water"
+
+    # Create mesh
+    mesh = IGAMesh(patches)
+
+    # Refine mesh resolution
+    for p in range(mesh.num_patches):
+        mesh.refine(p, factor=[5, 7], degree=3)
+
+    # Connect patches
+    mesh.connect()
+
+    # Define boundary conditions
+    mesh.set_reflective_condition(("left", "bottom", "right"))
+
+    # Finalize mesh
+    mesh.finalize()
+
+    # Run checks
+    run_problem(mesh, xs_server, 1.0, 256)

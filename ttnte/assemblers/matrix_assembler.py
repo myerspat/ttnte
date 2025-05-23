@@ -487,8 +487,9 @@ class MatrixAssembler(object):
                             - (
                                 self._patch.ctrlpts_size_v
                                 if boundary_idx < 2
-                                else self._patch.ctrlpts_size_u - 1
+                                else self._patch.ctrlpts_size_u
                             )
+                            - 1
                         )
 
         # Seperate two boundaries
