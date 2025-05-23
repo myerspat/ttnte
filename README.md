@@ -1,6 +1,7 @@
 # ttnte
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Tests Status](https://github.com/myerspat/ttnte/actions/workflows/CI.yml/badge.svg)](https://github.com/myerspat/ttnte/actions/workflows)
 
 `ttnte` is a Python library for solving the discrete ordinates neutron transport equation (NTE) with a discontinuous isogeometric analysis (IGA) spatial discretization. This repository features IGA assembly through PyTorch sparse tensors and tensor trains (TTs). The application of TTs aims to exploit the multiscale structure commonly found in reactor applications. The IGA discretization offers higher continuity than traditional finite elements and benefits from working directly with CAD, cutting out the often expensive meshing step.
 
