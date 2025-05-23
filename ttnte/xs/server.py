@@ -136,7 +136,7 @@ class Server:
             :math:`\\nu\\Sigma_f` XS array of shape ``(Server.num_groups,)``.
         """
         if "fission" in self._xs[mat]:
-            self._xs[mat]["nu_fission"]
+            return self._xs[mat]["nu_fission"]
         else:
             raise RuntimeError("fission XSs not provided")
 
