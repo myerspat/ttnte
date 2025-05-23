@@ -854,6 +854,6 @@ def kaist(problem: Literal["1A", "1B", "2A", "2B", "3A", "3B", "4A"] = "2B"):
         )
 
     else:
-        raise NotImplemented(
+        raise NotImplementedError(
             "1A, 1B, 2A, 3A, 3B, and 4A cross sections have not been added"
         )
