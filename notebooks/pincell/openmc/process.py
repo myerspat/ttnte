@@ -36,6 +36,6 @@ for g in range(7):
 
     # Get colorbar
     cbar = plt.colorbar(heatmap)
-    cbar.ax.set_ylabel(f"$\\phi_{g + 1}$")
+    cbar.ax.set_ylabel(f"$\\phi_{g + 1}(x, y)$")
 
     plt.savefig(f"./figs/phi_{g + 1}.png", dpi=300)
