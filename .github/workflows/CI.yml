@@ -28,6 +28,7 @@ jobs:
         python -m pip install --upgrade pip
         python -m pip install flake8 pytest
         pip install https://github.com/dalcinl/igakit/archive/refs/heads/master.zip
+        pip install git+https://github.com/ion-g-ion/torchTT.git
         pip install .
     - name: Lint with flake8
       run: |
