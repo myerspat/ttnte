@@ -485,11 +485,10 @@ class MatrixAssembler(object):
                         indices[-1 if boundary_idx < 2 else -2, mask] = tn.abs(
                             indices[-1 if boundary_idx < 2 else -2, mask]
                             - (
-                                self._patch.ctrlpts_size_v
+                                self._patch.ctrlpts_size_v - 1
                                 if boundary_idx < 2
-                                else self._patch.ctrlpts_size_u
+                                else self._patch.ctrlpts_size_u - 1
                             )
-                            - 1
                         )
 
         # Seperate two boundaries
@@ -892,7 +891,7 @@ class MatrixAssembler(object):
         # Calculate normals at coordinates
         _, normals = self._mesh.normal(self._p, coords)
 
-        # Compute dot product with ordinates
+        # Compute dot product with ordinates0.711% 2
         mu = np.ones((2, self._ordinates[0].shape[0]))
         eta = np.ones((2, self._ordinates[1].shape[0]))
         mu[0, :] = self._ordinates[0][:, 1]
