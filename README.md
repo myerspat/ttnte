@@ -19,11 +19,13 @@
 
 Quick installation:
 ```shall
+pip install https://github.com/dalcinl/igakit/archive/refs/heads/master.zip
+pip install git+https://github.com/ion-g-ion/torchTT.git
 pip install git+https://github.com/myerspat/ttnte.git
 ```
 
 Clone the repository:
- 
+
 ```shell
 git clone https://github.com/myerspat/ttnte.git
 ```
@@ -31,6 +33,8 @@ git clone https://github.com/myerspat/ttnte.git
 In `ttnte/`, run:
 
 ```shell
+pip install https://github.com/dalcinl/igakit/archive/refs/heads/master.zip
+pip install git+https://github.com/ion-g-ion/torchTT.git
 pip install .
 ```
 
