@@ -40,7 +40,21 @@ setup(
             "nbsphinx",
         ],
     },
-    discription="Tensor Trains applied to the Neutron Transport Equation",
+    package_data={"ttnte.xs.data": ["*.json"]},
+    discription="Tensor Trains (TTs) applied to the Neutron Transport Equation (NTE).",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
+    author="Patrick Myers",
+    author_email="myerspat@umich.edu",
+    project_urls={
+        "Source Code": "https://github.com/myerspat/ttnte",
+    },
+    license="Apache 2.0",
+    classifiers=[
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.9",
+    ],
 )
