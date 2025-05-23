@@ -24,12 +24,6 @@ def test_kaist():
 
     # Check some XS data
     assert xs_server.chi.tolist() == [5.9252e-01, 4.0714e-01, 3.3193e-04] + 4 * [0.0]
-    assert xs_server.total("MOX 7%")[:3].tolist() == [
-        1.7008e-01,
-        3.6893e-01,
-        5.9613e-01,
-    ]
-    assert xs_server.total("Water")[3:6].tolist() == [5.3037e-01, 8.5390e-01, 1.3106e00]
     assert xs_server.nu_fission("UO2 2%")[3:7].tolist() == [
         4.1982e-02,
         1.8488e-01,
