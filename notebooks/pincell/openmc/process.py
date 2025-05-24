@@ -3,7 +3,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Load statepoint file
-sp = openmc.StatePoint("./statepoint.2000.h5")
+sp = openmc.StatePoint("./statepoint.20000.h5")
+
+# Print eigenvalue
+print(f"keff = {sp.keff}")
 
 # Get cell flux tally
 flux = (
