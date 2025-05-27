@@ -134,6 +134,9 @@ class IGAMesh(object):
                     "The boundary of each patch should have at most one other neighbor"
                 )
 
+        # Get bounding boxes for all patches
+        self._bboxes = [np.array(patch.bbox)[:, :-1] for patch in self.patches]
+
         self._connected = True
 
     def finalize(self):
@@ -604,6 +607,83 @@ class IGAMesh(object):
 
         return jacobian
 
+    def find_patches(
+        self,
+        physical_coords: np.ndarray,
+        x: np.ndarray = np.linspace(0, 1, 3),
+        y: np.ndarray = np.linspace(0, 1, 3),
+    ):
+        """"""
+        assert physical_coords.ndim == 2 and physical_coords.shape[0] == 2
+        X, Y = np.meshgrid(x, y)
+        points = np.concatenate([X.reshape((-1, 1)), Y.reshape((-1, 1))], axis=1)
+
+        # Evaluate locations for all patches
+        coords = np.array(
+            [self.patches[i].evaluate_list(points) for i in range(self.num_patches)]
+        )[:, :, :-1]
+
+        # Calculate distances
+        distances = np.sqrt(
+            np.sum(
+                (
+                    ctg.einsum("bcd,a->abcd", coords, np.ones(physical_coords.shape[1]))
+                    - ctg.einsum(
+                        "da,bc->abcd",
+                        physical_coords,
+                        np.ones((self.num_patches, points.shape[0])),
+                    )
+                )
+                ** 2,
+                axis=-1,
+            )
+        )
+
+        return np.argmin(np.sum(distances, axis=-1), axis=-1)
+
+    def inverse_map_single(
+        self,
+        physical_coord: np.ndarray,
+        tol: float = 1e-8,
+        method=None,
+    ):
+        """"""
+        assert physical_coord.ndim == 1 and physical_coord.size == 2
+
+        # Find candidate patches
+        candidate_pids = []
+        if self.num_patches > 1:
+            for pid, bbox in enumerate(self._bboxes):
+                if (bbox[0, :] <= physical_coord).all() and (
+                    bbox[1, :] >= physical_coord
+                ).all():
+                    candidate_pids.append(pid)
+
+        else:
+            candidate_pids.append(0)
+
+        distance = lambda coord: np.sum(
+            (np.array(self.patches[pid].evaluate_single((coord)))[:2] - physical_coord)
+            ** 2
+        )
+        for pid in candidate_pids:
+            # Run minimization
+            coord = scipy.optimize.minimize(
+                distance,
+                0.5 * np.ones(2),
+                method="L-BFGS-B",
+                bounds=((0, 1), (0, 1)),
+                tol=1e-20,
+            ).x
+
+            if distance(coord) < 1e-5:
+                print(pid)
+                return coord
+
+        raise RuntimeError(
+            "All cididates exhausted without finding a parametric coordinate"
+        )
+
     def inverse_map(
         self,
         physical_coords: np.ndarray,
@@ -639,23 +719,151 @@ class IGAMesh(object):
         """
         assert physical_coords.ndim == 2 and physical_coords.shape[0] == 2
 
-        def minimize(physical_coord):
-            return scipy.optimize.minimize(
-                lambda coord: np.sum(
-                    (
-                        np.array(self.patches[p].evaluate_single((coord)))[:2]
-                        - physical_coord
-                    )
-                    ** 2
-                ),
-                0.5 * np.ones(2),
-                method=method,
-                bounds=((0, 1), (0, 1)),
-                tol=tol,
-            ).x
+        # Find candidate patches
+        pid_iterators = []
+        if self.num_patches > 1:
+            for i in range(physical_coords.shape[-1]):
+                pid_iterators.append([])
+                for pid, bbox in enumerate(self._bboxes):
+                    if (bbox[0, :] <= physical_coords[:, i]).all() and (
+                        bbox[1, :] >= physical_coords[:, i]
+                    ).all():
+                        pid_iterators[-1].append(pid)
 
-        # Use scipy.optimize
-        return np.array(list(map(minimize, physical_coords.T))).T
+        else:
+            pid_iterators = [[0] for _ in range(physical_coords.shape[-1])]
+
+        # Convert to np.array of iterators
+        pid_iterators = np.array([iter(it) for it in pid_iterators])
+
+        # Distance formula
+        distance = lambda coord, physical_coord, pid: np.sum(
+            (np.array(self.patches[pid].evaluate_single((coord)))[:2] - physical_coord)
+            ** 2
+        )
+
+        # Array for coordinates
+        coords = np.zeros((2, physical_coords.shape[-1]))
+        pids = np.zeros(physical_coords.shape[-1], dtype=int)
+
+        # Distances
+        distances = np.ones(physical_coords.shape[-1])
+
+        while True:
+            # Get indices of the unconverged
+            unconverged = distances >= tol
+
+            # Check if converged
+            if (unconverged == False).all():
+                return pids, coords
+
+            # Get next candidate patches
+            pids[unconverged] = np.array(
+                [next(it, -1) for it in pid_iterators[unconverged]]
+            )
+            unique_pids = np.unique(pids[unconverged])
+            print(pids)
+            print("new coords", coords.T)
+            print(unique_pids)
+
+            # Check if candidate patches have been exhausted
+            if (unique_pids == -1).any():
+                raise RuntimeError("Failed to converge on all candidate patches")
+
+            # Evaluate coarse mesh on all patches
+            X, Y = np.meshgrid(np.linspace(0, 1, 12)[1:-1], np.linspace(0, 1, 12)[1:-1])
+            points = np.concatenate([X.reshape((-1, 1)), Y.reshape((-1, 1))], axis=-1)
+            mesh = np.array(
+                [self.patches[pid].evaluate_list(points) for pid in unique_pids]
+            )[:, :, :-1]
+
+            # Find closest starting points
+            idxs = np.array(
+                [np.argwhere(unique_pids == pid) for pid in pids[unconverged]]
+            ).flatten()
+            local_distances = np.sqrt(
+                np.sum(
+                    (
+                        np.transpose(mesh[idxs, :, :], axes=(1, 2, 0))
+                        - ctg.einsum(
+                            "a,bc->abc",
+                            np.ones((points.shape[0])),
+                            physical_coords[:, unconverged],
+                        )
+                    )
+                    ** 2,
+                    axis=-2,
+                )
+            )
+
+            # Get minimum distances and set corresponding points
+            coords[:, unconverged] = points[np.argmin(local_distances, axis=0), :].T
+            distances[unconverged] = np.min(local_distances, axis=0)
+            print("new coords", coords.T)
+
+            # Begin Newton-Raphson for each patch
+            for pid in unique_pids:
+                print(pid)
+                # Mask for current coordinates
+                mask = unconverged & pids == pid
+
+                # Check if mask is empty
+                if (mask == False).all():
+                    break
+
+                for i in range(100):
+                    # Calculate Jacobian
+                    # jacobian = self.jacobian(pid, coords[:, mask])
+                    jacobian = np.transpose(
+                        self.jacobian(pid, coords[:, mask]), axes=(1, 0, 2)
+                    )
+                    jacobian[1, 0, :] *= -1
+                    jacobian[0, 1, :] *= -1
+                    jacobian[0, 0, :], jacobian[1, 1, :] = (
+                        jacobian[1, 1, :].copy(),
+                        jacobian[0, 0, :].copy(),
+                    )
+
+                    # Calculate new coordinates
+                    coords[:, mask] -= (
+                        1
+                        / (
+                            jacobian[0, 0, :] * jacobian[1, 1, :]
+                            - jacobian[0, 1, :] * jacobian[1, 0, :]
+                        ).reshape((1, -1))
+                        * ctg.einsum(
+                            "abc,bc->ac",
+                            jacobian,
+                            (
+                                np.array(
+                                    self.patches[pid].evaluate_list(coords[:, mask].T)
+                                ).T[:-1, :]
+                                - physical_coords[:, mask]
+                            ),
+                        )
+                    )
+
+                    # Check if coordinates outside of constraints
+                    # print(coords.T)
+                    coords[coords < 0] = 0
+                    coords[coords > 1] = 1
+
+                    # Check convergence
+                    distances[mask] = np.sqrt(
+                        np.sum(
+                            (
+                                np.array(
+                                    self.patches[pid].evaluate_list(coords[:, mask].T)
+                                ).T[:-1, :]
+                                - physical_coords[:, mask]
+                            )
+                            ** 2,
+                            axis=0,
+                        )
+                    )
+
+                    if (distances[mask] < tol).all():
+                        break
 
     # ========================================================================
     # Plotters
