@@ -58,6 +58,9 @@ class Server:
             if "kappa_fission" in self._xs[mat]:
                 self._xs[mat]["kappa_fission"] = np.array(self.kappa_fission(mat))
                 assert self.kappa_fission(mat).shape == (self._num_groups,)
+            if "fission" in self._xs[mat]:
+                self._xs[mat]["fission"] = np.array(self.fission(mat))
+                assert self.fission(mat).shape == (self._num_groups,)
 
             if self._num_moments is None:
                 self._num_moments = self.scatter_gtg(mat).shape[0]
@@ -117,6 +120,25 @@ class Server:
             :math:`\\nu\\Sigma_f` XS array of shape ``(Server.num_groups,)``.
         """
         return self._xs[mat]["nu_fission"]
+
+    def fission(self, mat=None):
+        """
+        Get :math:`\\nu\\Sigma_f` XSs.
+
+        Parameters
+        ----------
+        mat: str
+            Material to retrieve XSs for.
+
+        Returns
+        -------
+        nu_fission: numpy.ndarray
+            :math:`\\nu\\Sigma_f` XS array of shape ``(Server.num_groups,)``.
+        """
+        if "fission" in self._xs[mat]:
+            return self._xs[mat]["nu_fission"]
+        else:
+            raise RuntimeError("fission XSs not provided")
 
     def kappa_fission(self, mat):
         """

@@ -14,6 +14,11 @@ def eig(
     tols: Optional[Union[Tuple[float], float]] = 1e-8,
     max_iters: Optional[Union[Tuple[int], int]] = 500,
     device: Optional[int] = None,
+    linear_solver_opts: dict = {
+        "max_iterations": 100,
+        "threshold": 1e-10,
+        "resets": 5,
+    },
 ):
     """
     Compute largest eigenvalue and corresponding eigenvector of :math:`Ax=\\lambda B_1 x
@@ -32,6 +37,8 @@ def eig(
         Maximum number of iterations for each ``RHS`` operator.
     device: int, default=None
         Device to compute problem on.
+    linear_solver_opts: dict
+        GMRES options including ``max_threshold``, ``threshold``, and ``resets``.
     """
     # Convert singles to tuples
     RHS = (RHS,) if isinstance(RHS, LinearOperator) else RHS
@@ -65,9 +72,7 @@ def eig(
             b=1 / k0 * (RHS[0] @ psi0).reshape((-1, 1)),
             x0=psi0.reshape((-1, 1)),
             N=np.prod(LHS.N),
-            max_iterations=100,
-            threshold=1e-10,
-            resets=5,
+            **linear_solver_opts
         )[0].reshape(LHS.N)
 
         # Calculate total fission source
