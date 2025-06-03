@@ -814,7 +814,8 @@ class IGAMesh(object):
 
                     # Update unconverged and refine mask
                     unconverged = (new_distances >= tol) & (
-                        (np.abs(new_distances - old_distances) / old_distances) > tol
+                        (np.abs(new_distances - old_distances) / old_distances)
+                        > (tol * 1e-3)
                     )
                     mask = unconverged & (pids == pid)
 
