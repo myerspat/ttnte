@@ -29,8 +29,10 @@ def pu239(num_groups: Literal[1, 2]):
             "chi": np.array([1.0]),
             "Pu-239": {
                 "nu_fission": np.array([2.84 * 0.081600]),
+                "fission": np.array([0.081600]),
                 "scatter_gtg": np.array([[[0.225216]]]),
                 "total": np.array([0.32640]),
+                "absorption": np.array([0.101184]),
             },
         }
         if num_groups == 1
@@ -39,7 +41,9 @@ def pu239(num_groups: Literal[1, 2]):
             "Pu-239": {
                 "total": np.array([0.2208, 0.3360]),
                 "nu_fission": np.array([3.1 * 0.0936, 2.93 * 0.08544]),
+                "fission": np.array([0.0936, 0.08544]),
                 "scatter_gtg": np.array([[[0.0792, 0], [0.0432, 0.23616]]]),
+                "absorption": np.array([0.0984, 0.09984]),
             },
         }
     )
