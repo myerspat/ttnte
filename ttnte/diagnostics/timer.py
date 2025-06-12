@@ -127,10 +127,13 @@ class Timer(object):
         }
 
         # Add arrays for eigenvalue and scalar flux error
-        if k_ref:
+        if k_ref is not None:
             self._results["k_relative_error"] = []
-        if phi_ref:
+        if phi_ref is not None:
             self._results["phi_relative_l2_error"] = []
+
+            # Normalize solution given
+            phi_ref /= np.linalg.norm(phi_ref.flatten(), 2)
 
             # Generate coarse mesh
             mesh = self._mesh_generator(
@@ -207,17 +210,29 @@ class Timer(object):
             self._results["H_MV_std_time"].append(LHS.mv_time[1])
 
             # Integrate angular component
-            phi = assembler.angular_integral(psi).numpy()
+            phi = (
+                assembler.angular_integral(psi)
+                .numpy()
+                .reshape(
+                    (
+                        mesh.num_patches,
+                        self._xs_server.num_groups,
+                        mesh.patches[0].ctrlpts_size_u,
+                        mesh.patches[0].ctrlpts_size_v,
+                    )
+                )
+            )
 
             # Save scalar flux
             np.save(
-                self.data_prefix + f"phi_m_{num_ordinates}_{factor}_{degree}.npy", phi
+                self.data_prefix + f"phi_m_{num_ordinates}_{factor[0]}_{degree[0]}.npy",
+                phi,
             )
 
             # Calculate errors
-            if k_ref:
+            if k_ref is not None:
                 self._results["k_relative_error"].append(abs(k - k_ref) / k_ref)
-            if phi_ref:
+            if phi_ref is not None:
                 self._results["phi_relative_l2_error"].append(
                     self._phi_error(mesh, phi, phi_ref)
                 )
@@ -248,7 +263,8 @@ class Timer(object):
                 self._results["assembly_time"].append(time.time() - start)
                 self._results["shape"].append(assembler.M)
                 assembler.save_tt_info(
-                    self.info_prefix + f"tt_info_{num_ordinates}_{factor}_{degree}.csv"
+                    self.info_prefix
+                    + f"tt_info_{num_ordinates}_{factor[0]}_{degree[0]}.csv"
                 )
 
                 # Append operator information
@@ -281,18 +297,30 @@ class Timer(object):
                 self._results["H_MV_std_time"].append(LHS.mv_time[1])
 
                 # Integrate angular component
-                phi = assembler.angular_integral(psi).numpy()
+                phi = (
+                    assembler.angular_integral(psi)
+                    .numpy()
+                    .reshape(
+                        (
+                            mesh.num_patches,
+                            self._xs_server.num_groups,
+                            mesh.patches[0].ctrlpts_size_u,
+                            mesh.patches[0].ctrlpts_size_v,
+                        )
+                    )
+                )
 
                 # Save scalar flux
                 np.save(
-                    self.data_prefix + f"phi_tt_{num_ordinates}_{factor}_{degree}.npy",
+                    self.data_prefix
+                    + f"phi_tt_{num_ordinates}_{factor[0]}_{degree[0]}.npy",
                     phi,
                 )
 
                 # Calculate errors
-                if k_ref:
+                if k_ref is not None:
                     self._results["k_relative_error"].append(abs(k - k_ref) / k_ref)
-                if phi_ref:
+                if phi_ref is not None:
                     self._results["phi_relative_l2_error"].append(
                         self._phi_error(mesh, phi, phi_ref)
                     )
@@ -339,18 +367,30 @@ class Timer(object):
                 self._results["H_MV_std_time"].append(LHS.mv_time[1])
 
                 # Integrate angular component
-                phi = assembler.angular_integral(psi).numpy()
+                phi = (
+                    assembler.angular_integral(psi)
+                    .numpy()
+                    .reshape(
+                        (
+                            mesh.num_patches,
+                            self._xs_server.num_groups,
+                            mesh.patches[0].ctrlpts_size_u,
+                            mesh.patches[0].ctrlpts_size_v,
+                        )
+                    )
+                )
 
                 # Save scalar flux
                 np.save(
-                    self.data_prefix + f"phi_mix_{num_ordinates}_{factor}_{degree}.npy",
+                    self.data_prefix
+                    + f"phi_mix_{num_ordinates}_{factor[0]}_{degree[0]}.npy",
                     phi,
                 )
 
                 # Calculate errors
-                if k_ref:
+                if k_ref is not None:
                     self._results["k_relative_error"].append(abs(k - k_ref) / k_ref)
-                if phi_ref:
+                if phi_ref is not None:
                     self._results["phi_relative_l2_error"].append(
                         self._phi_error(mesh, phi, phi_ref)
                     )
@@ -381,7 +421,7 @@ class Timer(object):
         phi_avg = np.zeros(phi_ref.shape)
         for g in range(self._xs_server.num_groups):
             # Set control points
-            mesh.set_phi(phi[g,])
+            mesh.set_phi(phi[:, g])
 
             # Calculate regular mesh
             phi_avg[g,] = mesh.regular_mesh(self._pids, self._coords)
