@@ -966,6 +966,7 @@ class IGAMesh(object):
         num_nodes: int = 256,
         plot_ctrlpts: bool = True,
         backend: Literal["matplotlib", "plotly"] = "matplotlib",
+        meshlines: bool = True,
     ):
         """
         Create 3-D plot of mesh.
@@ -977,6 +978,8 @@ class IGAMesh(object):
             Whether to plot the control points.
         backend: "matplotlib" or "plotly", default="matplotlib"
             Which plotting backend to use.
+        meshlines: bool, default=True
+            Add or remove mesh lines.
 
         Returns
         -------
@@ -995,9 +998,11 @@ class IGAMesh(object):
             # Set of colors for unique materials
             use_2d = False
             mats = {}
+            defaults = {}
             if np.array(self.patches[0].ctrlpts)[:, -1].all() == 0:
                 use_2d = True
                 colors = list(mcolors.TABLEAU_COLORS.values())
+                defaults["shade"] = False
             else:
                 vmin = np.inf
                 vmax = 0
@@ -1015,6 +1020,10 @@ class IGAMesh(object):
 
                 norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
                 cmap = plt.cm.plasma
+
+            if not meshlines:
+                defaults["linewidth"] = 0
+                defaults["edgecolor"] = "none"
 
             # Iterate through patches
             for patch in self.patches:
@@ -1034,6 +1043,7 @@ class IGAMesh(object):
                         color=None if not use_2d else mats[patch.name],
                         cmap=cmap if not use_2d else None,
                         norm=norm if not use_2d else None,
+                        **defaults,
                     )
                 else:
                     mats[patch.name] = colors.pop(0)
@@ -1043,6 +1053,7 @@ class IGAMesh(object):
                         points[..., 2],
                         color=mats[patch.name],
                         label=patch.name,
+                        **defaults,
                     )
 
                 # Plot control points

@@ -1,0 +1,79 @@
+Discretization: N = 1024, G = 2, P = 1, A = 19, B = 19
+Assembling Patch 1
+Step            Ranks                     Compression  Elapsed Time (s)
+J               1,1,1,1,1,1                  5041.23        5.02
+J_det           1,1,1                         102.40        9.83
+R               5,25,20,16,4                   11.64       32.91
+dR              5,25,35,24,7,2                 13.55       32.91
+J_detRT         5,25,20,16,4                   11.64       32.95
+JdR             5,25,35,24,7,2                 13.55       32.98
+Intg_int        1                             180.50       82.62
+Intg_str        2,2                           120.11       82.62
+H               3,3,3,3,3,5                 35364.70       82.62
+S               1,1,1,1,1,1               435542543.09       82.62
+F               1,1,1,1,1,1               435542543.09       82.62
+Jx_det_in       1,1                             5.82       83.09
+Jy_det_in       1,1                             5.82       83.09
+Rx_in           1,1,1,1                        68.27       83.09
+Ry_in           1,1,1,1                        68.27       83.09
+Ox_in           1,1,1,1,1                    2259.86       83.09
+Oy_in           1,1,1,1,1                    2259.86       83.09
+ORx_in          1,1,1,1,1,1,1               31775.03       83.10
+ORy_in          1,1,1,1,1,1,1               31775.03       83.10
+ORJx_det_in     1,1,1,1,1,1,1               31775.03       83.11
+ORJy_det_in     1,1,1,1,1,1,1               31775.03       83.11
+Intg_bound_in   1,1,1,1,1                  692340.88       85.66
+H_bound_in      1,1,1,1,1,1               2755070.02       85.66
+B_in            1,1,1,1,1,1               435542543.09       85.66
+Jx_det_out      1,1                             5.82       85.71
+Jy_det_out      1,1                             5.82       85.71
+Rx_out          2,10,8,2                        2.86       85.78
+Ry_out          2,10,8,4                        2.60       85.78
+Ox_out          2,2,2,1,1                     819.20       86.14
+Oy_out          2,2,2,1,1                     819.20       86.14
+ORx_out         2,2,2,2,10,8,2               2449.94       86.16
+ORy_out         2,2,2,2,10,8,4               2259.86       86.16
+ORJx_det_out    2,2,2,2,10,8,2               2449.94       86.17
+ORJy_det_out    2,2,2,2,10,8,4               2259.86       86.17
+Intg_bound_out  3,4,4,3                     22714.67       86.45
+H_bound_out     3,4,4,4,4,3                 45061.19       86.45
+B_out           3,4,4,4,4,3                 45061.19       86.45
+
+Final Operators
+H               3,3,3,3,2                 72111595.20       86.46
+S               1,1,1,1,1                 435889865.70       86.46
+F               1,1,1,1,1                 435889865.70       86.46
+B_in            1,1,1,1,1                 435889865.70       86.46
+B_out           3,4,4,4,3                 43056785.47       86.46
+Starting power iteration
+-- (0): k = 0.94088772, Angular Flux L2-Error = 0.55304509, Elapsed Time = 14.213
+-- (1): k = 0.97956802, Angular Flux L2-Error = 0.12172685, Elapsed Time = 28.19
+-- (2): k = 0.99157755, Angular Flux L2-Error = 0.04018035, Elapsed Time = 42.251
+-- (3): k = 0.99562292, Angular Flux L2-Error = 0.01426599, Elapsed Time = 56.274
+-- (4): k = 0.99704284, Angular Flux L2-Error = 0.00518704, Elapsed Time = 70.261
+-- (5): k = 0.99755249, Angular Flux L2-Error = 0.00190327, Elapsed Time = 84.178
+-- (6): k = 0.99773771, Angular Flux L2-Error = 0.00070116, Elapsed Time = 98.117
+-- (7): k = 0.99780551, Angular Flux L2-Error = 0.00025879, Elapsed Time = 112.126
+-- (8): k = 0.99783043, Angular Flux L2-Error = 9.566e-05, Elapsed Time = 128.476
+-- (9): k = 0.99783961, Angular Flux L2-Error = 3.542e-05, Elapsed Time = 142.568
+-- (10): k = 0.997843, Angular Flux L2-Error = 1.318e-05, Elapsed Time = 156.686
+-- (11): k = 0.99784425, Angular Flux L2-Error = 4.98e-06, Elapsed Time = 170.722
+-- (12): k = 0.99784471, Angular Flux L2-Error = 1.95e-06, Elapsed Time = 184.805
+-- (13): k = 0.99784488, Angular Flux L2-Error = 8.3e-07, Elapsed Time = 198.905
+-- (14): k = 0.99784494, Angular Flux L2-Error = 4.1e-07, Elapsed Time = 212.975
+-- (15): k = 0.99784497, Angular Flux L2-Error = 2.5e-07, Elapsed Time = 227.024
+-- (16): k = 0.99784497, Angular Flux L2-Error = 1.5e-07, Elapsed Time = 241.069
+-- (17): k = 0.99784498, Angular Flux L2-Error = 1e-07, Elapsed Time = 255.055
+-- (18): k = 0.99784498, Angular Flux L2-Error = 7e-08, Elapsed Time = 269.029
+-- (19): k = 0.99784498, Angular Flux L2-Error = 5e-08, Elapsed Time = 282.989
+-- (20): k = 0.99784498, Angular Flux L2-Error = 3e-08, Elapsed Time = 296.947
+-- (21): k = 0.99784498, Angular Flux L2-Error = 3e-08, Elapsed Time = 310.857
+-- (22): k = 0.99784498, Angular Flux L2-Error = 2e-08, Elapsed Time = 324.995
+-- (23): k = 0.99784498, Angular Flux L2-Error = 1e-08, Elapsed Time = 338.921
+-- (24): k = 0.99784498, Angular Flux L2-Error = 1e-08, Elapsed Time = 352.903
+-- (25): k = 0.99784498, Angular Flux L2-Error = 1e-08, Elapsed Time = 361.241
+-- Converged: k = 0.99784498, Elapsed Time = 361.241
+keff error: -11.002035646545671 +/- 3.1e-05 pcm
+Scalar flux Relative L2-error (g = 1): 0.0013982573113713367
+Scalar flux Relative L2-error (g = 2): 0.0013343914333987614
+Total scalar flux Relative L2-error: 0.001364568155222993
