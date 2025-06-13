@@ -993,8 +993,28 @@ class IGAMesh(object):
             _, ax = plt.subplots(subplot_kw={"projection": "3d"})
 
             # Set of colors for unique materials
-            colors = list(mcolors.TABLEAU_COLORS.values())
+            use_2d = False
             mats = {}
+            if np.array(self.patches[0].ctrlpts)[:, -1].all() == 0:
+                use_2d = True
+                colors = list(mcolors.TABLEAU_COLORS.values())
+            else:
+                vmin = np.inf
+                vmax = 0
+                for patch in self.patches:
+                    # Sample points
+                    points = np.array(
+                        patch.evaluate_list(
+                            np.concatenate([X, Y], axis=2).reshape((-1, 2)).tolist()
+                        )
+                    ).reshape((*X.shape[:-1], 3))[..., -1]
+
+                    # Find new minimum and maximum
+                    vmin = np.min(points) if np.min(points) < vmin else vmin
+                    vmax = np.max(points) if np.max(points) > vmax else vmax
+
+                norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+                cmap = plt.cm.plasma
 
             # Iterate through patches
             for patch in self.patches:
@@ -1006,12 +1026,14 @@ class IGAMesh(object):
                 ).reshape((*X.shape[:-1], 3))
 
                 # Plot patch geometry
-                if patch.name in mats:
+                if patch.name in mats or not use_2d:
                     ax.plot_surface(
                         points[..., 0],
                         points[..., 1],
                         points[..., 2],
-                        color=mats[patch.name],
+                        color=None if not use_2d else mats[patch.name],
+                        cmap=cmap if not use_2d else None,
+                        norm=norm if not use_2d else None,
                     )
                 else:
                     mats[patch.name] = colors.pop(0)
@@ -1029,8 +1051,17 @@ class IGAMesh(object):
                     ax.scatter(ctrlpts[:, 0], ctrlpts[:, 1], ctrlpts[:, 2], color="k")
 
             # Label axes
-            ax.set_xlabel("$x~(cm)$")
-            ax.set_ylabel("$y~(cm)$")
+            ax.set_xlabel("$x(\\hat{x}, \\hat{y})~(cm)$")
+            ax.set_ylabel("$y(\\hat{x}, \\hat{y})~(cm)$")
+            ax.xaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+            ax.yaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+            ax.zaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+            if use_2d:
+                ax.view_init(90, -90, 0)
+                ax.grid(False)
+                ax.zaxis.set_label_position("none")
+                ax.zaxis.set_ticks_position("none")
+
             return ax
 
         elif backend == "plotly":
