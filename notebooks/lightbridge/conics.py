@@ -135,4 +135,69 @@ def tstellipse(input=np.array([0]), xstretch=1, ystretch=1):
         
         output.append(y)  # Append y to the list
     
-    return np.array(output)  # Convert list to a NumPy array
+    return np.array(output)  # Convert list to a NumPy 
+
+def qtrlobe(outrad=0.5, portrs=0.1, hfwidth=0.1, fuelrad=0.63):
+    """
+    Construct a surface for outer edge of fuel core
+    or metallic cladding for four lobe lightbridge
+    problem 
+
+    all variables are floats, and necessary
+
+    """
+
+    radius = 1.0
+    Pi = np.pi
+    # Compute sweep and number knot spans
+    sweep = Pi/2
+    spans = 3
+    # Construct a single-segment NURBS circular arc
+    # centered at the origin and bisected by +X axis
+    alpha = sweep/(2)
+    sin_a = np.sin(alpha)
+    cos_a = np.cos(alpha)
+    tan_a = np.tan(alpha)
+    x = radius*cos_a
+    y = radius*sin_a
+    wm = cos_a
+    xm = x + y*tan_a
+    Ca = [[    x, -y, 0,  1],
+          [wm*xm,  0, 0, wm],
+          [    x,  y, 0,  1]]
+    Cw = np.empty((2*spans+1,4), dtype='d')
+    R = transform().rotate(alpha, 2)
+    Ctop, Cmiddle, Cbottom = R(Ca), R(Ca), R(Ca)
+
+    # Stretch control points to match desired shape
+    Ptop1 = transform().scale(hfwidth,0)
+    Ptop2 = transform().scale(portrs,1)
+    Pbottom1 = transform().scale(portrs,0)
+    Pbottom2 = transform().scale(hfwidth, 1)
+    Pmiddle1 = transform().scale(outrad,0)
+    Pmiddle2 = transform().scale(outrad,1)
+    Ctop, Cmiddle, Cbottom = Ptop1(Ptop2((Ctop))), Pmiddle1(Pmiddle2((Cmiddle))), Pbottom1(Pbottom2(Cbottom))
+
+    # Move control points to rights spots to define surface
+    oneeighty = transform().rotate(Pi, 2)
+    Ttop = transform().translate([0,fuelrad-portrs,0])
+    Tbottom = transform().translate([fuelrad-portrs,0,0])
+    Tmiddle = transform().translate([1*(fuelrad-portrs),1*(fuelrad-portrs),0])
+    Ctop, Cmiddle, Cbottom = Ttop(Ctop), Tmiddle(oneeighty(Cmiddle)), Tbottom(Cbottom)
+
+    #assert Ctop[2,0:3] == Cmiddle[0,0:3] & Cmiddle[2,0:3] == Cbottom[0,0:3]
+    Cw[0,:] = Ctop[2,:]
+    Cw[1,:] = Ctop[1,:]
+    Cw[2,:] = Ctop[0,:]
+    Cw[3,:] = Cmiddle[1,:]
+    Cw[4,:] = Cmiddle[2,:]
+    Cw[5,:] = Cbottom[1,:]
+    Cw[6,:] = Cbottom[0,:]
+    # Compute knot vector in the range [0,1]
+    a, b = 0, 1
+    U = np.empty(2*(spans+1)+2, dtype='d')
+    U[0], U[-1] = a, b
+    U[1:-1] = np.linspace(a,b,spans+1).repeat(2)
+
+    #return NURBS([U], Cw)
+    return NURBS([U], Cw)
