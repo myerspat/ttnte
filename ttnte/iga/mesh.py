@@ -967,6 +967,9 @@ class IGAMesh(object):
         plot_ctrlpts: bool = True,
         backend: Literal["matplotlib", "plotly"] = "matplotlib",
         meshlines: bool = True,
+        use_2d: bool = True,
+        cmap=plt.cm.plasma,
+        figsize=(7, 7),
     ):
         """
         Create 3-D plot of mesh.
@@ -993,17 +996,19 @@ class IGAMesh(object):
 
         if backend == "matplotlib":
             # Create axis
-            _, ax = plt.subplots(subplot_kw={"projection": "3d"})
+            fig, ax = plt.subplots(subplot_kw={"projection": "3d"}, figsize=figsize)
 
             # Set of colors for unique materials
-            use_2d = False
+            # use_2d = False
             mats = {}
             defaults = {}
-            if np.array(self.patches[0].ctrlpts)[:, -1].all() == 0:
-                use_2d = True
+            if use_2d:
                 colors = list(mcolors.TABLEAU_COLORS.values())
                 defaults["shade"] = False
-            else:
+
+            cbar = False
+            if (np.array(self.patches[0].ctrlpts)[:, -1] != 0).any():
+                cbar = True
                 vmin = np.inf
                 vmax = 0
                 for patch in self.patches:
@@ -1019,7 +1024,6 @@ class IGAMesh(object):
                     vmax = np.max(points) if np.max(points) > vmax else vmax
 
                 norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
-                cmap = plt.cm.plasma
 
             if not meshlines:
                 defaults["linewidth"] = 0
@@ -1040,9 +1044,9 @@ class IGAMesh(object):
                         points[..., 0],
                         points[..., 1],
                         points[..., 2],
-                        color=None if not use_2d else mats[patch.name],
-                        cmap=cmap if not use_2d else None,
-                        norm=norm if not use_2d else None,
+                        color=None if cbar else mats[patch.name],
+                        cmap=cmap if cbar else None,
+                        norm=norm if cbar else None,
                         **defaults,
                     )
                 else:
@@ -1051,15 +1055,22 @@ class IGAMesh(object):
                         points[..., 0],
                         points[..., 1],
                         points[..., 2],
-                        color=mats[patch.name],
-                        label=patch.name,
+                        label=None if cbar else patch.name,
+                        color=None if cbar else mats[patch.name],
+                        cmap=cmap if cbar else None,
+                        norm=norm if cbar else None,
                         **defaults,
                     )
 
                 # Plot control points
                 if plot_ctrlpts:
                     ctrlpts = np.array(patch.ctrlpts)
-                    ax.scatter(ctrlpts[:, 0], ctrlpts[:, 1], ctrlpts[:, 2], color="k")
+                    ax.scatter(
+                        ctrlpts[:, 0],
+                        ctrlpts[:, 1],
+                        ctrlpts[:, 2],
+                        color="k",
+                    )
 
             # Label axes
             ax.set_xlabel("$x(\\hat{x}, \\hat{y})~(cm)$")
@@ -1073,7 +1084,26 @@ class IGAMesh(object):
                 ax.zaxis.set_label_position("none")
                 ax.zaxis.set_ticks_position("none")
 
-            return ax
+                if cbar:
+                    import matplotlib as mpl
+
+                    cax = fig.add_axes(
+                        [
+                            ax.get_position().x1 - 0.1,
+                            ax.get_position().y0 + 0.16,
+                            0.02,
+                            ax.get_position().height * 0.6,
+                        ]
+                    )
+                    cbar = fig.colorbar(
+                        mpl.cm.ScalarMappable(norm=norm, cmap=cmap),
+                        cax=cax,
+                    )
+
+            if cbar and use_2d:
+                return ax, cbar
+            else:
+                return ax
 
         elif backend == "plotly":
             # Iterate through patches
