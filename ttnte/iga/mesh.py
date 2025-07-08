@@ -1,6 +1,7 @@
 from typing import List, Literal, Optional, Tuple, Union
 
 import cotengra as ctg
+import matplotlib as mpl
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
@@ -965,29 +966,35 @@ class IGAMesh(object):
         self,
         num_nodes: int = 256,
         plot_ctrlpts: bool = True,
-        backend: Literal["matplotlib", "plotly"] = "matplotlib",
-        meshlines: bool = True,
         use_2d: bool = True,
-        cmap=plt.cm.plasma,
-        figsize=(7, 7),
+        cmap: str = "plasma",
+        meshlines: bool = True,
+        figsize: Optional[Tuple[int]] = None,
+        backend: Literal["matplotlib", "plotly"] = "matplotlib",
     ):
         """
-        Create 3-D plot of mesh.
+        Create 2-D or 3-D plot of mesh.
 
         Parameters
         num_nodes: int, default=256
             Number of positions to sample the mesh for each patch.
         plot_ctrlpts: bool, default=True
             Whether to plot the control points.
-        backend: "matplotlib" or "plotly", default="matplotlib"
-            Which plotting backend to use.
+        use_2d: bool, default=True
+            Plot mesh in 2-D or 3-D.
+        cmap: str, default="plasma"
+            Matplotlib colormap.
         meshlines: bool, default=True
             Add or remove mesh lines.
+        figsize: None or tuple of int, default=None
+            Figure size. Passed to ``matplotlib.pyplot.subplots()``.
+        backend: "matplotlib" or "plotly", default="matplotlib"
+            Which plotting backend to use.
 
         Returns
         -------
         fig: matplotlib.axes.Axes or plotly.graph_objects.Figure
-            Matplotlib axis of Plotly figure depending on the backend.
+            Matplotlib axis or Plotly figure depending on the backend.
         """
         # Get parametric sample locations
         X, Y = np.meshgrid(np.linspace(0, 1, num_nodes), np.linspace(0, 1, num_nodes))
@@ -995,114 +1002,141 @@ class IGAMesh(object):
         Y = Y[..., np.newaxis]
 
         if backend == "matplotlib":
-            # Create axis
-            fig, ax = plt.subplots(subplot_kw={"projection": "3d"}, figsize=figsize)
+            if use_2d and (np.array(self.patches[0].ctrlpts)[:, -1] != 0).any():
+                # Plot 2D contour plot with flux as color gradient
+                # Create figure
+                fig, ax = plt.subplots(figsize=figsize)
 
-            # Set of colors for unique materials
-            # use_2d = False
-            mats = {}
-            defaults = {}
-            if use_2d:
-                colors = list(mcolors.TABLEAU_COLORS.values())
-                defaults["shade"] = False
+                # Iterate through patches
+                points = np.zeros((self.num_patches, np.prod(X.shape[:-1]), 3))
+                for pid, patch in enumerate(self.patches):
+                    # Sample points
+                    points[pid, ...] = np.array(
+                        patch.evaluate_list(
+                            np.concatenate([X, Y], axis=2).reshape((-1, 2)).tolist()
+                        )
+                    ).reshape((-1, 3))
 
-            cbar = False
-            if (np.array(self.patches[0].ctrlpts)[:, -1] != 0).any():
-                cbar = True
-                vmin = np.inf
-                vmax = 0
-                for patch in self.patches:
+                # Plot
+                contour = ax.tricontourf(
+                    points[..., 0].flatten(),
+                    points[..., 1].flatten(),
+                    points[..., 2].flatten(),
+                    levels=num_nodes,
+                    cmap=cmap,
+                )
+                cbar = plt.colorbar(contour)
+
+                # Plot control points
+                if plot_ctrlpts:
+                    for patch in self.patches:
+                        ctrlpts = np.array(patch.ctrlpts)
+                        ax.scatter(
+                            ctrlpts[:, 0],
+                            ctrlpts[:, 1],
+                            color="k",
+                        )
+
+                ax.set_xlabel("$x(\\hat{x}, \\hat{y})~(cm)$")
+                ax.set_ylabel("$y(\\hat{x}, \\hat{y})~(cm)$")
+                ax.spines[["right", "top"]].set_visible(False)
+
+                return ax, cbar
+
+            else:
+                # Create axis
+                fig, ax = plt.subplots(subplot_kw={"projection": "3d"}, figsize=figsize)
+
+                # Set of colors for unique materials
+                mats = {}
+                defaults = {}
+                if use_2d:
+                    colors = list(mcolors.TABLEAU_COLORS.values())
+                    defaults["shade"] = False
+
+                if not meshlines:
+                    defaults["linewidth"] = 0
+                    defaults["edgecolor"] = "none"
+
+                cbar = False
+                if (np.array(self.patches[0].ctrlpts)[:, -1] != 0).any():
+                    cbar = True
+                    vmin = np.inf
+                    vmax = 0
+                    for patch in self.patches:
+                        # Sample points
+                        points = np.array(
+                            patch.evaluate_list(
+                                np.concatenate([X, Y], axis=2).reshape((-1, 2)).tolist()
+                            )
+                        ).reshape((*X.shape[:-1], 3))[..., -1]
+
+                        # Find new minimum and maximum
+                        vmin = np.min(points) if np.min(points) < vmin else vmin
+                        vmax = np.max(points) if np.max(points) > vmax else vmax
+
+                    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+
+                # Iterate through patches
+                for pid, patch in enumerate(self.patches):
                     # Sample points
                     points = np.array(
                         patch.evaluate_list(
                             np.concatenate([X, Y], axis=2).reshape((-1, 2)).tolist()
                         )
-                    ).reshape((*X.shape[:-1], 3))[..., -1]
+                    ).reshape((*X.shape[:-1], 3))
 
-                    # Find new minimum and maximum
-                    vmin = np.min(points) if np.min(points) < vmin else vmin
-                    vmax = np.max(points) if np.max(points) > vmax else vmax
+                    # Plot patch geometry
+                    if patch.name in mats or not use_2d:
+                        ax.plot_surface(
+                            points[..., 0],
+                            points[..., 1],
+                            points[..., 2],
+                            color=None if cbar else mats[patch.name],
+                            cmap=cmap if cbar else None,
+                            norm=norm if cbar else None,
+                            **defaults,
+                        )
 
-                norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+                    else:
+                        mats[patch.name] = colors.pop(0)
+                        ax.plot_surface(
+                            points[..., 0],
+                            points[..., 1],
+                            points[..., 2],
+                            label=None if cbar else patch.name,
+                            color=None if cbar else mats[patch.name],
+                            cmap=cmap if cbar else None,
+                            norm=norm if cbar else None,
+                            **defaults,
+                        )
 
-            if not meshlines:
-                defaults["linewidth"] = 0
-                defaults["edgecolor"] = "none"
+                    if plot_ctrlpts:
+                        ctrlpts = np.array(patch.ctrlpts)
+                        ax.scatter(
+                            ctrlpts[:, 0],
+                            ctrlpts[:, 1],
+                            ctrlpts[:, 2],
+                            color="k",
+                            label=(
+                                "Control Variables"
+                                if (pid == self.num_patches - 1 and not cbar)
+                                else None
+                            ),
+                        )
 
-            # Iterate through patches
-            for patch in self.patches:
-                # Sample points
-                points = np.array(
-                    patch.evaluate_list(
-                        np.concatenate([X, Y], axis=2).reshape((-1, 2)).tolist()
-                    )
-                ).reshape((*X.shape[:-1], 3))
+                # Label axes
+                ax.set_xlabel("$x(\\hat{x}, \\hat{y})~(cm)$")
+                ax.set_ylabel("$y(\\hat{x}, \\hat{y})~(cm)$")
+                ax.xaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+                ax.yaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+                ax.zaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+                if use_2d:
+                    ax.view_init(90, -90, 0)
+                    ax.grid(False)
+                    ax.zaxis.set_label_position("none")
+                    ax.zaxis.set_ticks_position("none")
 
-                # Plot patch geometry
-                if patch.name in mats or not use_2d:
-                    ax.plot_surface(
-                        points[..., 0],
-                        points[..., 1],
-                        points[..., 2],
-                        color=None if cbar else mats[patch.name],
-                        cmap=cmap if cbar else None,
-                        norm=norm if cbar else None,
-                        **defaults,
-                    )
-                else:
-                    mats[patch.name] = colors.pop(0)
-                    ax.plot_surface(
-                        points[..., 0],
-                        points[..., 1],
-                        points[..., 2],
-                        label=None if cbar else patch.name,
-                        color=None if cbar else mats[patch.name],
-                        cmap=cmap if cbar else None,
-                        norm=norm if cbar else None,
-                        **defaults,
-                    )
-
-                # Plot control points
-                if plot_ctrlpts:
-                    ctrlpts = np.array(patch.ctrlpts)
-                    ax.scatter(
-                        ctrlpts[:, 0],
-                        ctrlpts[:, 1],
-                        ctrlpts[:, 2],
-                        color="k",
-                    )
-
-            # Label axes
-            ax.set_xlabel("$x(\\hat{x}, \\hat{y})~(cm)$")
-            ax.set_ylabel("$y(\\hat{x}, \\hat{y})~(cm)$")
-            ax.xaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
-            ax.yaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
-            ax.zaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
-            if use_2d:
-                ax.view_init(90, -90, 0)
-                ax.grid(False)
-                ax.zaxis.set_label_position("none")
-                ax.zaxis.set_ticks_position("none")
-
-                if cbar:
-                    import matplotlib as mpl
-
-                    cax = fig.add_axes(
-                        [
-                            ax.get_position().x1 - 0.1,
-                            ax.get_position().y0 + 0.16,
-                            0.02,
-                            ax.get_position().height * 0.6,
-                        ]
-                    )
-                    cbar = fig.colorbar(
-                        mpl.cm.ScalarMappable(norm=norm, cmap=cmap),
-                        cax=cax,
-                    )
-
-            if cbar and use_2d:
-                return ax, cbar
-            else:
                 return ax
 
         elif backend == "plotly":
