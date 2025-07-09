@@ -1,4 +1,5 @@
 import cotengra as ctg
+import numpy as np
 import torch as tn
 
 
@@ -32,6 +33,18 @@ class SparseOperator(object):
     @property
     def shape(self):
         return self._A.shape
+
+    @property
+    def num_entries(self):
+        assert self._A.is_sparse
+        return np.prod(self._A.indices().shape) + self._A.values().shape[0]
+
+    @property
+    def compression(self):
+        if self.num_entries != 0:
+            return np.prod(self.shape) / self.num_entries
+        else:
+            return np.inf
 
 
 class ScatteringOperator(SparseOperator):
@@ -88,6 +101,19 @@ class ScatteringOperator(SparseOperator):
         self._S = self._S.cpu()
         return self
 
+    @property
+    def shape(self):
+        return tuple(2 * [np.prod(self._Y.shape) * self._S.shape[-1]])
+
+    @property
+    def num_entries(self):
+        assert self._S.is_sparse
+        entries = np.prod(self._S.indices().shape) + self._S.values().shape[0]
+        entries += np.prod(self._Y.shape)
+        entries += np.prod(self._w_mu.shape)
+        entries += np.prod(self._w_eta.shape)
+        return entries
+
 
 class FissionOperator(SparseOperator):
     def __init__(self, F, w_mu, w_eta):
@@ -127,22 +153,16 @@ class FissionOperator(SparseOperator):
         self._F = self._F.cpu()
         return self
 
-
-class AngularOperator(SparseOperator):
-    def __init__(self, w_mu, w_eta):
-        """"""
-        self._w_mu = tn.tensor(w_mu)
-        self._w_eta = tn.tensor(w_eta)
-
-    def __matmul__(self, x):
-        """"""
-        assert x.ndim >= 4 and x.shape[:3] == (
-            4,
-            self._w_mu.shape[0],
-            self._w_eta.shape[0],
+    @property
+    def shape(self):
+        return tuple(
+            2 * [4 * np.prod([*self._w_mu.shape, *self._w_eta.shape, *self._F.shape])]
         )
 
-        # Reshape and apply angular operator
-        return ctg.einsum(
-            "abcd,b,c->d", x.reshape((*x.shape[:3], -1)), self._w_mu, self._w_eta
-        )
+    @property
+    def num_entries(self):
+        assert self._F.is_sparse
+        entries = np.prod(self._F.indices().shape) + self._F.values().shape[0]
+        entries += np.prod(self._w_mu.shape)
+        entries += np.prod(self._w_eta.shape)
+        return entries

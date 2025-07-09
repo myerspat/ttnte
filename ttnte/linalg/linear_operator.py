@@ -1,7 +1,9 @@
+import time
 from typing import List, Optional, Tuple, Union
 
 import cotengra as ctg
 import numpy as np
+import torch as tn
 import torchtt as tntt
 
 from ttnte.assemblers.operators import SparseOperator
@@ -19,6 +21,8 @@ class LinearOperator(object):
         Input shape.
     shape: list of tuple of int
         Shape of operator.
+    mv_time: tuple of float
+        Matrix-vector timing average and standard deviation.
     """
 
     def __init__(
@@ -47,6 +51,11 @@ class LinearOperator(object):
         self._N = N
         self._M = M
 
+        # Timing statistics
+        self._avg_mv_time = 0
+        self._sum_of_squares = 0
+        self._num_mv = 0
+
         # Get correct linear operator method
         if P is not None:
             self._ops += [P]
@@ -73,7 +82,29 @@ class LinearOperator(object):
         Ax: torch.Tensor
             Flattened output vector.
         """
-        return self._matvec_method(self._exprs, x.reshape(self._N)).reshape((-1, 1))
+        # Increment number of matrix-vector products
+        self._num_mv += 1
+
+        # Time and apply matrix to vector
+        start = time.time()
+        result = self._matvec_method(self._exprs, x.reshape(self._N)).reshape((-1, 1))
+        stop = time.time()
+
+        # Calculate new variance
+        diff = stop - start
+        square = diff - self._avg_mv_time
+
+        # Calculate average time
+        self._avg_mv_time += (diff - self._avg_mv_time) / self._num_mv
+
+        # Update sum of squares
+        self._sum_of_squares = (
+            self._sum_of_squares + square * (diff - self._avg_mv_time)
+            if self._num_mv > 1
+            else 0
+        )
+
+        return result
 
     def cuda(self, device):
         """
@@ -241,3 +272,24 @@ class LinearOperator(object):
     @property
     def shape(self):
         return [(self._N[i], self._M[i]) for i in range(len(self._N))]
+
+    @property
+    def mv_time(self):
+        return self._avg_mv_time, np.sqrt(self._sum_of_squares / (self._num_mv - 1))
+
+    @property
+    def num_entries(self):
+        return sum(
+            [
+                (
+                    (sum([tn.numel(c) for c in op.cores]))
+                    if isinstance(op, tntt.TT)
+                    else op.num_entries
+                )
+                for op in self._ops
+            ]
+        )
+
+    @property
+    def compression(self):
+        return np.prod(self.N) * np.prod(self.M) / self.num_entries

@@ -11,7 +11,7 @@ setup(
     install_requires=[
         "torch",
         "torchtt",
-        "numpy",
+        "numpy<2.0",
         "igakit",
         "geomdl",
         "cotengra",
