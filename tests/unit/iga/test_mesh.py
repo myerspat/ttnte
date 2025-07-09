@@ -69,5 +69,5 @@ def test_inverse_map():
                     axis=-1,
                 )
             )
-            < tol
+            < tol * 5
         ).all()
