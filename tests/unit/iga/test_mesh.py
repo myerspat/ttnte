@@ -1,3 +1,6 @@
+import pickle
+from pathlib import Path
+
 import numpy as np
 from igakit import cad
 
@@ -71,3 +74,32 @@ def test_inverse_map():
             )
             < tol * 5
         ).all()
+
+
+def test_normals():
+    # Read in problematic patch
+    with open(Path(__file__).parent / "supporting/patch.pkl", "rb") as f:
+        patches = {pickle.load(f): "None"}
+
+    # Create IGA mesh object
+    mesh = IGAMesh(patches)
+
+    # Finalize mesh
+    mesh.connect()
+
+    # Finalize mesh
+    mesh.finalize()
+
+    import matplotlib.pyplot as plt
+
+    mesh.plot_normals(0)
+    plt.show()
+
+    # Test vector
+    i = np.array([1, 0])
+
+    # Check the normal for the NURBS(xhat, 0)
+    vec = mesh.normal(0, np.array([[0.5], [0]]))[1].flatten()
+
+    # Check the vectors point in -i
+    assert 1 == np.dot(-i, vec)
