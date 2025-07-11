@@ -18,7 +18,7 @@ class Boundary(object):
     def __init__(
         self,
         p: Union[None, int],
-        orientation: Literal[-1, 1],
+        orientation: Literal[-1, 0, 1],
         boundary_idx: int,
     ):
         """

@@ -113,20 +113,25 @@ class IGAMesh(object):
             for boundary_idx, coord in enumerate(
                 [(0.5, 0), (0.5, 1), (0, 0.5), (1, 0.5)]
             ):
+                # Get orientation for normals
+                orientation = self.get_orientation(p, coord)
+
                 # Check the normal is non-zero
                 point, normal = self.normal(p, np.array(coord).reshape((2, 1)))
-                if np.sqrt(np.sum(normal**2)) != 0:
-                    # Get physical position
-                    point = tuple(np.round(point.flatten(), decimals))
 
-                    # Create boundary
-                    boundary = Boundary(p, 1, boundary_idx)
+                # Get physical position
+                point = tuple(np.round(point.flatten(), decimals))
 
-                    # Add boundary
-                    if point in self._boundary_hash:
-                        self._boundary_hash[point].append(boundary)
-                    else:
-                        self._boundary_hash[point] = [boundary]
+                # Create boundary
+                boundary = Boundary(
+                    p if orientation != 0 else None, orientation, boundary_idx
+                )
+
+                # Add boundary
+                if point in self._boundary_hash:
+                    self._boundary_hash[point].append(boundary)
+                else:
+                    self._boundary_hash[point] = [boundary]
 
         # Check each face is connected to at most 1 other patch
         for boundaries in self._boundary_hash.values():
@@ -217,47 +222,55 @@ class IGAMesh(object):
             raise RuntimeError("Patches must be connected and finalized")
 
         # Calculate physical point
-        point, normal = self.normal(p, np.array(coord).reshape((-1, 1)))
+        point, _ = self.normal(p, np.array(coord).reshape((-1, 1)))
         point = tuple(np.round(point.flatten(), self._decimals))
 
-        # Check boundary exists
-        if (normal == 0).all():
+        # Get boundary
+        boundary = self._boundary_hash[point][0]
+
+        # Return None if not connected
+        if boundary.p is None:
             return None
 
-        # Check point in spatial hash
-        if point in self._boundary_hash:
-            ps = np.array([b.p for b in self._boundary_hash[point]])
+        # Get connected patches
+        ps = np.array([b.p for b in self._boundary_hash[point]])
 
-            # Handle vacuume boundary condition
-            if ps.size == 1:
-                return None
-            elif (ps != p).any():
-                # Return adjacent patch
-                return ps[ps != p][0]
-            else:
-                # Handle reflective boundary condition
-                return p
+        # Handle vacuume boundary condition
+        if ps.size == 1:
+            return None
+        elif (ps != p).any():
+            # Return adjacent patch
+            return ps[ps != p][0]
+        else:
+            # Handle reflective boundary condition
+            return p
 
-    def get_orientation(self, p: int, const_param_idx: int, const_param: int):
+    def get_orientation(self, p: int, centroid: tuple):
         """"""
         # Get current patch
         patch = self.patches[p]
 
-        # Get end points in parametric space
-        points = np.zeros((2, 2)) if const_param == 0 else np.ones((2, 2))
-        points[abs(const_param_idx - 1), abs(const_param - 1)] = abs(const_param - 1)
+        # Test points
+        coords = np.zeros((2, 3)) if 0 in centroid else np.ones((2, 3))
+        coords[0 if centroid[0] == 0.5 else 1, :] = np.array([0.25, 0.5, 0.75])
 
-        # Evaluate the tangent vectors
-        left = np.array(patch.derivatives(points[0, 0], points[1, 0], order=1))
-        right = np.array(patch.derivatives(points[0, 1], points[1, 1], order=1))
+        # Evaluate points
+        points, normals = self.normal(p, coords)
 
-        dleft, dright = (
-            (left[1, 0, :-1], right[1, 0, :-1])
-            if abs(const_param_idx - 1) > 0
-            else (left[0, 1, :-1], right[0, 1, :-1])
-        )
+        # Return 0 if points are all the same
+        if np.isclose(points.T, points.T[0]).all():
+            return 0
 
-        return 1 if np.cross(dleft, dright) > 0 else -1
+        # Change to comparison points
+        coords[0 if centroid[0] != 0.5 else 1] = 0.5
+
+        # Evaluate points
+        comp_points = np.array(patch.evaluate_list(coords.T))[:, :2].T
+
+        # Calculate vectors
+        vecs = comp_points - points
+
+        return 1 if ((vecs * normals).sum(axis=0) < 0).any() else -1
 
     # ========================================================================
     # Refinement methods
@@ -522,14 +535,101 @@ class IGAMesh(object):
         """
         assert coords.ndim == 2 and coords.shape[0] == 2
 
-        # Get indices corresponding to each curve based on zero location
-        cv_idxs = np.argwhere((coords[0, :] == 0) | (coords[0, :] == 1)).flatten()
-        cu_idxs = np.argwhere((coords[1, :] == 0) | (coords[1, :] == 1)).flatten()
-
-        # Arrays to fill
+        # Fill arrays
         points = np.zeros(coords.shape)
         normals = np.zeros(coords.shape)
 
+        # Get indices corresponding to each curve based on zero location
+        cv_idxs = np.argwhere(coords[0, :] == 0).flatten()
+        cu_idxs = np.argwhere(coords[1, :] == 0).flatten()
+
+        if self._connected:
+            point = tuple(
+                np.round(self.patches[p].evaluate_single((0, 0.5)), self._decimals)[:-1]
+            )
+            bv_orientation = None
+            for b in self._boundary_hash[point]:
+                if p == b.p or b.p == None:
+                    bv_orientation = b.orientation
+            assert bv_orientation is not None
+
+            point = tuple(
+                np.round(self.patches[p].evaluate_single((0.5, 0)), self._decimals)[:-1]
+            )
+            bu_orientation = None
+            for b in self._boundary_hash[point]:
+                if p == b.p or b.p == None:
+                    bu_orientation = b.orientation
+            assert bu_orientation is not None
+
+            points, normals = self._normal_along_boundary(
+                p,
+                coords,
+                points,
+                normals,
+                cv_idxs,
+                cu_idxs,
+                bv_orientation,
+                bu_orientation,
+            )
+
+        else:
+            points, normals = self._normal_along_boundary(
+                p, coords, points, normals, cv_idxs, cu_idxs, 1, 1
+            )
+
+        # Get indices corresponding to each curve based on zero location
+        cv_idxs = np.argwhere(coords[0, :] == 1).flatten()
+        cu_idxs = np.argwhere(coords[1, :] == 1).flatten()
+
+        if self._connected:
+            point = tuple(
+                np.round(self.patches[p].evaluate_single((1, 0.5)), self._decimals)[:-1]
+            )
+            bv_orientation = None
+            for b in self._boundary_hash[point]:
+                if p == b.p or b.p == None:
+                    bv_orientation = b.orientation
+            assert bv_orientation is not None
+
+            point = tuple(
+                np.round(self.patches[p].evaluate_single((0.5, 1)), self._decimals)[:-1]
+            )
+            bu_orientation = None
+            for b in self._boundary_hash[point]:
+                if p == b.p or b.p == None:
+                    bu_orientation = b.orientation
+            assert bu_orientation is not None
+
+            points, normals = self._normal_along_boundary(
+                p,
+                coords,
+                points,
+                normals,
+                cv_idxs,
+                cu_idxs,
+                bv_orientation,
+                bu_orientation,
+            )
+
+        else:
+            points, normals = self._normal_along_boundary(
+                p, coords, points, normals, cv_idxs, cu_idxs, 1, 1
+            )
+
+        return points, normals
+
+    def _normal_along_boundary(
+        self,
+        p: int,
+        coords: np.ndarray,
+        points: np.ndarray,
+        normals: np.ndarray,
+        cv_idxs: np.ndarray,
+        cu_idxs: np.ndarray,
+        cv_orientation: Literal[-1, 0, 1],
+        cu_orientation: Literal[-1, 0, 1],
+    ):
         # Cases when u=0
         for i in cv_idxs:
             dv = np.array(
@@ -548,7 +648,7 @@ class IGAMesh(object):
                 )
 
             # Save normal vector
-            normals[:, i] = normal
+            normals[:, i] = cv_orientation * normal
 
         # Cases when v=0
         for i in cu_idxs:
@@ -568,7 +668,7 @@ class IGAMesh(object):
                 )
 
             # Save normal vector
-            normals[:, i] = normal
+            normals[:, i] = cu_orientation * normal
 
         return points, normals
 
