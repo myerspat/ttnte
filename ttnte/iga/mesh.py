@@ -135,7 +135,9 @@ class IGAMesh(object):
 
         # Check each face is connected to at most 1 other patch
         for boundaries in self._boundary_hash.values():
-            if len(boundaries) > 2:
+            if len(boundaries) > 2 and not np.all(
+                np.array([b.p for b in boundaries]) == None
+            ):
                 raise RuntimeError(
                     "The boundary of each patch should have at most one other neighbor"
                 )
