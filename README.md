@@ -59,3 +59,4 @@ pip install .
 - [Homogeneous circular domain](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/circle/circle.ipynb)
 - [Homogeneous quarter circular domain](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/quarter_circle/quarter_circle.ipynb)
 - [C5G7 infinite pincell array](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/pincell/pincell.ipynb)
+- [Kaist infinite lightbridge array](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/lightbridge/lightbridge.ipynb)

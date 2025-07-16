@@ -1,0 +1,20 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<settings>
+  <run_mode>eigenvalue</run_mode>
+  <particles>500000</particles>
+  <batches>300</batches>
+  <inactive>50</inactive>
+  <source particle="neutron" strength="1.0" type="independent">
+    <space type="box">
+      <parameters>-0.68 -0.68 -1.0 0.68 0.68 1.0</parameters>
+    </space>
+    <constraints>
+      <fissionable>true</fissionable>
+    </constraints>
+  </source>
+  <output>
+    <summary>true</summary>
+    <tallies>true</tallies>
+  </output>
+  <energy_mode>multi-group</energy_mode>
+</settings>
