@@ -3,6 +3,6 @@
   <plot basis="xy" color_by="material" filename="./figs/geometry.png" id="1" type="slice">
     <pixels>500 500</pixels>
     <origin>0.34 0.34 0</origin>
-    <width>0.68 0.68</width>
+    <width>1.36 1.36</width>
   </plot>
 </plots>

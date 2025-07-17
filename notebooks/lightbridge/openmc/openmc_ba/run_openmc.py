@@ -72,15 +72,9 @@ materials_file.cross_sections = "./mgxs.h5"
 materials_file.export_to_xml()
 
 # ========================================================
-# Problem barrier
-top = openmc.XPlane(X / 2, boundary_type="reflective")
-right = openmc.YPlane(X / 2, boundary_type="reflective")
-bottom = openmc.XPlane(0, boundary_type="reflective")
-left = openmc.YPlane(0, boundary_type="reflective")
-
-# ========================================================
-# Define cladding
+# define outer edge of metallogically bonded barrier
 cylinderIa = openmc.ZCylinder(D2 - x2, D2 - x2, R)
+
 elipseIa = openmc.Quadric(
     y2**2,
     x2**2,
@@ -107,18 +101,34 @@ elipseIIa = openmc.Quadric(
 )
 
 square = (
-    +openmc.XPlane(0)
-    & -openmc.XPlane(D2 - x2)
-    & +openmc.YPlane(0)
-    & -openmc.YPlane(D2 - x2)
+    +openmc.XPlane(-(D2 - x2))
+    & -openmc.XPlane((D2 - x2))
+    & +openmc.YPlane(-(D2 - x2))
+    & -openmc.YPlane((D2 - x2))
 )
 missingHolesa = +cylinderIa
 crossa = square & missingHolesa
-elipsesa = (-elipseIa & +left) | (-elipseIIa & +bottom)
-cladding = crossa | elipsesa
+elipsesa = -elipseIa | -elipseIIa
+
+cladding = (
+    (crossa | elipsesa)
+    & +openmc.XPlane(0, boundary_type="reflective")
+    & +openmc.YPlane(0, boundary_type="reflective")
+)
+
 
 # =======================================================
-# Fuel
+# coolant
+right = openmc.XPlane(X / 2, boundary_type="reflective")
+top = openmc.YPlane(X / 2, boundary_type="reflective")
+left = openmc.XPlane(0, boundary_type="reflective")
+bottom = openmc.YPlane(0, boundary_type="reflective")
+
+coolant = -right & -top & +left & +bottom
+coolant = coolant & ~cladding
+
+# =======================================================
+# fuel core
 cylinderIb = openmc.ZCylinder(D2 - x2, D2 - x2, R + d)
 elipseIb = openmc.Quadric(
     y1**2,
@@ -147,24 +157,17 @@ elipseIIb = openmc.Quadric(
 
 missingHolesb = +cylinderIb
 crossb = square & missingHolesb
-elipsesb = (-elipseIb & +left) | (-elipseIIb & +bottom)
-fuel = crossb | elipsesb
+elipsesb = -elipseIb | -elipseIIb
 
-# Remove fuel area from cladding
-cladding = cladding & ~fuel
+fuel = crossb | elipsesb
+cladding = cladding & ~fuel & +bottom & +left
 
 # ========================================================
 # displacer
 edgeI = openmc.Plane(1, 1, 0, (((a**2) / 2) ** 0.5))
-displacer = -edgeI & +bottom & +left  # & slice
 
-# Remove displacer from fuel and cladding
-fuel = fuel & ~displacer
-cladding = cladding & ~displacer
-
-# ========================================================
-# Coolant
-coolant = +left & +bottom & -right & -top & ~fuel & ~displacer & ~cladding
+displacer = -edgeI & +left & +bottom  # & slice
+fuel = fuel & ~displacer & +left & +bottom
 
 # ======================================================
 # Define cells and universe
