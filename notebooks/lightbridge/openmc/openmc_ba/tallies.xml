@@ -2,7 +2,7 @@
 <tallies>
   <mesh id="0">
     <dimension>128 128</dimension>
-    <lower_left>-0.68 -0.68</lower_left>
+    <lower_left>0 0</lower_left>
     <upper_right>0.68 0.68</upper_right>
   </mesh>
   <filter id="2" type="mesh">

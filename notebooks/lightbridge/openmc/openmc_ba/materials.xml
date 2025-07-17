@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='utf-8'?>
 <materials>
-  <cross_sections>mgxs.h5</cross_sections>
+  <cross_sections>/home/myerspat/research/tensor_trains/tt_nte/notebooks/lightbridge/openmc/openmc_ba/mgxs.h5</cross_sections>
   <material id="1" name="UO2 3%">
     <density units="macro" value="1.0"/>
     <macroscopic name="UO2 3%"/>
@@ -16,9 +16,5 @@
   <material id="4" name="BA (UO2 FA)">
     <density units="macro" value="1.0"/>
     <macroscopic name="BA (UO2 FA)"/>
-  </material>
-  <material id="5" name="Gas">
-    <density units="macro" value="1.0"/>
-    <macroscopic name="Gas"/>
   </material>
 </materials>

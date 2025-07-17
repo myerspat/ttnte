@@ -1,8 +1,8 @@
-import openmc
 import matplotlib.pyplot as plt
 import numpy as np
+import openmc
 
-X = 1.36 #channel pitch
+X = 1.36  # channel pitch
 
 # Load statepoint file
 sp = openmc.StatePoint("./statepoint.300.h5")
@@ -32,7 +32,7 @@ print(f"Mesh flux shape: {flux.shape}")
 np.save(open("./data/mesh_flux.npy", "wb"), flux)
 
 # Plot fluxes
-X, Y = np.meshgrid(np.linspace(-X/2, X/2, 129), np.linspace(-X/2, X/2, 129))
+X, Y = np.meshgrid(np.linspace(0, X / 2, 129), np.linspace(0, X / 2, 129))
 for g in range(7):
     plt.clf()
     heatmap = plt.pcolormesh(X, Y, flux[g,])
