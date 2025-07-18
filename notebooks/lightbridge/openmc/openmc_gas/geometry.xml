@@ -1,22 +1,24 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <geometry>
-  <cell id="1" material="3" region="((8 -9 10 -11 5) | ((-6 4) | (-7 3))) ((-8 | 9 | -10 | 11 | -12) ((13 | -4) (14 | -3))) (15 | -3 | -4)" universe="1"/>
-  <cell id="2" material="1" region="((8 -9 10 -11 12) | ((-13 4) | (-14 3))) (15 | -3 | -4)" universe="1"/>
-  <cell id="3" material="4" region="-15 3 4" universe="1"/>
-  <cell id="4" material="2" region="4 3 -2 -1 (((-8 | 9 | -10 | 11 | -12) ((13 | -4) (14 | -3))) | (-15 3 4)) (15 | -3 | -4) (((-8 | 9 | -10 | 11 | -5) ((6 | -4) (7 | -3))) | ((8 -9 10 -11 12) | ((-13 4) | (-14 3))) | (-15 3 4))" universe="1"/>
-  <surface boundary="reflective" coeffs="0.68" id="1" type="x-plane"/>
-  <surface boundary="reflective" coeffs="0.68" id="2" type="y-plane"/>
-  <surface boundary="reflective" coeffs="0" id="3" type="x-plane"/>
-  <surface boundary="reflective" coeffs="0" id="4" type="y-plane"/>
-  <surface coeffs="0.44999999999999996 0.44999999999999996 0.297" id="5" type="z-cylinder"/>
-  <surface coeffs="0.023409 0.032400000000000005 0 0 0 0 -0.021068099999999996 0 0 0.003981870899999998" id="6" type="quadric"/>
-  <surface coeffs="0.032400000000000005 0.023409 0 0 0 0 0 -0.021068099999999996 0 0.003981870899999998" id="7" type="quadric"/>
-  <surface coeffs="0" id="8" type="x-plane"/>
-  <surface coeffs="0.44999999999999996" id="9" type="x-plane"/>
-  <surface coeffs="0" id="10" type="y-plane"/>
-  <surface coeffs="0.44999999999999996" id="11" type="y-plane"/>
-  <surface coeffs="0.44999999999999996 0.44999999999999996 0.33699999999999997" id="12" type="z-cylinder"/>
-  <surface coeffs="0.012768999999999997 0.006084000000000004 0 0 0 0 -0.011492099999999996 0 0 0.0025080359039999986" id="13" type="quadric"/>
-  <surface coeffs="0.006084000000000004 0.012768999999999997 0 0 0 0 0 -0.011492099999999996 0 0.0025080359039999986" id="14" type="quadric"/>
-  <surface coeffs="1 1 0 0.11030865786510141" id="15" type="plane"/>
+  <cell id="1" material="3" region="((4 -5 6 -7 1) | (-2 | -3)) 8 9 (-4 | 5 | -6 | 7 | -14) (15 16) 13 12" universe="1"/>
+  <cell id="2" material="1" region="((4 -5 6 -7 14) | (-15 | -16)) (17 | -12 | -13) 12 13" universe="1"/>
+  <cell id="3" material="4" region="-17 12 13" universe="1"/>
+  <cell id="4" material="2" region="-10 -11 12 13 (((-4 | 5 | -6 | 7 | -1) (2 3)) | -8 | -9)" universe="1"/>
+  <surface coeffs="0.44999999999999996 0.44999999999999996 0.297" id="1" type="z-cylinder"/>
+  <surface coeffs="0.023409 0.032400000000000005 0 0 0 0 -0.021068099999999996 0 0 0.003981870899999998" id="2" type="quadric"/>
+  <surface coeffs="0.032400000000000005 0.023409 0 0 0 0 0 -0.021068099999999996 0 0.003981870899999998" id="3" type="quadric"/>
+  <surface coeffs="-0.44999999999999996" id="4" type="x-plane"/>
+  <surface coeffs="0.44999999999999996" id="5" type="x-plane"/>
+  <surface coeffs="-0.44999999999999996" id="6" type="y-plane"/>
+  <surface coeffs="0.44999999999999996" id="7" type="y-plane"/>
+  <surface boundary="reflective" coeffs="0" id="8" type="x-plane"/>
+  <surface boundary="reflective" coeffs="0" id="9" type="y-plane"/>
+  <surface boundary="reflective" coeffs="0.68" id="10" type="x-plane"/>
+  <surface boundary="reflective" coeffs="0.68" id="11" type="y-plane"/>
+  <surface boundary="reflective" coeffs="0" id="12" type="x-plane"/>
+  <surface boundary="reflective" coeffs="0" id="13" type="y-plane"/>
+  <surface coeffs="0.44999999999999996 0.44999999999999996 0.33699999999999997" id="14" type="z-cylinder"/>
+  <surface coeffs="0.012768999999999997 0.006084000000000004 0 0 0 0 -0.011492099999999996 0 0 0.0025080359039999986" id="15" type="quadric"/>
+  <surface coeffs="0.006084000000000004 0.012768999999999997 0 0 0 0 0 -0.011492099999999996 0 0.0025080359039999986" id="16" type="quadric"/>
+  <surface coeffs="1 1 0 0.11030865786510141" id="17" type="plane"/>
 </geometry>

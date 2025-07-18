@@ -778,8 +778,8 @@ class IGAMesh(object):
             for i in range(physical_coords.shape[-1]):
                 pid_iterators.append([])
                 for pid, bbox in enumerate(self._bboxes):
-                    if (bbox[0, :] <= physical_coords[:, i]).all() and (
-                        bbox[1, :] >= physical_coords[:, i]
+                    if (bbox[0, :] - 0.00005 <= physical_coords[:, i]).all() and (
+                        bbox[1, :] + 0.00005 >= physical_coords[:, i]
                     ).all():
                         pid_iterators[-1].append(pid)
 
