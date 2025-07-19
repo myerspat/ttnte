@@ -68,4 +68,4 @@ pre-commit install
 - [Homogeneous quarter circular domain](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/quarter_circle/quarter_circle.ipynb)
 - [C5G7 infinite pincell array](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/pincell/pincell.ipynb)
 - [Kaist infinite lightbridge array](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/lightbridge/lightbridge.ipynb)
-- Infinite array of Lightbridge four-lobe fuel with [burnable absorber](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/lightbridge/lightbridge_ba.ipynb) and [gas](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/lightbridge/lightbridge_gas.ipynb) displacers.
+- Infinite array of Lightbridge four-lobe fuel with [burnable absorber](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/lightbridge/lightbridge_ba.ipynb) and [gas](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/lightbridge/lightbridge_gas.ipynb) displacers
