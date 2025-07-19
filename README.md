@@ -19,25 +19,31 @@
 
 ## Installation
 
-Quick installation:
-```shall
+### Quick installation
+
+```shell
 pip install https://github.com/dalcinl/igakit/archive/refs/heads/master.zip
 pip install git+https://github.com/ion-g-ion/torchTT.git
 pip install git+https://github.com/myerspat/ttnte.git
 ```
 
-Clone the repository:
+### From source
 
 ```shell
-git clone https://github.com/myerspat/ttnte.git
-```
-
-In `ttnte/`, run:
-
-```shell
+git clone https://github.com/myerspat/ttnte.git && cd ttnte
 pip install https://github.com/dalcinl/igakit/archive/refs/heads/master.zip
 pip install git+https://github.com/ion-g-ion/torchTT.git
 pip install .
+```
+
+### For developers
+
+```shell
+git clone git@github.com:myerspat/ttnte.git && cd ttnte
+pip install https://github.com/dalcinl/igakit/archive/refs/heads/master.zip
+pip install git+https://github.com/ion-g-ion/torchTT.git
+pip install -e ".[dev]"
+pre-commit install
 ```
 
 ## Classes and Methods
@@ -52,6 +58,8 @@ pip install .
 ## Modules
 
 - `ttnte.xs.benchmarks`: XS data sets from common neutron transport benchmarks.
+- `ttnte.cad.curves`: Methods for building NURBS curves used in the notebooks.
+- `ttnte.cad.surfaces`: Methods for building NURBS surfaces used in the notebooks.
 
 ## Notebooks
 
@@ -59,3 +67,5 @@ pip install .
 - [Homogeneous circular domain](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/circle/circle.ipynb)
 - [Homogeneous quarter circular domain](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/quarter_circle/quarter_circle.ipynb)
 - [C5G7 infinite pincell array](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/pincell/pincell.ipynb)
+- [Kaist infinite lightbridge array](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/lightbridge/lightbridge.ipynb)
+- Infinite array of Lightbridge four-lobe fuel with [burnable absorber](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/lightbridge/lightbridge_ba.ipynb) and [gas](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/lightbridge/lightbridge_gas.ipynb) displacers
