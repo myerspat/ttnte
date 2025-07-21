@@ -1395,6 +1395,28 @@ class IGAMesh(object):
             patch.ctrlpts = new_ctrlpts
             self.patches[p] = patch
 
+
+    def set_source(self, fixed_sources: np.ndarray):
+        """
+        Flag which patches are fixed sources.
+
+        Paramaters
+        ----------
+        fixed_sources: np.ndarray
+            List of patches that will be assigned a fixed source. The default is
+            no patches being assigned a fixed source. If no patches are to be fixed 
+            sources input an empty vector.
+        stength: float = 1
+            Strength of the fixed source being used. It is assumed to be 1.
+        
+        """
+        #iterate through fixed_sources list of patches
+        for p in fixed_sources:
+            for pt in self.patches[p].ctrlpts:
+                pt[2] = 1
+        
+
+
     @property
     def num_patches(self):
         return len(self.patches)

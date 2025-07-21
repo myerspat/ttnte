@@ -21,6 +21,7 @@ class MatrixAssembler(object):
         xs_server: Server,
         num_ordinates: int,
         num_points: Optional[Tuple[int]] = None,
+        source_strength: int = 0,
     ):
         """"""
         self._mesh = mesh
@@ -32,6 +33,7 @@ class MatrixAssembler(object):
             else num_points
         )
         self._quadrants = np.array(np.meshgrid([1, -1], [1, -1])).T.reshape(-1, 2)
+        self._source_strength = source_strength
 
     # ========================================================================
     # Main build methods
@@ -152,14 +154,19 @@ class MatrixAssembler(object):
         self._append_coo_info("H", H)
         S = self._build_scatter(Intg[:, :, 0, :, :])
         self._append_coo_info("S", S)
-        F = self._build_fission(Intg[:, :, 0, :, :])
-        self._append_coo_info("F", F)
+        Q= [1]## build fixed source Q
         B_in = self._build_incident_boundary()
         self._append_coo_info("B_in", B_in)
         B_out = self._build_outgoing_boundary()
         self._append_coo_info("B_out", B_out)
 
-        return H, S, F, B_in, B_out
+        
+        if self._source_strength == 0:
+            F = self._build_fission(Intg[:, :, 0, :, :])
+            self._append_coo_info("F", F)
+            return H, S, F, B_in, B_out#, Q
+        else:
+            return H, S, Q, B_in, B_out#, Q
 
     def _build_loss(self, Intg_int, Intg_str):
         """"""
