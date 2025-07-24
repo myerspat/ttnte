@@ -60,7 +60,7 @@ class IGAMesh(object):
         self._connected = False
         self._mapped_regular_mesh = False
 
-    def connect(self, decimals=8):
+    def connect(self, decimals=8, source=None):
         """
         Connect patches. Determine patch interfaces for passing boundary conditions.
         Patches not connected are assumed to be vacuum boundary conditions unless
@@ -103,6 +103,11 @@ class IGAMesh(object):
             geomdl_patch.knotvector_u = patch.knots[0].tolist()
             geomdl_patch.knotvector_v = patch.knots[1].tolist()
             self.patches[i] = geomdl_patch
+
+        #If there is an internal source set patches in it 
+        if source is not None:
+            source.igakit2geomdl()
+
 
         del self._materials
 

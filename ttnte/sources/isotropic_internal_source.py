@@ -75,6 +75,9 @@ class IsotropicInternalSource:
 
             # Set patch
             self._patches[pid] = (geomdl_patch, source_ctrlpts)
+        
+        
+        self._converted = True
 
     def evaluate_patch(self, pid: int, coords: np.ndarray):
         """
@@ -87,7 +90,9 @@ class IsotropicInternalSource:
         coords: numpy.ndarray
             Parametric coordinates for evaluating the internal source.
             ``coords`` should be an array of shape ``(2, n)`` where
-            ``n`` is the number of coordinates to evaluate.
+            ``n`` is the number of coordinates to evaluate. The first
+            index in the first dimension correspons to ``xhat`` while
+            the second correspons to ``yhat``.
 
         Returns
         -------
@@ -98,9 +103,39 @@ class IsotropicInternalSource:
         """
         assert self._converted and coords.ndim == 2 and coords.shape[0] == 2
 
+        #compute the internal source at coords if this patch is in IsotropicInternalSource
         if pid in self._patches:
-            # TODO: Write evaluation script for all groups using the patch
-            raise NotImplementedError()
+            #access patch and source_ctrlpts
+            patch, source_ctrlpts = self._patches[pid]
+
+            #create variables for indexing
+            n_points = coords.shape[1]
+            num_groups = source_ctrlpts.shape[0]
+            u = patch.ctrlpts_size_u
+            v = patch.ctrlpts_size_v
+
+            #create array to store source data
+            source_data = np.zeros((num_groups, n_points))
+            
+            #copy the patch control points
+            new_ctrlpts = patch.ctrlpts2d
+
+            #calculate source values for each group
+            for i in range(num_groups):
+                #set the z-components of control points to match source values there
+                for j in range(u):
+                    for k in range(v):
+                        new_ctrlpts[j][k][2] = source_ctrlpts[i,j,k]
+
+                #put new_ctrlpts back into patch
+                patch.ctrlpts2d = new_ctrlpts
+
+                #store source value at each member of coords
+                source_data[i,...] = [pt[2] for pt in patch.evaluate_list(coords.T)]
+
+            
+            return source_data
+
 
         else:
             return None
