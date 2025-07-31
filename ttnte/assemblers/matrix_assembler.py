@@ -10,6 +10,7 @@ from scipy.special import lpmv
 
 from ttnte.iga import IGAMesh
 from ttnte.xs import Server
+from ttnte.sources import IsotropicInternalSource
 
 from .operators import FissionOperator, ScatteringOperator, SparseOperator
 
@@ -21,7 +22,7 @@ class MatrixAssembler(object):
         xs_server: Server,
         num_ordinates: int,
         num_points: Optional[Tuple[int]] = None,
-        source_strength: int = 0,
+        source: IsotropicInternalSource = None,
     ):
         """"""
         self._mesh = mesh
@@ -33,7 +34,7 @@ class MatrixAssembler(object):
             else num_points
         )
         self._quadrants = np.array(np.meshgrid([1, -1], [1, -1])).T.reshape(-1, 2)
-        self._source_strength = source_strength
+        self._source = source
 
     # ========================================================================
     # Main build methods
@@ -154,19 +155,22 @@ class MatrixAssembler(object):
         self._append_coo_info("H", H)
         S = self._build_scatter(Intg[:, :, 0, :, :])
         self._append_coo_info("S", S)
-        Q= [1]## build fixed source Q
+        if p in self._source._patches:
+            Q = self._build_source_integral(J, J_det, R, dR)
+            self._append_coo_info("F", Q)
+        else:
+            F = self._build_fission(Intg[:, :, 0, :, :])
+            self._append_coo_info("F", F)
         B_in = self._build_incident_boundary()
         self._append_coo_info("B_in", B_in)
         B_out = self._build_outgoing_boundary()
         self._append_coo_info("B_out", B_out)
 
         
-        if self._source_strength == 0:
-            F = self._build_fission(Intg[:, :, 0, :, :])
-            self._append_coo_info("F", F)
-            return H, S, F, B_in, B_out#, Q
+        if p in self._source._patches:
+            return H, S, Q, B_in, B_out
         else:
-            return H, S, Q, B_in, B_out#, Q
+            return H, S, F, B_in, B_out#, Q
 
     def _build_loss(self, Intg_int, Intg_str):
         """"""
@@ -274,11 +278,77 @@ class MatrixAssembler(object):
         return self._flatten(
             tn.sparse_coo_tensor(indices, F.values(), size=shape).coalesce()
         )
+    
+
+    def _build_source_integral(self, Intg_int, J, J_det, R, dR):
+        #construct an array of all possible combinations of knot vectors 
+        #basis
+        p = self._patch.degree_u
+        q = self._patch.degree_v
+        coords = np.zeros((2,self._I1*self._I2*(p + 1)*(q + 1))) 
+        
+        i,j = 0, 0
+        #indexed so that the i*self._I2*(p+1)*(q+1)+j*(p+1)*(q+1)+k*(q+1)+l element is i,j,k,l
+        #could maybe use itertools for this
+        for xknot in self._xknot_intervals[:(self._I1 + 1)]: #check this is knot vector
+            
+            for yknot in self._yknot_intervals[:(self._I2 + 1)]:#check if need +1
+                k,l=0
+
+                for xtilda in np.linspace(xknot, self._xknot_intervals[j+1], q+1):
+                    coords[0,i*self._I2*(p+1)*(q+1)+j*(p+1)*(q+1)+k*(q+1):(q+1)] = xtilda
+                    k+=1
+
+                for ytilda in np.linspace(yknot, self._yknot_intervals[j+1], q+1):
+                    coords[1,i*self._I2*(p+1)*(q+1)+j*(p+1)*(q+1)+l::(q+1)] = ytilda
+                    l+=1
+
+                j+=1
+
+            i+=1
+
+
+        #construct source tensor
+        Q_min = self._source.evaluate_patch(self._p, coords=coords
+                                            ).reshape(1,1,1,self._xs_server.num_groups,
+                                                      self._I1, self._I2, p + 1, q + 1)
+        
+        Q = np.tile(Q_min, [4,1,1,1,1,1,1,1])
+
+        # Build components
+        JQ = ctg.einsum(
+            "abcd,c,d,qikgabcd->qikgabcd",
+            J_det,
+            tn.tensor(self._wx),
+            tn.tensor(self._wy),
+            Q,
+        )
+
+        RJQ = ctg.einsum(
+            "abcdef,qikgabcd->qikgabef"
+        )
+
+
+        #compute integral
+        Intg_source = tn.zeros((
+            self._quadrants.shape[0],
+            self._ordinates[0].shape[0],
+            self._ordinates[1].shape[0],
+            self._xs_server.num_groups,
+            self._patch.ctrlpts_size_u,
+            self._patch.ctrlpts_size_v,
+        ))
+
+        for i1, i2 in itertools.product(range(self._I1), range(self._I2)):
+            Intg_source[..., i1: i1 + self._patch.degree_u + 1, 
+                        i2 : i2 + self._patch.degree_v + 1] += RJQ[..., i1, i2, :, :]
+            
+        return Intg_source
 
     def _build_local_integrals(self, J, J_det, R, dR):
         """"""
         # Build components
-        JRT = ctg.einsum(
+        QJRT = ctg.einsum(
             "abcd,c,d,abcdef->abcdef",
             J_det,
             tn.tensor(self._wx),

@@ -10,6 +10,7 @@ import torchtt as tntt
 
 from ttnte.iga import IGAMesh
 from ttnte.xs import Server
+from ttnte.sources import IsotropicInternalSource
 
 from .matrix_assembler import MatrixAssembler
 
@@ -54,6 +55,7 @@ class TTAssembler(MatrixAssembler):
         xs_server: Server,
         num_ordinates: int,
         num_points: Optional[Tuple[int]] = None,
+        source: IsotropicInternalSource = None,
     ):
         """
         Initialize TTAssembler.
@@ -78,6 +80,7 @@ class TTAssembler(MatrixAssembler):
             xs_server=xs_server,
             num_ordinates=num_ordinates,
             num_points=num_points,
+            source=source
         )
 
     # ========================================================================
@@ -307,14 +310,22 @@ class TTAssembler(MatrixAssembler):
         self._append_tt_info("H", H)
         S = self._build_scatter(Intg_int, patch_ind)
         self._append_tt_info("S", S)
-        F = self._build_fission(Intg_int, patch_ind)
-        self._append_tt_info("F", F)
+        #switch to isotropic source
+        if p in super()._source._patches:
+            Q = self._build_source_integral(J, J_det, R, dR)
+            self._append_coo_info("F", Q)
+        else:
+            F = self._build_fission(Intg_int, patch_ind)
+            self._append_tt_info("F", F)
         B_in = self._build_incident_boundary()
         self._append_tt_info("B_in", B_in)
         B_out = self._build_outgoing_boundary(patch_ind)
         self._append_tt_info("B_out", B_out)
 
-        return H, S, F, B_in, B_out
+        if p in self._source._patches:
+            return H, S, Q, B_in, B_out
+        else:
+            return H, S, F, B_in, B_out
 
     def _build_loss(self, Intg_int, Intg_str, patch_ind):
         """"""
