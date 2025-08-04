@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='utf-8'?>
+<materials>
+  <cross_sections>mgxs.h5</cross_sections>
+  <material id="1" name="Pu-239">
+    <density units="macro" value="1.0"/>
+    <macroscopic name="Pu-239"/>
+  </material>
+</materials>

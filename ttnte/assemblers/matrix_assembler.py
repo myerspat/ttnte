@@ -146,18 +146,20 @@ class MatrixAssembler(object):
         # Calculate basis data at quadrature points for each knot span
         R, dR = self._basis()
 
+        # Build local isotropic source integrals
+        if self._source != None:
+            Q = self._build_source_integral(J_det, R)
         # Build local volume integrals
         Intg = self._build_local_integrals(J, J_det, R, dR)
         del J, J_det, R, dR
 
-        # Buil operators
+        # Build operators
         H = self._build_loss(Intg[:, :, 0, :, :], Intg[:, :, 1:, :, :])
         self._append_coo_info("H", H)
         S = self._build_scatter(Intg[:, :, 0, :, :])
         self._append_coo_info("S", S)
-        if p in self._source._patches:
-            Q = self._build_source_integral(J, J_det, R, dR)
-            self._append_coo_info("F", Q)
+        if self._source != None:
+            self._append_coo_info("Q", Q)
         else:
             F = self._build_fission(Intg[:, :, 0, :, :])
             self._append_coo_info("F", F)
@@ -166,11 +168,10 @@ class MatrixAssembler(object):
         B_out = self._build_outgoing_boundary()
         self._append_coo_info("B_out", B_out)
 
-        
-        if p in self._source._patches:
+        if self._source != None:
             return H, S, Q, B_in, B_out
         else:
-            return H, S, F, B_in, B_out#, Q
+            return H, S, F, B_in, B_out
 
     def _build_loss(self, Intg_int, Intg_str):
         """"""
@@ -278,77 +279,85 @@ class MatrixAssembler(object):
         return self._flatten(
             tn.sparse_coo_tensor(indices, F.values(), size=shape).coalesce()
         )
-    
 
-    def _build_source_integral(self, Intg_int, J, J_det, R, dR):
-        #construct an array of all possible combinations of knot vectors 
-        #basis
+    def _build_source_integral(self, J_det, R):
         p = self._patch.degree_u
         q = self._patch.degree_v
-        coords = np.zeros((2,self._I1*self._I2*(p + 1)*(q + 1))) 
-        
-        i,j = 0, 0
-        #indexed so that the i*self._I2*(p+1)*(q+1)+j*(p+1)*(q+1)+k*(q+1)+l element is i,j,k,l
-        #could maybe use itertools for this
-        for xknot in self._xknot_intervals[:(self._I1 + 1)]: #check this is knot vector
-            
-            for yknot in self._yknot_intervals[:(self._I2 + 1)]:#check if need +1
-                k,l=0
 
-                for xtilda in np.linspace(xknot, self._xknot_intervals[j+1], q+1):
-                    coords[0,i*self._I2*(p+1)*(q+1)+j*(p+1)*(q+1)+k*(q+1):(q+1)] = xtilda
-                    k+=1
+        if self._check_source(self._p):
+            # Construct an array of all possible combinations of knot vectors
+            coords = tn.zeros((2, self._I1 * self._I2 * (p + 1) * (q + 1)))
 
-                for ytilda in np.linspace(yknot, self._yknot_intervals[j+1], q+1):
-                    coords[1,i*self._I2*(p+1)*(q+1)+j*(p+1)*(q+1)+l::(q+1)] = ytilda
-                    l+=1
+            i, j = 0, 0
 
-                j+=1
+            # Indexed so that the i*self._I2*(p+1)*(q+1)+j*(p+1)*(q+1)+k*(q+1)+l element is i,j,k,l
+            for xknot in self._xknot_intervals[:-1]:
+                k = 0
+                for xtilda in np.linspace(xknot, self._xknot_intervals[i + 1], p + 1):
+                    coords[
+                        0,
+                        i * self._I2 * (p + 1) * (q + 1)
+                        + j * (p + 1) * (q + 1)
+                        + k * (q + 1) : (q + 1),
+                    ] = xtilda
+                    k += 1
+                i += 1
 
-            i+=1
+            for yknot in self._yknot_intervals[:-1]:
+                l = 0
+                for ytilda in np.linspace(yknot, self._yknot_intervals[j + 1], q + 1):
+                    coords[
+                        1,
+                        i * self._I2 * (p + 1) * (q + 1)
+                        + j * (p + 1) * (q + 1)
+                        + l :: (q + 1),
+                    ] = ytilda
+                    l += 1
+                j += 1
 
+            # Construct source tensor
+            Q_min = self._source.evaluate_patch(self._p, coords=coords).reshape(
+                1, 1, 1, self._xs_server.num_groups, self._I1, self._I2, p + 1, q + 1
+            )
+            Q = tn.from_numpy(np.tile(Q_min, [4, 1, 1, 1, 1, 1, 1, 1]))
 
-        #construct source tensor
-        Q_min = self._source.evaluate_patch(self._p, coords=coords
-                                            ).reshape(1,1,1,self._xs_server.num_groups,
-                                                      self._I1, self._I2, p + 1, q + 1)
-        
-        Q = np.tile(Q_min, [4,1,1,1,1,1,1,1])
+            # Build components
+            RJQ = ctg.einsum(
+                "abcdef,abcd,c,d,qikgabcd->qikgabef",
+                R,
+                J_det,
+                tn.tensor(self._wx),
+                tn.tensor(self._wy),
+                Q,
+            )
 
-        # Build components
-        JQ = ctg.einsum(
-            "abcd,c,d,qikgabcd->qikgabcd",
-            J_det,
-            tn.tensor(self._wx),
-            tn.tensor(self._wy),
-            Q,
+        # Compute integral
+        Intg_source = tn.zeros(
+            (
+                self._quadrants.shape[0],
+                self._ordinates[0].shape[0],
+                self._ordinates[1].shape[0],
+                self._xs_server.num_groups,
+                self._patch.ctrlpts_size_u,
+                self._patch.ctrlpts_size_v,
+            )
         )
 
-        RJQ = ctg.einsum(
-            "abcdef,qikgabcd->qikgabef"
-        )
+        if self._check_source(self._p):
+            for i1, i2 in itertools.product(range(self._I1), range(self._I2)):
+                Intg_source[
+                    ...,
+                    i1 : i1 + self._patch.degree_u + 1,
+                    i2 : i2 + self._patch.degree_v + 1,
+                ] += RJQ[..., i1, i2, :, :]
 
-
-        #compute integral
-        Intg_source = tn.zeros((
-            self._quadrants.shape[0],
-            self._ordinates[0].shape[0],
-            self._ordinates[1].shape[0],
-            self._xs_server.num_groups,
-            self._patch.ctrlpts_size_u,
-            self._patch.ctrlpts_size_v,
-        ))
-
-        for i1, i2 in itertools.product(range(self._I1), range(self._I2)):
-            Intg_source[..., i1: i1 + self._patch.degree_u + 1, 
-                        i2 : i2 + self._patch.degree_v + 1] += RJQ[..., i1, i2, :, :]
-            
+        # check need to flatten, or coalesce
         return Intg_source
 
     def _build_local_integrals(self, J, J_det, R, dR):
         """"""
         # Build components
-        QJRT = ctg.einsum(
+        JRT = ctg.einsum(
             "abcd,c,d,abcdef->abcdef",
             J_det,
             tn.tensor(self._wx),
@@ -1081,6 +1090,12 @@ class MatrixAssembler(object):
 
         if self._verbose:
             self._print_coo(name)
+
+    def _check_source(self, pid: int):
+        """"""
+        if pid in self._source._patches:
+            return True
+        return False
 
     # ========================================================================
     # I/O

@@ -80,7 +80,7 @@ class TTAssembler(MatrixAssembler):
             xs_server=xs_server,
             num_ordinates=num_ordinates,
             num_points=num_points,
-            source=source
+            source=source,
         )
 
     # ========================================================================
@@ -112,6 +112,8 @@ class TTAssembler(MatrixAssembler):
             Scattering operator.
         F: torch.TT
             Fission operator.
+        Q: torch.TT
+            Fixed source vector.
         B_in: torch.TT
             Incident boundary operator.
         B_out: torch.TT
@@ -132,7 +134,10 @@ class TTAssembler(MatrixAssembler):
         # Concatenate operators
         H = sum([o[0] for o in operators]).round(self._eps)
         S = sum([o[1] for o in operators]).round(self._eps)
-        F = sum([o[2] for o in operators]).round(self._eps)
+        if self._source == None:
+            F = sum([o[2] for o in operators]).round(self._eps)
+        else:
+            F = sum([tntt.TT(o[2], eps=1e-10) for o in operators]).round(self._eps)
         B_in = sum([o[3] for o in operators]).round(self._eps)
         B_out = sum([o[4] for o in operators]).round(self._eps)
         del operators
@@ -210,6 +215,10 @@ class TTAssembler(MatrixAssembler):
             self._append_tt_info("R", R)
             self._append_tt_info("dR", dR)
 
+            # switch to isotropic source
+            if self._source != None:
+                Q = self._build_source_integral(J_det.full(), R.full())
+
             # Append basis function support matrices
             J_det = tntt.TT(
                 J_det.cores
@@ -283,6 +292,10 @@ class TTAssembler(MatrixAssembler):
             # Calculate basis data at quadrature points for each knot span
             R, dR = super()._basis()
 
+            # switch to isotropic source
+            if self._source == None:
+                Q = self._build_source_integral(J_det, R)
+
             # Build local volume integrals
             Intg = super()._build_local_integrals(J, J_det, R, dR)
             del J, J_det, R, dR
@@ -310,11 +323,8 @@ class TTAssembler(MatrixAssembler):
         self._append_tt_info("H", H)
         S = self._build_scatter(Intg_int, patch_ind)
         self._append_tt_info("S", S)
-        #switch to isotropic source
-        if p in super()._source._patches:
-            Q = self._build_source_integral(J, J_det, R, dR)
-            self._append_coo_info("F", Q)
-        else:
+        # switch to isotropic source
+        if self._source == None:
             F = self._build_fission(Intg_int, patch_ind)
             self._append_tt_info("F", F)
         B_in = self._build_incident_boundary()
@@ -322,7 +332,7 @@ class TTAssembler(MatrixAssembler):
         B_out = self._build_outgoing_boundary(patch_ind)
         self._append_tt_info("B_out", B_out)
 
-        if p in self._source._patches:
+        if self._source != None:
             return H, S, Q, B_in, B_out
         else:
             return H, S, F, B_in, B_out

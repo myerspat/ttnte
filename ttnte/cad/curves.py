@@ -127,7 +127,6 @@ def qtrlobe(outrad=0.5, portrs=0.1, hfwidth=0.1):
     qtrlobe: igakit.nurbs.NURBS
         NURBS curve.
     """
-
     Pi = np.pi
 
     fuelrad = (

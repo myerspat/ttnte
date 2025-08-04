@@ -15,8 +15,8 @@ from .boundary import Boundary
 
 class IGAMesh(object):
     """
-    IGA Mesh object. This object handles all NURBS definitions, basis function
-    evaluations, and connectivity.
+    IGA Mesh object. object handles all NURBS. definitions, basis function. evaluations,
+    and connectivity. This.
 
     Attributes
     ----------
@@ -62,8 +62,8 @@ class IGAMesh(object):
 
     def connect(self, decimals=8, source=None):
         """
-        Connect patches. Determine patch interfaces for passing boundary conditions.
-        Patches not connected are assumed to be vacuum boundary conditions unless
+        Connect patches. boundary conditions. Patches not connected are assumed to be
+        vacuum boundary conditions unless Determine patch interfaces for passing
         otherwise specified in :meth:`ttnte.iga.IGAMesh.set_reflective_condition`.
 
         Parameters
@@ -104,10 +104,9 @@ class IGAMesh(object):
             geomdl_patch.knotvector_v = patch.knots[1].tolist()
             self.patches[i] = geomdl_patch
 
-        #If there is an internal source set patches in it 
+        # If there is an internal source set patches in it
         if source is not None:
             source.igakit2geomdl()
-
 
         del self._materials
 
@@ -167,8 +166,8 @@ class IGAMesh(object):
         ],
     ):
         """
-        Set reflective boundary conditions. This method determines which patches have
-        reflective boundaries based on the face.
+        Set reflective boundary conditions. reflective boundaries based on the face.
+        This method determines which patches have.
 
         .. warning::
            All reflective boundaries must be axis-aligned.
@@ -345,8 +344,8 @@ class IGAMesh(object):
 
     def basis_functions(self, p: int, coords: np.ndarray):
         """
-        Compute all non-vanishing 2-D NURBS basis functions. The current implementation
-        assumes an open knot vector with single multiplicity on inner knots.
+        Compute all non-vanishing 2-D NURBS basis functions. inner knots. The current
+        implementation. assumes an open knot vector. with single multiplicity on.
 
         Parameters
         ----------
@@ -420,8 +419,8 @@ class IGAMesh(object):
 
     def basis_function_grads(self, p: int, coords: np.ndarray, order: int = 1):
         """
-        Compute gradients of the basis functions for a given patch. This implementation
-        assumes open knot vectors with all interior knots of single multiplicity.
+        Compute gradients of the basis functions for a given patch. interior knots of
+        single multiplicity. This implementation. assumes open knot. vectors with all.
 
         Parameters
         ----------
@@ -650,9 +649,7 @@ class IGAMesh(object):
             normal = dv[0, 1, :-1][::-1]
             if (normal != 0).any():
                 normal[0] *= -1
-                normal /= (-1 if coords[0, i] == 0 else 1) * np.sqrt(
-                    np.sum(normal**2)
-                )
+                normal /= (-1 if coords[0, i] == 0 else 1) * np.sqrt(np.sum(normal**2))
 
             # Save normal vector
             normals[:, i] = cv_orientation * normal
@@ -670,9 +667,7 @@ class IGAMesh(object):
             normal = du[1, 0, :-1][::-1]
             if (normal != 0).any():
                 normal[0] *= -1
-                normal /= (-1 if coords[1, i] == 1 else 1) * np.sqrt(
-                    np.sum(normal**2)
-                )
+                normal /= (-1 if coords[1, i] == 1 else 1) * np.sqrt(np.sum(normal**2))
 
             # Save normal vector
             normals[:, i] = cu_orientation * normal
@@ -1399,28 +1394,6 @@ class IGAMesh(object):
                 new_ctrlpts[i] = [*new_ctrlpts[i][:-1], phi[p, i]]
             patch.ctrlpts = new_ctrlpts
             self.patches[p] = patch
-
-
-    def set_source(self, fixed_sources: np.ndarray):
-        """
-        Flag which patches are fixed sources.
-
-        Paramaters
-        ----------
-        fixed_sources: np.ndarray
-            List of patches that will be assigned a fixed source. The default is
-            no patches being assigned a fixed source. If no patches are to be fixed 
-            sources input an empty vector.
-        stength: float = 1
-            Strength of the fixed source being used. It is assumed to be 1.
-        
-        """
-        #iterate through fixed_sources list of patches
-        for p in fixed_sources:
-            for pt in self.patches[p].ctrlpts:
-                pt[2] = 1
-        
-
 
     @property
     def num_patches(self):
