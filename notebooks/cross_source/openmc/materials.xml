@@ -1,0 +1,16 @@
+<?xml version='1.0' encoding='utf-8'?>
+<materials>
+  <cross_sections>mgxs.h5</cross_sections>
+  <material id="1" name="Gas">
+    <density units="macro" value="1.0"/>
+    <macroscopic name="Gas"/>
+  </material>
+  <material id="2" name="Water">
+    <density units="macro" value="1.0"/>
+    <macroscopic name="Water"/>
+  </material>
+  <material id="3" name="Guide Tube">
+    <density units="macro" value="1.0"/>
+    <macroscopic name="Guide Tube"/>
+  </material>
+</materials>
