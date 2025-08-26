@@ -1,0 +1,12 @@
+<?xml version='1.0' encoding='utf-8'?>
+<materials>
+  <cross_sections>/home/myerspat/research/tensor_trains/tt_nte/notebooks/fixed_source/quarter_circle/openmc/mgxs.h5</cross_sections>
+  <material id="1" name="Material">
+    <density units="macro" value="1.0"/>
+    <macroscopic name="Material"/>
+  </material>
+  <material id="2" name="Void">
+    <density units="macro" value="1.0"/>
+    <macroscopic name="Void"/>
+  </material>
+</materials>

@@ -17,6 +17,9 @@
 - [matplotlib](https://matplotlib.org/)
 - [plotly](https://plotly.com/python/)
 
+[!NOTE]
+For best performance compile [geomdl with Cython](https://nurbs-python.readthedocs.io/en/5.x/install.html#compile-with-cython), [PyTorch with CUDA](https://pytorch.org/get-started/locally/), and [torchTT with its C++ extension](https://github.com/ion-g-ion/torchTT).
+
 ## Installation
 
 ### Quick installation
@@ -49,23 +52,36 @@ pre-commit install
 ## Classes and Methods
 
 - `ttnte.xs.Server`: Class for handling multigroup cross section information.
+- `ttnte.cad.Patch`: Patch class.
 - `ttnte.iga.IGAMesh`: Meshing object for NURBS surfaces defined as `igakit.nurbs.NURBS`.
 - `ttnte.assemblers.MatrixAssembler`: Assembler discretized system into `ttnte.assemblers.operators.SparseOperator`s.
 - `ttnte.assemblers.TTAssembler`: Assembler discretized system into `torchtt.TT`s.
 - `ttnte.linalg.LinearOperator`: General operator object for `ttnte.assemblers.operators.SparseOperator`s and `torchtt.TT`s.
 - `ttnte.linalg.eig()`: Method for solving the resulting discretized eigenvalue problem.
+- `ttnte.linalg.fixed_source()`: Method for solving a fixed source problem.
 
 ## Modules
 
 - `ttnte.xs.benchmarks`: XS data sets from common neutron transport benchmarks.
 - `ttnte.cad.curves`: Methods for building NURBS curves used in the notebooks.
 - `ttnte.cad.surfaces`: Methods for building NURBS surfaces used in the notebooks.
+- `ttnte.sources`: Define fixed sources.
 
 ## Notebooks
 
-- [Homogeneous square domain](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/square/square.ipynb)
-- [Homogeneous circular domain](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/circle/circle.ipynb)
-- [Homogeneous quarter circular domain](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/quarter_circle/quarter_circle.ipynb)
-- [C5G7 infinite pincell array](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/pincell/pincell.ipynb)
-- [Kaist infinite lightbridge array](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/lightbridge/lightbridge.ipynb)
-- Infinite array of Lightbridge four-lobe fuel with [burnable absorber](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/lightbridge/lightbridge_ba.ipynb) and [gas](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/lightbridge/lightbridge_gas.ipynb) displacers
+### Fixed Source
+
+- [Homogeneous square](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/fixed_source/square/square.ipynb)
+- [Homogeneous circle](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/fixed_source/circle/circle.ipynb)
+- [Quarter circle with void](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/fixed_source/quarter_circle/quarter_circle.ipynb)
+- [Cruciform source with cylindrical wall](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/fixed_source/cruciform/cruciform.ipynb)
+
+### Eigenvalue
+
+- [Homogeneous square](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/eigenvalue/square/square.ipynb)
+- [Homogeneous circle](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/eigenvalue/circle/circle.ipynb)
+- [Homogeneous quarter circle](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/eigenvalue/quarter_circle/quarter_circle.ipynb)
+- [C5G7 infinite pincell array](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/eigenvalue/pincell/pincell.ipynb)
+- Infinite array of Lightbridge four-lobe fuel with a
+  - [burnable absorder displacer](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/eigenvalue/lightbridge/lightbridge_ba.ipynb)
+  - [gas displacer](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/eigenvalue/lightbridge/lightbridge_gas.ipynb)
