@@ -553,6 +553,8 @@ class IGAMesh(object):
         self,
         pids: np.ndarray,
         coords: np.ndarray,
+        dx=1,
+        dy=1,
     ):
         """
         Calculate volume averaged scalar flux conforming to a regular mesh.
@@ -595,15 +597,16 @@ class IGAMesh(object):
                 + points[..., 0, -1]
                 + points[..., -1, -1]
             )
-            + 2
+            + 1
+            / 2
             * (
                 np.sum(points[..., 1:-1, 0], axis=-1)
                 + np.sum(points[..., 1:-1, -1], axis=-1)
                 + np.sum(points[..., 0, 1:-1], axis=-1)
                 + np.sum(points[..., 1, 1:-1], axis=-1)
             )
-            + 4 * np.sum(np.sum(points[..., 1:-1, 1:-1], axis=-1), axis=-1)
-        )
+            + np.sum(np.sum(points[..., 1:-1, 1:-1], axis=-1), axis=-1)
+        ) / ((coords.shape[-2] - 1) ** 2)
 
     # ========================================================================
     # Parallel methods

@@ -3,10 +3,9 @@
   <run_mode>fixed source</run_mode>
   <particles>500000</particles>
   <batches>1000</batches>
-  <inactive>100</inactive>
-  <source particle="neutron" strength="100" type="independent">
+  <source particle="neutron" strength="1.0" type="independent">
     <space type="box">
-      <parameters>0 0 0 10 10 0</parameters>
+      <parameters>0 0 -0.5 10 10 0.5</parameters>
     </space>
     <angle type="isotropic"/>
     <energy type="discrete">

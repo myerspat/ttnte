@@ -22,20 +22,36 @@ flux = (
 )
 print(f"Cell flux shape: {flux.shape}")
 
+
 # Save data
 np.save(open("./data/cell_flux.npy", "wb"), flux)
 
 # Get regular mesh flux tally
-flux = np.transpose(
-    sp.get_tally(name="Regular Mesh")
-    .get_values(scores=["flux"])
-    .reshape((128, 128, num_groups))[..., ::-1],
-    axes=(2, 0, 1),
+flux = (
+    np.transpose(
+        sp.get_tally(name="Regular Mesh")
+        .get_values(scores=["flux"])
+        .reshape((128, 128, num_groups))[..., ::-1],
+        axes=(2, 0, 1),
+    )
+    * 128
+    * 128
+)
+stdev = (
+    np.transpose(
+        sp.get_tally(name="Regular Mesh")
+        .get_values(scores=["flux"], value="std_dev")
+        .reshape((128, 128, num_groups))[..., ::-1],
+        axes=(2, 0, 1),
+    )
+    * 128
+    * 128
 )
 print(f"Mesh flux shape: {flux.shape}")
 
 # Save data
 np.save(open("./data/mesh_flux.npy", "wb"), flux)
+np.save(open("./data/mesh_stdev.npy", "wb"), stdev)
 
 # Plot fluxes
 X, Y = np.meshgrid(np.linspace(0, 10, 129), np.linspace(0, 10, 129))

@@ -53,15 +53,21 @@ left = openmc.XPlane(x0=0)
 right = openmc.XPlane(x0=10)
 bottom = openmc.YPlane(y0=0)
 top = openmc.YPlane(y0=10)
+ref0 = openmc.ZPlane(-0.5)
+ref1 = openmc.ZPlane(0.5)
 
 # Boundary conditions
 left.boundary_type = "vacuum"
 right.boundary_type = "vacuum"
 bottom.boundary_type = "vacuum"
 top.boundary_type = "vacuum"
+ref0.boundary_type = "reflective"
+ref1.boundary_type = "reflective"
 
 # Cells
-fuel = openmc.Cell(fill=material, region=(+left & +bottom & -right & -top))
+fuel = openmc.Cell(
+    fill=material, region=(+left & +bottom & -right & -top & +ref0 & -ref1)
+)
 
 # Universes
 universe = openmc.Universe(universe_id=0, name="Root", cells=[fuel])
@@ -75,22 +81,17 @@ geometry.export_to_xml()
 # Create settings.xml
 # Create source
 source = openmc.Source()
-source.space = openmc.stats.Box([0, 0, 0], [10, 10, 0], only_fissionable=False)
+source.space = openmc.stats.Box([0, 0, -0.5], [10, 10, 0.5], only_fissionable=False)
 source.angle = openmc.stats.Isotropic()
 source.energy = openmc.stats.Discrete([1.0], [1.0])
-source.strength = 100
 
 # Instantiate a Settings, set all runtime parameters, and export to XML
 settings_file = openmc.Settings()
 settings_file.energy_mode = "multi-group"
 settings_file.run_mode = "fixed source"
 settings_file.batches = 1000
-settings_file.inactive = 100
 settings_file.particles = 500000
 settings_file.output = {"tallies": True, "summary": True}
-settings_file.entropy_lower_left = [0, 0, -1.0e50]
-settings_file.entropy_upper_right = [10, 10, 1.0e50]
-settings_file.entropy_dimension = [128, 128, 1]
 settings_file.source = source
 settings_file.export_to_xml()
 
@@ -115,8 +116,8 @@ tallies_file = openmc.Tallies()
 # Define regular mesh
 mesh = openmc.RegularMesh(mesh_id=0)
 mesh.dimension = [128, 128, 1]
-mesh.lower_left = [0, 0, -1e50]
-mesh.upper_right = [10, 10, 1e50]
+mesh.lower_left = [0, 0, -0.5]
+mesh.upper_right = [10, 10, 0.5]
 
 # Define tallies
 energy_filter = openmc.EnergyFilter(groups.group_edges)
