@@ -1,3 +1,7 @@
+import multiprocessing
+
+multiprocessing.set_start_method("spawn")
+
 import numpy as np
 import torch as tn
 from igakit import cad

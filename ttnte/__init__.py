@@ -7,5 +7,10 @@ try:
 except (NameError, ImportError):
     IS_NOTEBOOK = False
 
+# Make sure double precision is used everywhere
+import torch as tn
+
+tn.set_default_dtype(tn.float64)
+
 # This should always be the last line of this file
 __version__ = "0.0.0b0"
