@@ -19,6 +19,7 @@ setup(
         "matplotlib",
         "plotly",
         "h5py",
+        "tqdm",
     ],
     extras_require={
         "archive": [
@@ -39,6 +40,7 @@ setup(
             "sphinxcontrib.bibtex",
             "chardet",
             "nbsphinx",
+            "papermill",
         ],
     },
     package_data={"ttnte.xs.data": ["*.json"]},
