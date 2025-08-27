@@ -18,6 +18,7 @@ setup(
         "pandas",
         "matplotlib",
         "plotly",
+        "h5py",
     ],
     extras_require={
         "archive": [

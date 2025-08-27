@@ -16,6 +16,7 @@
 - [pandas](https://pandas.pydata.org/)
 - [matplotlib](https://matplotlib.org/)
 - [plotly](https://plotly.com/python/)
+- [h5py](https://docs.h5py.org/en/stable/index.html)
 
 [!NOTE]
 For best performance compile [geomdl with Cython](https://nurbs-python.readthedocs.io/en/5.x/install.html#compile-with-cython), [PyTorch with CUDA](https://pytorch.org/get-started/locally/), and [torchTT with its C++ extension](https://github.com/ion-g-ion/torchTT).
