@@ -30,7 +30,7 @@ def test_kaist():
         3.0967e-01,
         6.2433e-01,
     ]
-    assert xs_server.nu_fission("Gas")[2:5].tolist() == 3 * [0]
+    assert xs_server.nu_fission("Gas") is None
     assert (
         xs_server.scatter_gtg("Reflector")[0,]
         == np.array(
