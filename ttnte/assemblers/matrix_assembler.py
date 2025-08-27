@@ -232,7 +232,9 @@ class MatrixAssembler(object):
         bR = self._boundary_basis(self._get_patch_info(0)) if get_boundaries else None
 
         ops = {}
-        with ProcessPoolExecutor(max_workers=self._max_processes) as executor:
+        with ProcessPoolExecutor(
+            max_workers=min(self._max_processes, self._mesh.num_patches * 2)
+        ) as executor:
             run_volumes = any(op in self._only for op in ["H", "S", "F", "q"])
             run_boundaries = "B_in" in self._only or "B_out" in self._only
             vlists = []
@@ -261,6 +263,8 @@ class MatrixAssembler(object):
                 del vlist, blist
                 pbar.update(1)
                 pbar.refresh()
+
+            executor.shutdown(wait=False)
 
         return ops
 

@@ -457,6 +457,8 @@ class IGAMesh(object):
                         axis=-1,
                     )
 
+                pool.close()
+
             # Update old distances
             old_distances[unconverged] = new_distances[unconverged]
 
@@ -609,7 +611,9 @@ class IGAMesh(object):
     def _run_across_patches(self, method: Callable, args):
         # Fill in coords
         with mp.Pool(min(self._max_processes, mp.cpu_count() - 1)) as pool:
-            return pool.starmap(method, args)
+            result = pool.starmap(method, args)
+            pool.close()
+            return result
 
     def _get_arguments(self, coords: Union[np.ndarray, Dict[int, np.ndarray]]):
         return (
