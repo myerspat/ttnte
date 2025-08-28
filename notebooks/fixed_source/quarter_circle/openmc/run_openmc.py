@@ -72,6 +72,8 @@ left = openmc.XPlane(x0=0)
 right = openmc.XPlane(x0=6)
 bottom = openmc.YPlane(y0=0)
 top = openmc.YPlane(y0=6)
+ref0 = openmc.ZPlane(-0.5)
+ref1 = openmc.ZPlane(0.5)
 cylinder = openmc.ZCylinder(x0=0, y0=0, r=5)
 
 # Boundary conditions
@@ -79,11 +81,16 @@ left.boundary_type = "reflective"
 right.boundary_type = "vacuum"
 bottom.boundary_type = "reflective"
 top.boundary_type = "vacuum"
+ref0.boundary_type = "reflective"
+ref1.boundary_type = "reflective"
 
 # Cells
-fuel = openmc.Cell(fill=materials["Material"], region=(-cylinder & +left & +bottom))
+fuel = openmc.Cell(
+    fill=materials["Material"], region=(-cylinder & +left & +bottom & +ref0 & -ref1)
+)
 water = openmc.Cell(
-    fill=materials["Void"], region=(+cylinder & +left & +bottom & -top & -right)
+    fill=materials["Void"],
+    region=(+cylinder & +left & +bottom & -top & -right & +ref0 & -ref1),
 )
 
 # Universes
@@ -101,7 +108,7 @@ source = openmc.Source()
 source.space = openmc.stats.CylindricalIndependent(
     r=openmc.stats.PowerLaw(a=0.0, b=5, n=1.0),
     phi=openmc.stats.Uniform(0.0, np.pi / 2),  # Uniform angle
-    z=openmc.stats.Discrete([0.0], [1.0]),
+    z=openmc.stats.Uniform(-0.5, 0.5),
     origin=(0, 0, 0),
 )
 source.angle = openmc.stats.Isotropic()
@@ -112,11 +119,8 @@ settings_file = openmc.Settings()
 settings_file.energy_mode = "multi-group"
 settings_file.run_mode = "fixed source"
 settings_file.batches = 1000
-settings_file.particles = 250000
+settings_file.particles = 500000
 settings_file.output = {"tallies": True, "summary": True}
-settings_file.entropy_lower_left = [0, 0, -1.0e50]
-settings_file.entropy_upper_right = [6, 6, 1.0e50]
-settings_file.entropy_dimension = [128, 128, 1]
 settings_file.source = source
 settings_file.export_to_xml()
 

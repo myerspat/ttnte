@@ -1,15 +1,13 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <settings>
   <run_mode>fixed source</run_mode>
-  <particles>250000</particles>
+  <particles>500000</particles>
   <batches>1000</batches>
   <source particle="neutron" strength="1.0" type="independent">
     <space origin="0 0 0" type="cylindrical">
       <r parameters="0.0 5 1.0" type="powerlaw"/>
       <phi parameters="0.0 1.5707963267948966" type="uniform"/>
-      <z type="discrete">
-        <parameters>0.0 1.0</parameters>
-      </z>
+      <z parameters="-0.5 0.5" type="uniform"/>
     </space>
     <angle type="isotropic"/>
     <energy type="discrete">

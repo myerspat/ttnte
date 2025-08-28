@@ -9,7 +9,7 @@
     <bins>0</bins>
   </filter>
   <filter id="1" type="energy">
-    <bins>1e-05 10000000.0</bins>
+    <bins>9.999999999999999e-06 10000000.0</bins>
   </filter>
   <filter id="3" type="cell">
     <bins>1</bins>
