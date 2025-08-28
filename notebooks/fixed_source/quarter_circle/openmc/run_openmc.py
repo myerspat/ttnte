@@ -105,16 +105,14 @@ geometry.export_to_xml()
 # Create settings.xml
 # Create uniform in volume cylindrical source
 source = openmc.Source()
-# source.space = openmc.stats.CylindricalIndependent(
-#     r=openmc.stats.PowerLaw(a=0.0, b=5, n=1),
-#     phi=openmc.stats.Uniform(0.0, np.pi / 2),  # Uniform angle
-#     z=openmc.stats.Uniform(-0.5, 0.5),
-#     origin=(0, 0, 0),
-# )
-source.space = openmc.stats.Box((0, 0, -0.5), (5, 5, 0.5))
+source.space = openmc.stats.CylindricalIndependent(
+    r=openmc.stats.PowerLaw(a=0.0, b=5, n=1),
+    phi=openmc.stats.Uniform(0.0, np.pi / 2),  # Uniform angle
+    z=openmc.stats.Uniform(-0.5, 0.5),
+    origin=(0, 0, 0),
+)
 source.angle = openmc.stats.Isotropic()
 source.energy = openmc.stats.Discrete([1.0], [1.0])
-source.constraints = {"domains": [fuel]}
 
 # Instantiate a Settings, set all runtime parameters, and export to XML
 settings_file = openmc.Settings()
