@@ -1364,7 +1364,17 @@ class MatrixAssembler(object):
                     round(time.time() - self._start_time, 2)
                 )
             )
-            print("{:15s} {:25s} {:10s}".format("Step", "Ranks", "Compression"))
+            print(
+                "{:15s} {:25s} {:10s}".format(
+                    "Step",
+                    (
+                        "Shape"
+                        if isinstance(list(ops.values())[0], tn.Tensor)
+                        else "Ranks"
+                    ),
+                    "Compression",
+                )
+            )
         for name, op in ops.items():
             self._append_info(name, op, final=True)
         if self._verbose:
