@@ -5,7 +5,7 @@
   <batches>1000</batches>
   <source particle="neutron" strength="1.0" type="independent">
     <space origin="0 0 0" type="cylindrical">
-      <r parameters="0.0 5 1.0" type="powerlaw"/>
+      <r parameters="0.0 5 0.5" type="powerlaw"/>
       <phi parameters="0.0 1.5707963267948966" type="uniform"/>
       <z parameters="-0.5 0.5" type="uniform"/>
     </space>

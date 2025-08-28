@@ -106,7 +106,7 @@ geometry.export_to_xml()
 # Create uniform in volume cylindrical source
 source = openmc.Source()
 source.space = openmc.stats.CylindricalIndependent(
-    r=openmc.stats.PowerLaw(a=0.0, b=5, n=1.0),
+    r=openmc.stats.PowerLaw(a=0.0, b=5, n=0.5),
     phi=openmc.stats.Uniform(0.0, np.pi / 2),  # Uniform angle
     z=openmc.stats.Uniform(-0.5, 0.5),
     origin=(0, 0, 0),
