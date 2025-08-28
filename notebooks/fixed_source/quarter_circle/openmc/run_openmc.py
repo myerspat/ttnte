@@ -96,10 +96,10 @@ geometry.export_to_xml()
 
 # =======================================================
 # Create settings.xml
-# Create source
+# Create uniform in volume cylindrical source
 source = openmc.Source()
 source.space = openmc.stats.CylindricalIndependent(
-    r=openmc.stats.Uniform(0.0, 5),  # Uniform radial distribution
+    r=openmc.stats.PowerLaw(a=0.0, b=5, n=1.0),
     phi=openmc.stats.Uniform(0.0, np.pi / 2),  # Uniform angle
     z=openmc.stats.Discrete([0.0], [1.0]),
     origin=(0, 0, 0),
@@ -111,7 +111,7 @@ source.energy = openmc.stats.Discrete([1.0], [1.0])
 settings_file = openmc.Settings()
 settings_file.energy_mode = "multi-group"
 settings_file.run_mode = "fixed source"
-settings_file.batches = 100
+settings_file.batches = 1000
 settings_file.particles = 250000
 settings_file.output = {"tallies": True, "summary": True}
 settings_file.entropy_lower_left = [0, 0, -1.0e50]
