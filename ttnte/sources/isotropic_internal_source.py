@@ -131,6 +131,12 @@ class IsotropicInternalSource:
 
         return np.array([results for _ in range(num_ordinates)])
 
+    def __str__(self):
+        return "IsotropicInternalSource"
+
+    def __repr__(self):
+        return self.__str__()
+
     # ========================================================================
     # I / O
 

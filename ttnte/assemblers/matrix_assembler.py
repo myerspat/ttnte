@@ -184,29 +184,27 @@ class MatrixAssembler(object):
         operators: ttnte.assemblers.Operators
             Resulting operators.
         """
-        ops = self._build(kwargs, verbose)
+        ops = {
+            name: {
+                "H": SparseOperator,
+                "S": lambda S: ScatteringOperator(
+                    self._Y, S, self._ordinates[0][:, 0], self._ordinates[1][:, 0]
+                ),
+                "F": lambda F: FissionOperator(
+                    F, self._ordinates[0][:, 0], self._ordinates[1][:, 0]
+                ),
+                "q": lambda q: q,
+                "B_in": SparseOperator,
+                "B_out": SparseOperator,
+            }[name](op)
+            for name, op in self._build(kwargs, verbose).items()
+        }
 
         # Save and print final data
         self._print_final(ops)
 
         # Place resulting operators in the correct sparse operators
-        return Operators(
-            **{
-                name: {
-                    "H": SparseOperator,
-                    "S": lambda S: ScatteringOperator(
-                        self._Y, S, self._ordinates[0][:, 0], self._ordinates[1][:, 0]
-                    ),
-                    "F": lambda F: FissionOperator(
-                        F, self._ordinates[0][:, 0], self._ordinates[1][:, 0]
-                    ),
-                    "q": lambda q: q,
-                    "B_in": SparseOperator,
-                    "B_out": SparseOperator,
-                }[name](op)
-                for name, op in ops.items()
-            }
-        )
+        return Operators(**ops)
 
     def _build(self, kwargs, verbose):
         get_volumes = any(op in self._only for op in ["H", "S", "F", "q"])
@@ -1304,18 +1302,16 @@ class MatrixAssembler(object):
 
     def _append_info(self, name, A, final=False):
         """"""
-        # Calculate the number of non-zero entries
-        entries = (
-            (np.prod(A.indices().shape) + A.values().shape[0])
-            if A.is_sparse
-            else np.prod(A.shape)
+        # Get number of entries
+        num_entries = (
+            A.num_entries if isinstance(A, SparseOperator) else np.prod(A.shape)
         )
 
         # Get info
         info = {
             "shape": A.shape,
-            "entries": entries,
-            "compression": self.compression(A) if A.is_sparse else 1,
+            "entries": num_entries,
+            "compression": np.prod(A.shape) / num_entries,
             "elapsed time": time.time() - self._start_time,
         }
         if final:
@@ -1369,7 +1365,8 @@ class MatrixAssembler(object):
                     "Step",
                     (
                         "Shape"
-                        if isinstance(list(ops.values())[0], tn.Tensor)
+                        if isinstance(list(ops.values())[0], SparseOperator)
+                        or isinstance(list(ops.values())[0], tn.Tensor)
                         else "Ranks"
                     ),
                     "Compression",
