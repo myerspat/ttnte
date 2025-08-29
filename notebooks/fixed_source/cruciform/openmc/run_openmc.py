@@ -64,53 +64,39 @@ materials_file.export_to_xml()
 
 # =======================================================
 # Create geometry.xml
-D = 0  # fuel width
-D2 = D * 0.5
-X = 10  # channel pitch
-delta = 1  # thickness of lobes
-y2 = delta * 0.5
-d = 0.04  # thickness of cladding at valleys
-dmax = 0.102  # thickness of cladding at ends of the lobes_______
-R = 2  # radius defining outer curve of valleys
-a = 0.156  # displacer width
+## Initialize dimensional variables
+X = 10  # Channel pitch
 
+# Cruciform
+R = 2  # Radius defining valleys of fixed source
+delta = 1  # Width of lobes
+d2 = delta * 0.5  # Half width of lobes
+x = 0.25  # Portrusion of lobes
 
-y1 = y2 - d
-x1 = D2 - R - y2 - dmax
-x2 = x1 + dmax
+# Shielding
+I = 3.75  # Inner radius
+O = 4.5  # Outer radius
 
-cylinderIa = openmc.ZCylinder(D2 - x2, D2 - x2, R)
+cylinderIa = openmc.ZCylinder(d2 + R, d2 + R, R)
 
 elipseIa = openmc.Quadric(
-    y2**2,
-    x2**2,
-    0,
-    0,
-    0,
-    0,
-    -2 * (y2**2) * (D2 - x2),
-    0,
-    0,
-    (y2**2) * ((D2 - x2) ** 2) - (y2**2) * (x2**2),
+    a=d2**-2,
+    b=x**-2,
+    h=-2 * (d2 + R) / (x**2),
+    k=-1 + (d2 + R) ** 2 / (x**2),
 )
 elipseIIa = openmc.Quadric(
-    x2**2,
-    y2**2,
-    0,
-    0,
-    0,
-    0,
-    0,
-    -2 * (y2**2) * (D2 - x2),
-    0,
-    (y2**2) * ((D2 - x2) ** 2) - (y2**2) * (x2**2),
+    b=d2**-2,
+    a=x**-2,
+    g=-2 * (d2 + R) / (x**2),
+    k=-1 + (d2 + R) ** 2 / (x**2),
 )
 
 square = (
-    +openmc.XPlane(-(D2 - x2))
-    & -openmc.XPlane((D2 - x2))
-    & +openmc.YPlane(-(D2 - x2))
-    & -openmc.YPlane((D2 - x2))
+    +openmc.XPlane(0)
+    & -openmc.XPlane(d2 + R)
+    & +openmc.YPlane(0)
+    & -openmc.YPlane(d2 + R)
 )
 missingHolesa = +cylinderIa
 crossa = square & missingHolesa
@@ -132,41 +118,6 @@ bottom = openmc.YPlane(0, boundary_type="reflective")
 
 coolant = -right & -top & +left & +bottom
 coolant = coolant & ~cladding
-
-# # =======================================================
-# # fuel core
-# cylinderIb = openmc.ZCylinder(D2 - x2, D2 - x2, R + d)
-# elipseIb = openmc.Quadric(
-#     y1**2,
-#     x1**2,
-#     0,
-#     0,
-#     0,
-#     0,
-#     -2 * (y1**2) * (D2 - x2),
-#     0,
-#     0,
-#     (y1**2) * ((D2 - x2) ** 2) - (y1**2) * (x1**2),
-# )
-# elipseIIb = openmc.Quadric(
-#     x1**2,
-#     y1**2,
-#     0,
-#     0,
-#     0,
-#     0,
-#     0,
-#     -2 * (y1**2) * (D2 - x2),
-#     0,
-#     (y1**2) * ((D2 - x2) ** 2) - (y1**2) * (x1**2),
-# )
-#
-# missingHolesb = +cylinderIb
-# crossb = square & missingHolesb
-# elipsesb = -elipseIb | -elipseIIb
-#
-# fuel = crossb | elipsesb
-# cladding = cladding & ~fuel & +bottom & +left
 
 # ======================================================
 # Define cells and universe
