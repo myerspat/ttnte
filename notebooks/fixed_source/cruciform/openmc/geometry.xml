@@ -1,0 +1,18 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<geometry>
+  <cell id="1" material="1" region="((4 -5 6 -7 1) | (-2 | -3)) 8 9" universe="1"/>
+  <cell id="2" material="2" region="-10 -11 12 13 (((-4 | 5 | -6 | 7 | -1) (2 3)) | -8 | -9)" universe="1"/>
+  <surface coeffs="2.5 2.5 2" id="1" type="z-cylinder"/>
+  <surface coeffs="0.25 6.25 0 0 0 0 -1.25 0 0 0.0" id="2" type="quadric"/>
+  <surface coeffs="6.25 0.25 0 0 0 0 0 -1.25 0 0.0" id="3" type="quadric"/>
+  <surface coeffs="-2.5" id="4" type="x-plane"/>
+  <surface coeffs="2.5" id="5" type="x-plane"/>
+  <surface coeffs="-2.5" id="6" type="y-plane"/>
+  <surface coeffs="2.5" id="7" type="y-plane"/>
+  <surface boundary="reflective" coeffs="0" id="8" type="x-plane"/>
+  <surface boundary="reflective" coeffs="0" id="9" type="y-plane"/>
+  <surface boundary="reflective" coeffs="5.0" id="10" type="x-plane"/>
+  <surface boundary="reflective" coeffs="5.0" id="11" type="y-plane"/>
+  <surface boundary="reflective" coeffs="0" id="12" type="x-plane"/>
+  <surface boundary="reflective" coeffs="0" id="13" type="y-plane"/>
+</geometry>

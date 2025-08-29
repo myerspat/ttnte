@@ -1,0 +1,16 @@
+<?xml version='1.0' encoding='utf-8'?>
+<materials>
+  <cross_sections>/home/myerspat/research/tensor_trains/tt_nte/notebooks/fixed_source/cruciform/openmc/mgxs.h5</cross_sections>
+  <material id="1" name="Source">
+    <density units="macro" value="1.0"/>
+    <macroscopic name="Source"/>
+  </material>
+  <material id="2" name="Void">
+    <density units="macro" value="1.0"/>
+    <macroscopic name="Void"/>
+  </material>
+  <material id="3" name="Shield">
+    <density units="macro" value="1.0"/>
+    <macroscopic name="Shield"/>
+  </material>
+</materials>
