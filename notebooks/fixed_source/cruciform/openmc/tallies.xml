@@ -3,7 +3,7 @@
   <mesh id="0">
     <dimension>128 128</dimension>
     <lower_left>0 0</lower_left>
-    <upper_right>6 6</upper_right>
+    <upper_right>5 5</upper_right>
   </mesh>
   <filter id="2" type="mesh">
     <bins>0</bins>

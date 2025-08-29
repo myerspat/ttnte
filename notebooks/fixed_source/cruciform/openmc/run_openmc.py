@@ -36,8 +36,6 @@ for mat in mats:
     if mat != "Void":
         scatter = xs_server.scatter_gtg(mat)
 
-    print(mat, scatter)
-
     # Fill xs object
     xsdata[-1].set_total(xs_server.total(mat))
     xsdata[-1].set_fission(np.zeros(1))
@@ -78,7 +76,6 @@ I = 3.75  # Inner radius
 O = 4.5  # Outer radius
 
 cylinderIa = openmc.ZCylinder(d2 + R, d2 + R, R)
-
 elipseIa = openmc.Quadric(
     a=d2**-2,
     b=x**-2,
@@ -86,50 +83,56 @@ elipseIa = openmc.Quadric(
     k=-1 + (d2 + R) ** 2 / (x**2),
 )
 elipseIIa = openmc.Quadric(
-    b=d2**-2,
     a=x**-2,
+    b=d2**-2,
     g=-2 * (d2 + R) / (x**2),
     k=-1 + (d2 + R) ** 2 / (x**2),
 )
-
 square = (
-    +openmc.XPlane(0)
+    +openmc.XPlane(0, boundary_type="reflective")
     & -openmc.XPlane(d2 + R)
-    & +openmc.YPlane(0)
+    & +openmc.YPlane(0, boundary_type="reflective")
     & -openmc.YPlane(d2 + R)
 )
-missingHolesa = +cylinderIa
-crossa = square & missingHolesa
-elipsesa = -elipseIa | -elipseIIa
-
-cladding = (
-    (crossa | elipsesa)
+source = (
+    ((square & +cylinderIa) | (-elipseIa | -elipseIIa))
     & +openmc.XPlane(0, boundary_type="reflective")
     & +openmc.YPlane(0, boundary_type="reflective")
 )
 
+# =======================================================
+# Make shield
+shield = (
+    +openmc.ZCylinder(r=I)
+    & -openmc.ZCylinder(r=O)
+    & +openmc.XPlane(0, boundary_type="reflective")
+    & +openmc.YPlane(0, boundary_type="reflective")
+)
 
 # =======================================================
-# coolant
-right = openmc.XPlane(X / 2, boundary_type="reflective")
-top = openmc.YPlane(X / 2, boundary_type="reflective")
+# Void
 left = openmc.XPlane(0, boundary_type="reflective")
 bottom = openmc.YPlane(0, boundary_type="reflective")
-
-coolant = -right & -top & +left & +bottom
-coolant = coolant & ~cladding
+right = openmc.XPlane(X / 2, boundary_type="vacuum")
+top = openmc.YPlane(X / 2, boundary_type="vacuum")
+ref0 = openmc.ZPlane(-0.5, boundary_type="reflective")
+ref1 = openmc.ZPlane(0.5, boundary_type="reflective")
+coolant = (-right & -top & +left & +bottom) & (~source & ~shield)
 
 # ======================================================
 # Define cells and universe
+cell0 = openmc.Cell()
+cell0.region = source & +ref0 & -ref1
+cell0.fill = materials["Source"]
 cell1 = openmc.Cell()
-cell1.region = cladding
-cell1.fill = materials["Source"]
-cell4 = openmc.Cell()
-cell4.region = coolant
-cell4.fill = materials["Void"]
+cell1.region = shield & +ref0 & -ref1
+cell1.fill = materials["Shield"]
+cell2 = openmc.Cell()
+cell2.region = coolant & +ref0 & -ref1
+cell2.fill = materials["Void"]
 
 # Universe
-universe = openmc.Universe(cells=[cell1, cell4])
+universe = openmc.Universe(cells=[cell0, cell1, cell2])
 geometry = openmc.Geometry(universe)
 geometry.export_to_xml()
 
@@ -150,15 +153,11 @@ plots.export_to_xml()
 # =======================================================
 # Create settings.xml
 # Create uniform in volume cylindrical source
-source = openmc.Source()
-source.space = openmc.stats.CylindricalIndependent(
-    r=openmc.stats.PowerLaw(a=0.0, b=5, n=1),
-    phi=openmc.stats.Uniform(0.0, np.pi / 2),  # Uniform angle
-    z=openmc.stats.Uniform(-0.5, 0.5),
-    origin=(0, 0, 0),
-)
+source = openmc.IndependentSource()
+source.space = openmc.stats.Box((0, 0, -0.5), (d2 + R, d2 + R, 0.5))
 source.angle = openmc.stats.Isotropic()
 source.energy = openmc.stats.Discrete([1.0], [1.0])
+source.constraints = {"domains": [cell0]}
 
 # Instantiate a Settings, set all runtime parameters, and export to XML
 settings_file = openmc.Settings()
@@ -178,7 +177,7 @@ tallies_file = openmc.Tallies()
 mesh = openmc.RegularMesh(mesh_id=0)
 mesh.dimension = [128, 128]
 mesh.lower_left = [0, 0]
-mesh.upper_right = [6, 6]
+mesh.upper_right = [5, 5]
 
 # Define tallies
 energy_filter = openmc.EnergyFilter(groups.group_edges)
@@ -186,10 +185,5 @@ tally = openmc.Tally(name="Regular Mesh")
 tally.filters = [openmc.MeshFilter(mesh), energy_filter]
 tally.scores = ["flux"]
 tallies_file.append(tally)
-
-# tally = openmc.Tally(name="Cell")
-# tally.filters = [openmc.CellFilter([fuel]), energy_filter]
-# tally.scores = ["flux"]
-# tallies_file.append(tally)
 
 tallies_file.export_to_xml()
