@@ -5,7 +5,7 @@
   <batches>1000</batches>
   <source particle="neutron" strength="1.0" type="independent">
     <space type="box">
-      <parameters>0 0 -0.5 2.5 2.5 0.5</parameters>
+      <parameters>0 0 -0.5 2.75 2.75 0.5</parameters>
     </space>
     <angle type="isotropic"/>
     <energy type="discrete">

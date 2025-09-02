@@ -154,7 +154,7 @@ plots.export_to_xml()
 # Create settings.xml
 # Create uniform in volume cylindrical source
 source = openmc.IndependentSource()
-source.space = openmc.stats.Box((0, 0, -0.5), (d2 + R, d2 + R, 0.5))
+source.space = openmc.stats.Box((0, 0, -0.5), (d2 + R + x, d2 + R + x, 0.5))
 source.angle = openmc.stats.Isotropic()
 source.energy = openmc.stats.Discrete([1.0], [1.0])
 source.constraints = {"domains": [cell0]}

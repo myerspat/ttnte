@@ -28,7 +28,7 @@ class Server:
             Dictionary with ``"chi"`` spectrum and material XSs. The material XSs
             include the name of the material as the key and a dictionary as the
             value. The dictionary has ``"total"``, ``"nu_fission"``, and
-            ``"scattering_gtg"`` arrays.
+            ``"scatter_gtg"`` arrays.
         """
         self._xs = xs
         self._chi = None

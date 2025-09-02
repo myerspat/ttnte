@@ -45,7 +45,6 @@ stdev = (
         .reshape((128, 128, num_groups))[..., ::-1],
         axes=(2, 0, 1),
     )
-    * 2
     * np.pi
     * 5**2
     / 4

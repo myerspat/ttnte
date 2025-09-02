@@ -13,6 +13,9 @@ print(
     )
 )
 
+# Calculate source area
+sa = 2 * (np.pi * 0.5 * 0.25) / 4 + (2 + 0.5) ** 2 - np.pi
+
 # Get regular mesh flux tally
 flux = (
     np.transpose(
@@ -21,10 +24,8 @@ flux = (
         .reshape((128, 128, num_groups))[..., ::-1],
         axes=(2, 0, 1),
     )
-    * np.pi
-    * 5**2
-    / 4
-    / (6 * 6 / (128 * 128))
+    * sa
+    / (5 * 5 / (128 * 128))
 )
 stdev = (
     np.transpose(
@@ -33,11 +34,8 @@ stdev = (
         .reshape((128, 128, num_groups))[..., ::-1],
         axes=(2, 0, 1),
     )
-    * 2
-    * np.pi
-    * 5**2
-    / 4
-    / (6 * 6 / (128 * 128))
+    * sa
+    / (5 * 5 / (128 * 128))
 )
 print(f"Mesh flux shape: {flux.shape}")
 

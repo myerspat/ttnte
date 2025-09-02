@@ -169,7 +169,7 @@ class IGAMesh(object):
 
         # Check connections
         for connections in self._boundary_hash.values():
-            if len(connections) > 2 and not np.all(np.array(connections)) == None:
+            if len(connections) > 2 and not np.all(np.array(connections) == None):
                 raise RuntimeError(
                     "The boundary of each patch should have at most one other neighbor"
                 )
