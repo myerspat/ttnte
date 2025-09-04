@@ -1,8 +1,120 @@
-from setuptools import find_packages, setup
+import os
+import sys
+import sysconfig
+import warnings
+import subprocess
+import shutil
+from setuptools import find_packages, setup, Extension
+from setuptools.command.build_ext import build_ext as BuildExtension
+from setuptools.command.clean import clean as Clean
+import torch
+import pybind11
 
 # Get version from tt_nte/__init__.py (always last line)
 with open("ttnte/__init__.py") as f:
     version = f.readlines()[-1].split()[-1][1:-1]
+
+# Get path to setup file
+dir = os.path.dirname(os.path.abspath(__file__))
+
+
+class CMakeExtension(Extension):
+    def __init__(self, name, sourcedir=""):
+        super().__init__(name, sources=[])
+        self.sourcedir = os.path.abspath(sourcedir)
+
+
+class CMakeBuild(BuildExtension):
+    def run(self):
+        # Ensure CMake is available
+        try:
+            subprocess.check_output(["cmake", "--version"])
+        except OSError:
+            warnings.warn("CMake is not installed, falling back to Python")
+            return
+
+        for ext in self.extensions:
+            self.build_extension(ext)
+
+    def build_extension(self, ext):
+        ext_fullpath = self.get_ext_fullpath(ext.name)
+        extdir = os.path.abspath(os.path.dirname(ext_fullpath))
+
+        # Check if C++ backend should be compiled
+        if bool(os.environ.get("COMPILE_CPP", True)):
+            # Get configuration
+            cfg = "Debug" if self.debug else "Release"
+
+            # Get CMake arguments
+            cmake_args = [
+                f"-D{arg}={os.environ.get(arg, default)}"
+                for arg, default in zip(
+                    [
+                        "Python3_ROOT_DIR",
+                        "Python3_INCLUDE_DIR",
+                        "Python3_EXECUTABLE",
+                        "CMAKE_EXPORT_COMPILE_COMMANDS",
+                        "pybind11_DIR",
+                        "TORCH_INSTALL_PREFIX",
+                    ],
+                    [
+                        sys.prefix,
+                        sysconfig.get_path("include"),
+                        sys.executable,
+                        "ON",
+                        pybind11.get_cmake_dir(),
+                        os.path.abspath(os.path.dirname(torch.__file__)),
+                    ],
+                )
+            ] + [
+                f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extdir}",
+                f"-DCMAKE_BUILD_TYPE={cfg}",
+            ]
+
+            # Temporary build directory
+            build_temp = os.path.abspath(self.build_temp)
+            os.makedirs(build_temp, exist_ok=True)
+
+            # Configure
+            try:
+                subprocess.run(
+                    ["cmake", ext.sourcedir] + cmake_args,
+                    cwd=build_temp,
+                    check=True,
+                )
+            except subprocess.CalledProcessError as e:
+                print(e.stderr)
+                warnings.warn("C++ backend failed to configure, falling back to Python")
+                return
+
+            # Build
+            try:
+                subprocess.run(
+                    ["cmake", "--build", ".", "--config", cfg],
+                    cwd=build_temp,
+                    check=True,
+                )
+            except subprocess.CalledProcessError as e:
+                print(e.stderr)
+                warnings.warn("C++ backend failed to build, falling back to Python")
+                return
+
+
+class CleanBuild(Clean):
+    def run(self):
+        # Run setuptools clean
+        Clean.run(self)
+
+        # Folders and files to clean
+        folders = ["build", "__pycache__", "*.egg-info"]
+
+        for folder in folders:
+            # Get absolute path relative to this setup.py script
+            folder = os.path.abspath(os.path.dirname(__file__)) + folder
+            if os.path.exists(folder):
+                print(f"Removing folder: {folder}")
+                shutil.rmtree(folder, ignore_errors=True)
+
 
 setup(
     name="ttnte",
@@ -44,7 +156,7 @@ setup(
         ],
     },
     package_data={"ttnte.xs.data": ["*.json"]},
-    discription="Tensor Trains (TTs) applied to the Neutron Transport Equation (NTE).",
+    description="Tensor Trains (TTs) applied to the Neutron Transport Equation (NTE).",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     author="Patrick Myers",
@@ -60,4 +172,6 @@ setup(
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.9",
     ],
+    ext_modules=[CMakeExtension("ttnte.cpp")],
+    cmdclass={"build_ext": CMakeBuild, "clean": CleanBuild},
 )
