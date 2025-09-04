@@ -4,9 +4,10 @@ import sysconfig
 import warnings
 import subprocess
 import shutil
+from pathlib import Path
 from setuptools import find_packages, setup, Extension
 from setuptools.command.build_ext import build_ext as BuildExtension
-from setuptools.command.clean import clean as Clean
+from distutils.command.clean import clean as Clean
 import torch
 import pybind11
 
@@ -103,17 +104,35 @@ class CMakeBuild(BuildExtension):
 class CleanBuild(Clean):
     def run(self):
         # Run setuptools clean
-        Clean.run(self)
+        super().run()
 
-        # Folders and files to clean
-        folders = ["build", "__pycache__", "*.egg-info"]
+        # Get root directory
+        root = Path(os.path.abspath(os.path.dirname(__file__)))
 
-        for folder in folders:
+        # Clean folders
+        for folder in ["build", "ttnte.egg-info"]:
             # Get absolute path relative to this setup.py script
-            folder = os.path.abspath(os.path.dirname(__file__)) + folder
+            folder = root / folder
             if os.path.exists(folder):
                 print(f"Removing folder: {folder}")
                 shutil.rmtree(folder, ignore_errors=True)
+
+        # Iterate through and remove pycache directories
+        for dir in ["ttnte", "tests", "notebooks", "scripts"]:
+            # Add root abs path
+            dir = root / dir
+
+            # Delete pycache
+            for folder in dir.rglob("__pycache__"):
+                if folder.is_dir():
+                    print(f"Removing folder: {folder}")
+                    shutil.rmtree(folder, ignore_errors=True)
+
+        # Delete all ttnte/cpp/*.os files
+        for file in (root / "ttnte/cpp").rglob("*.so"):
+            if file.is_file():
+                print(f"Removing file: {file}")
+                file.unlink()
 
 
 setup(
