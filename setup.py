@@ -8,8 +8,6 @@ from pathlib import Path
 from setuptools import find_packages, setup, Extension
 from setuptools.command.build_ext import build_ext as BuildExtension
 from distutils.command.clean import clean as Clean
-import torch
-import pybind11
 
 # Get version from tt_nte/__init__.py (always last line)
 with open("ttnte/__init__.py") as f:
@@ -38,13 +36,16 @@ class CMakeBuild(BuildExtension):
             self.build_extension(ext)
 
     def build_extension(self, ext):
+        import torch
+
         ext_fullpath = self.get_ext_fullpath(ext.name)
         extdir = os.path.abspath(os.path.dirname(ext_fullpath))
 
         # Check if C++ backend should be compiled
         if bool(os.environ.get("COMPILE_CPP", True)):
             # Get configuration
-            cfg = "Debug" if self.debug else "Release"
+            cfg = "Debug" if bool(os.environ.get("DEBUG", False)) else "Release"
+            njobs = os.environ.get("NJOBS", os.cpu_count())
 
             # Get CMake arguments
             cmake_args = [
@@ -55,16 +56,22 @@ class CMakeBuild(BuildExtension):
                         "Python3_INCLUDE_DIR",
                         "Python3_EXECUTABLE",
                         "CMAKE_EXPORT_COMPILE_COMMANDS",
-                        "pybind11_DIR",
                         "TORCH_INSTALL_PREFIX",
+                        "TTNTE_PROFILE",
+                        "TTNTE_OPTIMIZED",
+                        "_GLIBCXX_USE_CXX11_ABI",
                     ],
                     [
                         sys.prefix,
                         sysconfig.get_path("include"),
                         sys.executable,
                         "ON",
-                        pybind11.get_cmake_dir(),
                         os.path.abspath(os.path.dirname(torch.__file__)),
+                        bool(os.environ.get("DEBUG", False))
+                        or bool(os.environ.get("TTNTE_PROFILE", False)),
+                        not bool(os.environ.get("DEBUG", False))
+                        or bool(os.environ.get("TTNTE_OPTIMIZED", False)),
+                        int(torch._C._GLIBCXX_USE_CXX11_ABI),
                     ],
                 )
             ] + [
@@ -85,19 +92,35 @@ class CMakeBuild(BuildExtension):
                 )
             except subprocess.CalledProcessError as e:
                 print(e.stderr)
-                warnings.warn("C++ backend failed to configure, falling back to Python")
+                if not bool(os.environ.get("TTNTE_CPP_BACKEND", False)):
+                    warnings.warn(
+                        "C++ backend failed to configure, falling back to Python"
+                    )
+                else:
+                    raise
                 return
 
             # Build
             try:
                 subprocess.run(
-                    ["cmake", "--build", ".", "--config", cfg],
+                    [
+                        "cmake",
+                        "--build",
+                        ".",
+                        "--config",
+                        cfg,
+                        "--parallel",
+                        str(njobs),
+                    ],
                     cwd=build_temp,
                     check=True,
                 )
             except subprocess.CalledProcessError as e:
                 print(e.stderr)
-                warnings.warn("C++ backend failed to build, falling back to Python")
+                if not bool(os.environ.get("TTNTE_CPP_BACKEND", False)):
+                    warnings.warn("C++ backend failed to build, falling back to Python")
+                else:
+                    raise
                 return
 
 

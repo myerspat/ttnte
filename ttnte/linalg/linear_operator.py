@@ -158,7 +158,6 @@ class LinearOperator(object):
                             + [tuple(s[0] for s in self._ops[i].shape)]
                         ),
                         constants=np.arange(len(self._ops[i].cores)),
-                        autojit=True,
                     )
                 )
 
