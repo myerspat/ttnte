@@ -14,7 +14,7 @@ namespace ttnte::linalg {
 TTOperator::TTOperator(const std::vector<torch::Tensor>& cores,
   const std::vector<ContractionStep>& csteps, const std::vector<int64_t>& lidxs,
   const std::vector<int64_t>& ridxs)
-  : cores_(cores), csteps_(csteps), lidxs_(lidxs), ridxs_(ridxs)
+  : Operator(), cores_(cores), csteps_(csteps), lidxs_(lidxs), ridxs_(ridxs)
 {
   // Check lengths
   assert(csteps.size() == lidxs.size());
@@ -102,11 +102,15 @@ std::vector<int64_t> TTOperator::get_shape(
 // =================================================
 // Public methods
 // =================================================
-torch::Tensor TTOperator::matvec(const torch::Tensor& x) const
+torch::Tensor TTOperator::apply(const torch::Tensor& x) const
 {
+  const auto& shape = input_shape();
+  assert(torch::numel(x) == std::accumulate(shape.cbegin(), shape.cend(), 1,
+                              std::multiplies<int64_t> {}));
+
   // Create tensor bank with all tensors
   std::vector<torch::Tensor> tensor_bank = cores_;
-  tensor_bank.push_back(x);
+  tensor_bank.push_back(x.reshape(input_shape()));
 
   // Loop through contraction steps
   for (size_t i = 0; i < csteps_.size(); ++i) {
@@ -127,7 +131,7 @@ torch::Tensor TTOperator::matvec(const torch::Tensor& x) const
 
   // Check there is one tensor left in tensor bank
   assert(tensor_bank.size() == 1);
-  return tensor_bank[0];
+  return tensor_bank[0].reshape(x.sizes());
 }
 
 void TTOperator::cuda(const int64_t idx)

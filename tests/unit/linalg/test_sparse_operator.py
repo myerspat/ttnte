@@ -1,10 +1,10 @@
 import torch as tn
 import pytest
 
-from ttnte.linalg.csr_operator import CSROperator as CSRO_python
+from ttnte.linalg.sparse_operator import SparseOperator as SO_python
 
 try:
-    from ttnte.cpp.linalg import CSROperator as CSRO_cpp
+    from ttnte.cpp.linalg import SparseOperator as SO_cpp
 
     cpp_available = True
 
@@ -12,18 +12,18 @@ except ImportError:
     cpp_available = False
 
 
-def run_csr_operator(CSROperator):
+def run_sparse_operator(SparseOperator):
     n = 500
 
     # Create an identity operator
     I_tn = tn.eye(n).to_sparse_csr()
 
     # Pass to TTOperator
-    I = CSROperator(I_tn)
+    I = SparseOperator(I_tn)
 
     # Run checks
-    assert I.input_shape == n
-    assert I.output_shape == n
+    assert I.input_shape == [n]
+    assert I.output_shape == [n]
     assert I.shape == (n, n)
     assert I.nnz == n
     assert I.nelements == 3 * n + 1
@@ -49,9 +49,9 @@ def run_csr_operator(CSROperator):
 
 
 def test_tt_operator_python():
-    run_csr_operator(CSRO_python)
+    run_sparse_operator(SO_python)
 
 
 @pytest.mark.skipif(not cpp_available, reason="C++ backend failed to import")
 def test_csr_operator_cpp():
-    run_csr_operator(CSRO_cpp)
+    run_sparse_operator(SO_cpp)

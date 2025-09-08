@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ttnte/linalg/contraction_step.hpp"
+#include "ttnte/linalg/operator.hpp"
 #include <ATen/core/ATen_fwd.h>
 #include <cassert>
 #include <cstddef>
@@ -14,7 +15,7 @@
 namespace py = pybind11;
 
 namespace ttnte::linalg {
-class TTOperator {
+class TTOperator final : public Operator {
 private:
   // =================================================
   // Private data
@@ -39,21 +40,23 @@ public:
 
   // =================================================
   // Public methods
-  torch::Tensor matvec(const torch::Tensor& x) const;
-
-  void cuda(const int64_t idx);
-
-  void cpu();
+  torch::Tensor apply(const torch::Tensor& x) const final override;
+  void cuda(const int64_t idx) final override;
+  void cpu() final override;
+  void multiply(const double& other) final override { cores_[0] *= other; };
 
   // =================================================
   // Getters / Setters
   std::size_t num_cores() const noexcept { return cores_.size(); };
   std::vector<torch::Tensor> cores() const noexcept { return cores_; };
-  std::vector<int64_t> output_shape() const noexcept
+  std::vector<int64_t> output_shape() const noexcept final override
   {
     return get_shape(0, 1);
   };
-  std::vector<int64_t> input_shape() const noexcept { return get_shape(1, 2); };
+  std::vector<int64_t> input_shape() const noexcept final override
+  {
+    return get_shape(1, 2);
+  };
   std::vector<std::tuple<int64_t, int64_t>> shape() const noexcept
   {
     // Initialize array
@@ -68,7 +71,7 @@ public:
 
     return shape;
   };
-  int64_t nelements() const noexcept
+  int64_t nelements() const noexcept final override
   {
     int64_t nelements = 0;
 
@@ -78,7 +81,7 @@ public:
 
     return nelements;
   }
-  double compression() const noexcept
+  double compression() const noexcept final override
   {
     int64_t full_nelements = 1;
 

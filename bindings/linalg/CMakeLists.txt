@@ -1,12 +1,23 @@
 # Relevant files from bindings/linalg
-set(LINALG_BINDINGS bindings.cpp tt_operator.cpp contraction_step.cpp
-                    csr_operator.cpp)
+set(LINALG_BINDINGS
+    bindings.cpp
+    tt_operator.cpp
+    contraction_step.cpp
+    sparse_operator.cpp
+    scatter_operator.cpp
+    fission_operator.cpp
+    operator.cpp
+    linear_operator.cpp)
 
 # Relevant files from src
 set(LINALG_SRC
     ${PROJECT_SOURCE_DIR}/src/linalg/tt_operator.cpp
     ${PROJECT_SOURCE_DIR}/src/linalg/contraction_step.cpp
-    ${PROJECT_SOURCE_DIR}/src/linalg/csr_operator.cpp)
+    ${PROJECT_SOURCE_DIR}/src/linalg/sparse_operator.cpp
+    ${PROJECT_SOURCE_DIR}/src/linalg/scatter_operator.cpp
+    ${PROJECT_SOURCE_DIR}/src/linalg/fission_operator.cpp
+    ${PROJECT_SOURCE_DIR}/src/linalg/operator.cpp
+    ${PROJECT_SOURCE_DIR}/src/linalg/linear_operator.cpp)
 
 add_library(linalg MODULE ${LINALG_BINDINGS} ${LINALG_SRC})
 target_include_directories(
