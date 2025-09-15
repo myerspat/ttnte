@@ -31,6 +31,7 @@ jobs:
         pip install git+https://github.com/ion-g-ion/torchTT.git
         pip install torch
         export TORCH_INSTALL_PREFIX=$(python3 -c "import torch, os; print(os.path.abspath(os.path.dirname(torch.__file__)))")
+        export _GLIBCXX_USE_CXX11_ABI=$(python3 -c "import torch; print(int(torch._C._GLIBCXX_USE_CXX11_ABI))")
         TTNTE_CPP_BACKEND=1 USE_CUDA=0 TORCH_CUDA_ARCH_LIST="" CUDA_TOOLKIT_ROOT_DIR="" NO_CUDA=1 pip install .
     - name: Lint with flake8
       run: |
