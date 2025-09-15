@@ -33,9 +33,16 @@ endif()
 
 if(NOT USE_CUDA)
   # Disable CUDA
-  set(TORCH_USE_CUDA OFF)
-  set(CAFFE2_USE_CUDA OFF)
-  set(Torch_CUDA_FOUND OFF)
+  set(CMAKE_DISABLE_FIND_PACKAGE_CUDA TRUE)
+  set(TORCH_USE_CUDA
+      OFF
+      CACHE BOOL "Torch: disable CUDA" FORCE)
+  set(CAFFE2_USE_CUDA
+      OFF
+      CACHE BOOL "Caffe2: disable CUDA" FORCE)
+  set(Torch_CUDA_FOUND
+      OFF
+      CACHE BOOL "Torch CUDA found" FORCE)
   message(STATUS "Compile pytorch without CUDA")
 endif()
 
