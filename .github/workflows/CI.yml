@@ -30,7 +30,7 @@ jobs:
         pip install torch==2.8.0+cpu --index-url https://download.pytorch.org/whl/cpu
         pip install https://github.com/dalcinl/igakit/archive/refs/heads/master.zip
         pip install git+https://github.com/ion-g-ion/torchTT.git
-        TTNTE_CPP_BACKEND=True USE_CUDA=False pip install .
+        TTNTE_CPP_BACKEND=1 USE_CUDA=0 TORCH_CUDA_ARCH_LIST="" CUDA_TOOLKIT_ROOT_DIR="" pip install .
     - name: Lint with flake8
       run: |
         cd ttnte
@@ -42,5 +42,5 @@ jobs:
       run: |
         cd tests
         pytest unit/*
-        TTNTE_CPP_BACKEND=False pytest regression/*
-        TTNTE_CPP_BACKEND=True pytest regression/*
+        TTNTE_CPP_BACKEND=1 pytest regression/*
+        TTNTE_CPP_BACKEND=1 pytest regression/*
