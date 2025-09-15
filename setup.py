@@ -17,6 +17,14 @@ with open("ttnte/__init__.py") as f:
 dir = os.path.dirname(os.path.abspath(__file__))
 
 
+def get_environ_bool(name, default):
+    return (
+        True
+        if os.environ.get(name, default).lower() in ("true", "on", "1", "yes")
+        else False
+    )
+
+
 class CMakeExtension(Extension):
     def __init__(self, name, sourcedir=""):
         super().__init__(name, sources=[])
@@ -42,14 +50,9 @@ class CMakeBuild(BuildExtension):
         extdir = os.path.abspath(os.path.dirname(ext_fullpath))
 
         # Check if C++ backend should be compiled
-        if os.environ.get("COMPILE_CPP", "true").lower() in ("true", "on", "1", "yes"):
+        if get_environ_bool("COMPILE_CPP", "true"):
             # Get configuration
-            cfg = (
-                "Debug"
-                if os.environ.get("DEBUG", "false").lower()
-                in ("true", "on", "yes", "1")
-                else "Release"
-            )
+            cfg = "Debug" if get_environ_bool("DEBUG", "false") else "Release"
             njobs = os.environ.get("NJOBS", os.cpu_count())
 
             # Get CMake arguments
@@ -64,6 +67,7 @@ class CMakeBuild(BuildExtension):
                         "TORCH_INSTALL_PREFIX",
                         "TTNTE_PROFILE",
                         "TTNTE_OPTIMIZED",
+                        "USE_CUDA",
                         "_GLIBCXX_USE_CXX11_ABI",
                     ],
                     [
@@ -72,10 +76,11 @@ class CMakeBuild(BuildExtension):
                         sys.executable,
                         "ON",
                         os.path.abspath(os.path.dirname(torch.__file__)),
-                        bool(os.environ.get("DEBUG", False))
-                        or bool(os.environ.get("TTNTE_PROFILE", False)),
-                        not bool(os.environ.get("DEBUG", False))
-                        or bool(os.environ.get("TTNTE_OPTIMIZED", False)),
+                        get_environ_bool("DEBUG", "false")
+                        or get_environ_bool("TTNTE_PROFILE", "false"),
+                        not get_environ_bool("DEBUG", "false")
+                        or get_environ_bool("TTNTE_OPTIMIZED", "false"),
+                        get_environ_bool("USE_CUDA", "true"),
                         int(torch._C._GLIBCXX_USE_CXX11_ABI),
                     ],
                 )
@@ -188,6 +193,7 @@ setup(
         "plotly",
         "h5py",
         "tqdm",
+        "pybind11",
     ],
     extras_require={
         "archive": [

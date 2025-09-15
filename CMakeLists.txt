@@ -19,6 +19,7 @@ set(CMAKE_CXX_STANDARD_INCLUDE_DIRECTORIES
 # Supported options
 option(TTNTE_PROFILE "Compile with profiling flags" OFF)
 option(TTNTE_OPTIMIZED "Compile with optimization" OFF)
+option(USE_CUDA "Use CUDA configuration of torch" ON)
 
 # Profiling flags
 if(TTNTE_ENABLE_PROFILE)
@@ -28,6 +29,11 @@ endif()
 # Optimization flags
 if(TTNTE_OPTIMIZED)
   list(APPEND flags -O3 -march=native)
+endif()
+
+# Set environment variable
+if(USE_CUDA)
+  set(TORCH_USE_CUDA off)
 endif()
 
 # Add to compile definitions
