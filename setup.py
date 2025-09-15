@@ -75,7 +75,11 @@ class CMakeBuild(BuildExtension):
                         sysconfig.get_path("include"),
                         sys.executable,
                         "ON",
-                        os.path.abspath(os.path.dirname(torch.__file__)),
+                        (
+                            os.path.abspath(os.path.dirname(torch.__file__))
+                            if not "TORCH_INSTALL_PREFIX" in os.environ
+                            else os.environ["TORCH_INSTALL_PREFIX"]
+                        ),
                         get_environ_bool("DEBUG", "false")
                         or get_environ_bool("TTNTE_PROFILE", "false"),
                         not get_environ_bool("DEBUG", "false")
@@ -93,14 +97,7 @@ class CMakeBuild(BuildExtension):
             build_temp = os.path.abspath(self.build_temp)
             os.makedirs(build_temp, exist_ok=True)
 
-            cpp_backend = False
-            if os.environ.get("TTNTE_CPP_BACKEND", "false").lower() in (
-                "true",
-                "yes",
-                "1",
-                "on",
-            ):
-                cpp_backend = True
+            cpp_backend = get_environ_bool("TTNTE_CPP_BACKEND", "false")
 
             # Configure
             try:
