@@ -270,7 +270,7 @@ void TTOperator::lr_orthogonalize(std::optional<int64_t> gpu_idx)
       {ranks[i] * std::get<0>(shape[i]) * std::get<1>(shape[i]), -1});
 
     // Run QR
-    const auto& [Q, R] = torch::linalg::qr(lcore);
+    const auto& [Q, R] = at::qr(lcore);
     lcore = torch::reshape(
       Q, {ranks[i], std::get<0>(shape[i]), std::get<1>(shape[i]), -1});
 
@@ -338,12 +338,12 @@ std::shared_ptr<TTOperator> TTOperator::round(
     // Run SVD
     torch::Tensor u, s, v;
     if (rcore.size(0) < 10 * rcore.size(1)) {
-      const auto& result = torch::linalg::svd(rcore, false, std::nullopt);
+      const auto& result = at::svd(rcore, true);
       u = std::get<0>(result);
       s = std::get<1>(result);
       v = std::get<2>(result);
     } else {
-      const auto& result = torch::linalg::svd(rcore.t(), false, std::nullopt);
+      const auto& result = at::svd(rcore.t(), true);
       u = std::get<2>(result).t_();
       s = std::get<1>(result);
       v = std::get<0>(result).t_();
@@ -375,11 +375,11 @@ std::shared_ptr<TTOperator> TTOperator::round(
     rcore = v.index({Slice(0, ranks[i], 1), Slice()})
               .reshape({ranks[i], std::get<0>(shape[i]), std::get<1>(shape[i]),
                 ranks[i + 1]});
-    lcore = torch::linalg::multi_dot(
-      {lcore, u.index({Slice(), Slice(0, ranks[i], 1)}),
-        torch::diag(s.index({Slice(0, ranks[i], 1)}))})
-              .reshape({ranks[i - 1], std::get<0>(shape[i - 1]),
-                std::get<1>(shape[i - 1]), ranks[i]});
+    lcore =
+      at::linalg_multi_dot({lcore, u.index({Slice(), Slice(0, ranks[i], 1)}),
+                             torch::diag(s.index({Slice(0, ranks[i], 1)}))})
+        .reshape({ranks[i - 1], std::get<0>(shape[i - 1]),
+          std::get<1>(shape[i - 1]), ranks[i]});
   }
 
   // Remove rank 1 on ends
