@@ -31,21 +31,6 @@ if(TTNTE_OPTIMIZED)
   list(APPEND flags -O3 -march=native)
 endif()
 
-if(NOT USE_CUDA)
-  # Disable CUDA
-  set(CMAKE_DISABLE_FIND_PACKAGE_CUDA TRUE)
-  set(TORCH_USE_CUDA
-      OFF
-      CACHE BOOL "Torch: disable CUDA" FORCE)
-  set(CAFFE2_USE_CUDA
-      OFF
-      CACHE BOOL "Caffe2: disable CUDA" FORCE)
-  set(Torch_CUDA_FOUND
-      OFF
-      CACHE BOOL "Torch CUDA found" FORCE)
-  message(STATUS "Compile pytorch without CUDA")
-endif()
-
 # Add to compile definitions
 list(APPEND flags _GLIBCXX_USE_CXX11_ABI=${_GLIBCXX_USE_CXX11_ABI})
 
@@ -67,6 +52,22 @@ find_package(
   COMPONENTS Interpreter Development
   REQUIRED)
 find_package(Torch REQUIRED)
+
+if(NOT USE_CUDA)
+  # Disable CUDA
+  set(CMAKE_DISABLE_FIND_PACKAGE_CUDA TRUE)
+  set(TORCH_USE_CUDA
+      OFF
+      CACHE BOOL "Torch: disable CUDA" FORCE)
+  set(CAFFE2_USE_CUDA
+      OFF
+      CACHE BOOL "Caffe2: disable CUDA" FORCE)
+  set(Torch_CUDA_FOUND
+      OFF
+      CACHE BOOL "Torch CUDA found" FORCE)
+  message(STATUS "Compile pytorch without CUDA")
+endif()
+
 find_library(TORCH_PYTHON_LIBRARY torch_python PATH
              "${TORCH_INSTALL_PREFIX}/lib")
 
