@@ -40,8 +40,8 @@ message(STATUS "Project source directory: ${PROJECT_SOURCE_DIR}")
 message(STATUS "ttnte C++ flags: ${flags}")
 message(STATUS "TORCH_INSTALL_PREFIX: ${TORCH_INSTALL_PREFIX}")
 
-# Set compile flags as global for now
-add_compile_definitions(${flags})
+# Set compile flags as global for now add_compile_definitions(${flags})
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${flags}")
 
 # ================================================================================
 # Get dependencies

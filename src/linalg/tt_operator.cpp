@@ -1,6 +1,7 @@
 #include "ttnte/linalg/tt_operator.hpp"
 #include <ATen/core/TensorBody.h>
-#include <ATen/ops/chain_matmul.h>
+#include <ATen/ops/qr.h>
+#include <ATen/ops/svd.h>
 #include <iostream>
 #include <ostream>
 #include <pybind11/pybind11.h>
