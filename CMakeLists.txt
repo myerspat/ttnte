@@ -31,11 +31,12 @@ if(TTNTE_OPTIMIZED)
   list(APPEND flags -O3 -march=native)
 endif()
 
-if(USE_CUDA)
+if(NOT USE_CUDA)
   # Disable CUDA
   set(TORCH_USE_CUDA OFF)
   set(CAFFE2_USE_CUDA OFF)
   set(Torch_CUDA_FOUND OFF)
+  message(STATUS "Compile pytorch without CUDA")
 endif()
 
 # Add to compile definitions
