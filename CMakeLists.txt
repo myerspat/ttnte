@@ -26,24 +26,6 @@ if(TTNTE_ENABLE_PROFILE)
   list(APPEND flags -g -fno-omit-frame-pointer)
 endif()
 
-# Show flags
-message(STATUS "Compiling ttnte C++ backend")
-message(STATUS "Project source directory: ${PROJECT_SOURCE_DIR}")
-message(STATUS "ttnte C++ flags: ${flags}")
-message(STATUS "TORCH_INSTALL_PREFIX: ${TORCH_INSTALL_PREFIX}")
-
-# Set compile flags as global for now add_compile_definitions(${flags})
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${flags}")
-
-# ================================================================================
-# Get dependencies
-list(APPEND CMAKE_PREFIX_PATH ${TORCH_INSTALL_PREFIX}/share/cmake)
-
-find_package(
-  Python3
-  COMPONENTS Interpreter Development
-  REQUIRED)
-
 # Optimization flags
 if(TTNTE_OPTIMIZED)
   list(APPEND flags -O3 -march=native)
@@ -79,6 +61,23 @@ endif()
 # Add to compile definitions
 list(APPEND flags _GLIBCXX_USE_CXX11_ABI=${_GLIBCXX_USE_CXX11_ABI})
 
+# Show flags
+message(STATUS "Compiling ttnte C++ backend")
+message(STATUS "Project source directory: ${PROJECT_SOURCE_DIR}")
+message(STATUS "ttnte C++ flags: ${flags}")
+message(STATUS "TORCH_INSTALL_PREFIX: ${TORCH_INSTALL_PREFIX}")
+
+# Set compile flags as global for now add_compile_definitions(${flags})
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${flags}")
+
+# ================================================================================
+# Get dependencies
+list(APPEND CMAKE_PREFIX_PATH ${TORCH_INSTALL_PREFIX}/share/cmake)
+
+find_package(
+  Python3
+  COMPONENTS Interpreter Development
+  REQUIRED)
 find_package(Torch REQUIRED)
 
 if(NOT USE_CUDA)
