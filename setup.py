@@ -42,9 +42,14 @@ class CMakeBuild(BuildExtension):
         extdir = os.path.abspath(os.path.dirname(ext_fullpath))
 
         # Check if C++ backend should be compiled
-        if bool(os.environ.get("COMPILE_CPP", True)):
+        if os.environ.get("COMPILE_CPP", "true").lower() in ("true", "on", "1", "yes"):
             # Get configuration
-            cfg = "Debug" if bool(os.environ.get("DEBUG", False)) else "Release"
+            cfg = (
+                "Debug"
+                if os.environ.get("DEBUG", "false").lower()
+                in ("true", "on", "yes", "1")
+                else "Release"
+            )
             njobs = os.environ.get("NJOBS", os.cpu_count())
 
             # Get CMake arguments
@@ -83,6 +88,15 @@ class CMakeBuild(BuildExtension):
             build_temp = os.path.abspath(self.build_temp)
             os.makedirs(build_temp, exist_ok=True)
 
+            cpp_backend = False
+            if os.environ.get("TTNTE_CPP_BACKEND", "false").lower() in (
+                "true",
+                "yes",
+                "1",
+                "on",
+            ):
+                cpp_backend = True
+
             # Configure
             try:
                 subprocess.run(
@@ -92,7 +106,7 @@ class CMakeBuild(BuildExtension):
                 )
             except subprocess.CalledProcessError as e:
                 print(e.stderr)
-                if not bool(os.environ.get("TTNTE_CPP_BACKEND", False)):
+                if not cpp_backend:
                     warnings.warn(
                         "C++ backend failed to configure, falling back to Python"
                     )
@@ -117,7 +131,7 @@ class CMakeBuild(BuildExtension):
                 )
             except subprocess.CalledProcessError as e:
                 print(e.stderr)
-                if not bool(os.environ.get("TTNTE_CPP_BACKEND", False)):
+                if not cpp_backend:
                     warnings.warn("C++ backend failed to build, falling back to Python")
                 else:
                     raise

@@ -44,7 +44,7 @@ torch::Tensor ScatterOperator::apply(const torch::Tensor& x) const
     S_[0].matmul(result.index({0, torch::indexing::Slice()})));
 
   // Iterate through the remaining moments
-  int i = 0;
+  int i = 1;
   for (int n = 1; n < S_.size(); n++) {
     for (int m = 0; m < n + 1; m++) {
       result.index_put_({i, torch::indexing::Slice()},
@@ -54,7 +54,13 @@ torch::Tensor ScatterOperator::apply(const torch::Tensor& x) const
   }
 
   // Compute the outer product with spherical harmonics
-  return torch::einsum("ld,labc->abcd", {result, Y_}).reshape(x.sizes());
+  return (this->scale() != 1.0)
+           ? this->scale() * torch::einsum("ld,labc->abcd", {result, Y_})
+                               .reshape(x.sizes())
+                               .contiguous()
+           : torch::einsum("ld,labc->abcd", {result, Y_})
+               .reshape(x.sizes())
+               .contiguous();
 }
 
 void ScatterOperator::cuda(const int64_t idx)
@@ -89,6 +95,12 @@ void ScatterOperator::cpu()
   for (auto& s : S_) {
     s = s.to(device);
   }
+}
+
+std::shared_ptr<Operator> ScatterOperator::add_(
+  const std::shared_ptr<Operator>& other)
+{
+  throw std::runtime_error("Combining two ScatterOperators is not allowed");
 }
 
 } // namespace ttnte::linalg

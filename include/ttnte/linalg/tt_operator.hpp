@@ -6,6 +6,8 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <ostream>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <torch/cuda.h>
@@ -38,17 +40,45 @@ public:
 
   TTOperator(const py::object& tt);
 
+  TTOperator(const std::vector<torch::Tensor>& cores);
+
   // =================================================
   // Public methods
   torch::Tensor apply(const torch::Tensor& x) const final override;
   void cuda(const int64_t idx) final override;
   void cpu() final override;
-  void multiply(const double& other) final override { cores_[0] *= other; };
+  std::shared_ptr<Operator> add_(
+    const std::shared_ptr<Operator>& other) final override;
+  torch::Tensor to_dense() const;
+
+  void lr_orthogonalize(std::optional<int64_t> gpu_idx = std::nullopt);
+  std::shared_ptr<TTOperator> round(const double& eps = 1e-12,
+    const int64_t& max_rank = std::numeric_limits<int64_t>::max(),
+    std::optional<int64_t> gpu_idx = std::nullopt);
 
   // =================================================
   // Getters / Setters
+  std::shared_ptr<TTOperator> typed_ptr()
+  {
+    return std::static_pointer_cast<TTOperator>(this->ptr());
+  };
+  std::shared_ptr<Operator> clone() const final override
+  {
+    return std::make_shared<TTOperator>(*this);
+  }
   std::size_t num_cores() const noexcept { return cores_.size(); };
   std::vector<torch::Tensor> cores() const noexcept { return cores_; };
+  std::vector<int64_t> ranks() const noexcept
+  {
+    std::vector<int64_t> ranks;
+    ranks.reserve(num_cores() - 1);
+
+    for (size_t i = 1; i < num_cores(); i++) {
+      ranks.push_back(cores_[i].size(0));
+    }
+
+    return ranks;
+  }
   std::vector<int64_t> output_shape() const noexcept final override
   {
     return get_shape(0, 1);
@@ -92,5 +122,9 @@ public:
     return static_cast<double>(full_nelements) /
            static_cast<double>(nelements());
   }
+
+  // =================================================
+  // Getters / Setters
+  friend std::ostream& operator<<(std::ostream& os, const TTOperator& op);
 };
 } // namespace ttnte::linalg

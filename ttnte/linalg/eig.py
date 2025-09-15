@@ -5,12 +5,10 @@ import numpy as np
 import torch as tn
 from torchtt._iterative_solvers import gmres_restart
 
-from .linear_operator import LinearOperator
-
 
 def eig(
-    LHS: LinearOperator,
-    RHS: Union[Tuple[LinearOperator], LinearOperator],
+    LHS,
+    RHS,
     tols: Optional[Union[Tuple[float], float]] = 1e-8,
     max_iters: Optional[Union[Tuple[int], int]] = 500,
     device: Optional[int] = None,
@@ -41,24 +39,36 @@ def eig(
         GMRES options including ``max_threshold``, ``threshold``, and ``resets``.
     """
     # Convert singles to tuples
-    RHS = (RHS,) if isinstance(RHS, LinearOperator) else RHS
+    RHS = RHS if isinstance(RHS, tuple) or isinstance(RHS, list) else (RHS,)
     tols = (tols,) if isinstance(tols, float) else tols
     max_iters = (max_iters,) if isinstance(max_iters, int) else max_iters
 
     # Check shapes of operators
     assert (
         isinstance(RHS, tuple)
-        and np.array([LHS.shape == RHS[i].shape for i in range(len(RHS))]).all()
+        and np.array(
+            [
+                np.prod(LHS.input_shape) == np.prod(RHS[i].input_shape)
+                for i in range(len(RHS))
+            ]
+        ).all()
+        and np.array(
+            [
+                np.prod(LHS.output_shape) == np.prod(RHS[i].output_shape)
+                for i in range(len(RHS))
+            ]
+        ).all()
     )
 
     # Send operators to GPU
     if device is not None:
-        LHS = LHS.cuda(device)
-        RHS = tuple([RHS[i].cuda(device) for i in range(len(RHS))])
+        LHS.cuda(device)
+        for op in RHS:
+            op.cuda(device)
 
     # Create initial guess
     k0 = tn.ones(1, device=device)
-    psi0 = tn.ones(LHS.M, device=device)
+    psi0 = tn.ones(LHS.input_shape, device=device)
     ft0 = (RHS[0] @ psi0).sum()
     psi = None
 
@@ -71,9 +81,9 @@ def eig(
             LinOp=LHS,
             b=1 / k0 * (RHS[0] @ psi0).reshape((-1, 1)),
             x0=psi0.reshape((-1, 1)),
-            N=np.prod(LHS.N),
+            N=np.prod(LHS.output_shape),
             **linear_solver_opts
-        )[0].reshape(LHS.N)
+        )[0].reshape(LHS.output_shape)
 
         # Calculate total fission source
         ft = (RHS[0] @ psi).sum()
@@ -117,8 +127,9 @@ def eig(
         ft0 = ft
 
     # Move operators back to CPU
-    LHS = LHS.cpu()
-    RHS = tuple([RHS[i].cpu() for i in range(len(RHS))])
+    LHS.cpu()
+    for op in RHS:
+        op.cpu()
     psi0 = psi0.cpu()
     psi = psi.cpu()
 

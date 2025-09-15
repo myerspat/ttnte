@@ -1,17 +1,47 @@
+import sys
+from typing import Optional
+
 import numpy as np
 import torch as tn
 import torchtt as tntt
 import cotengra as ctg
 
 from ttnte.linalg.utils._gen_expr import gen_expr
+from ttnte.linalg.operator import Operator
 
 
-class TTOperator:
+class TTOperator(Operator):
+    """
+    Tensor train (TT) operator class. This class handles the interface used
+    by GMRES. Particularly the operator-vector apply using Cotengra for
+    an optimized contraction path.
+
+    Attributes
+    ----------
+    num_cores: int
+        Number of cores in the TT.
+    cores: list of torch.Tensor
+        The cores in the TT.
+    ranks: list of int
+        The ranks between the cores.
+    output_shape: list of int
+        The shape of the resulting vector.
+    input_shape: list of int
+        The shape of the input vector.
+    shape: list of tuple of int
+        Mode sizes of the cores.
+    nelements: int
+        Number of numbers stored in the TT format.
+    compression: float
+        The compression ratio of the TT format.
+    """
+
     def __init__(self, tt: tntt.TT):
         """"""
+        super().__init__()
         assert tt.is_ttm
 
-        self._cores = tt.cores
+        self._cores = tt.clone().cores
         self._cores[0].squeeze_(0)
         self._cores[-1].squeeze_(-1)
 
@@ -36,11 +66,34 @@ class TTOperator:
     # ========================================================================
     # Public methods
 
+    def apply(self, x: tn.Tensor):
+        """"""
+        shape = x.shape
+        return (
+            self._matvec(
+                (
+                    (self._cores[0])
+                    if self.scale == 1.0
+                    else (self.scale * self._cores[0])
+                ),
+                *self._cores[1:],
+                x.reshape(
+                    (
+                        self._cores[0].shape[1],
+                        *(core.shape[2] for core in self._cores[1:]),
+                    )
+                ),
+            )
+            .reshape(shape)
+            .contiguous()
+        )
+
     def matvec(self, x: tn.Tensor):
         """"""
-        return self._matvec(*self._cores, x).contiguous()
+        return self.apply(x)
 
     def cuda(self, idx):
+        """"""
         assert tn.cuda.is_available() and tn.cuda.device_count() > 0
 
         # Send cores to GPU
@@ -48,15 +101,97 @@ class TTOperator:
             self._cores[i] = self._cores[i].cuda(idx)
 
     def cpu(self):
+        """"""
         # Get cores from GPU
         for i in range(len(self._cores)):
             self._cores[i] = self._cores[i].cpu()
+
+    def round(
+        self, eps: float = 1e-12, max_rank=sys.maxsize, gpu_idx: Optional[int] = None
+    ):
+        """"""
+        # Add back rank one ends
+        self._cores[0].unsqueeze_(0)
+        self._cores[-1].unsqueeze_(3)
+
+        # Place on GPU if requested
+        if gpu_idx != None:
+            self.cuda(gpu_idx)
+
+        # Create torchtt object
+        tt = tntt.TT(self._cores)
+
+        # Run rounding
+        tt = tt.round(eps, max_rank)
+
+        # Make new operator
+        op = TTOperator(tt)
+
+        # Remove from GPU
+        if gpu_idx != None:
+            op.cpu()
+            self.cpu()
+
+        # Remove rank one ends
+        self._cores[0].squeeze_(0)
+        self._cores[-1].squeeze_(3)
+
+        return op
+
+    def clone(self):
+        """"""
+        cores = self._cores
+        cores[0].unsqueeze_(0)
+        cores[-1].unsqueeze_(3)
+        return TTOperator(tntt.TT(cores))
+
+    def add_(self, other):
+        if not isinstance(other, TTOperator) or self.shape != other.shape:
+            raise RuntimeError("Both operators must be TTOperators of the same shape")
+
+        # Create tts
+        lcores = self.cores
+        rcores = other.cores
+
+        # Add single dimension
+        if lcores[0].ndim != 4:
+            lcores[0].unsqueeze_(0)
+        if rcores[0].ndim != 4:
+            rcores[0].unsqueeze_(0)
+        if lcores[-1].ndim != 4:
+            lcores[-1].unsqueeze_(3)
+        if rcores[-1].ndim != 4:
+            rcores[-1].unsqueeze_(3)
+
+        self._cores = (
+            self.scale * tntt.TT(lcores) + other.scale * tntt.TT(rcores)
+        ).cores
+
+        self._cores[0].squeeze_(0)
+        self._cores[-1].squeeze_(3)
+        self._scale = 1.0
+
+    def to_dense(self):
+        """"""
+        # Add back rank one ends
+        self._cores[0].unsqueeze_(0)
+        self._cores[-1].unsqueeze_(3)
+
+        # Create torchtt object
+        tt = tntt.TT(self._cores)
+        result = tt.full()
+
+        # Remove rank one ends
+        self._cores[0].squeeze_(0)
+        self._cores[-1].squeeze_(3)
+
+        return result
 
     # ========================================================================
     # Overloads
 
     def __matmul__(self, x: tn.Tensor):
-        return self.matvec(x)
+        return self.apply(x)
 
     # ========================================================================
     # Getters / Setters
@@ -68,6 +203,10 @@ class TTOperator:
     @property
     def cores(self):
         return self._cores
+
+    @property
+    def ranks(self):
+        return [core.shape[0] for core in self._cores[1:]]
 
     @property
     def output_shape(self):
@@ -87,7 +226,7 @@ class TTOperator:
 
     @property
     def compression(self):
-        return (
+        return float(
             np.prod([o * i for o, i in zip(self.output_shape, self.input_shape)])
             / self.nelements
         )

@@ -1,6 +1,7 @@
 import torch as tn
 import numpy as np
-from torchtt import eye
+from torchtt import eye, random
+import cotengra as ctg
 import pytest
 
 from ttnte.linalg.tt_operator import TTOperator as TTO_python
@@ -15,6 +16,8 @@ except ImportError:
 
 
 def run_tt_operator(TTOperator):
+    tn.set_default_dtype(tn.float64)
+
     # Shape of input
     shape = [10, 15, 20, 25, 30]
 
@@ -55,6 +58,49 @@ def run_tt_operator(TTOperator):
     a = tn.rand(shape)
     b = I @ a
     assert tn.equal(a, b)
+
+    # ==================================================================
+    # Get random tensor train
+    tt_rand_tntt = random([(10, 10), (15, 15), (20, 20)], R=10)
+    tt_rand_tntt += tt_rand_tntt
+
+    # Create TTOperator
+    tt_rand = TTOperator(tt_rand_tntt.clone())
+
+    # Test matmul for this random tensor using torchtt as the expected
+    a = tn.rand([10, 15, 20])
+    a_expected = (
+        ctg.einsum("abcd,defg,ghij,cfi->abehj", *tt_rand_tntt.cores, a)
+        .squeeze_(0)
+        .squeeze_(-1)
+    )
+    a_ttop = tt_rand @ a
+
+    # Check tensors are close
+    tn.testing.assert_close(a_ttop, a_expected)
+
+    # ==================================================================
+    # Test rounding
+    expected = (tt_rand_tntt).round(1e-10)
+    actual = tt_rand.round(1e-10)
+
+    # Check the tt was copied
+    for core_a, core_e in zip(actual.cores, tt_rand.cores):
+        assert not tn.equal(core_a, core_e)
+
+    # Checks
+    assert expected.R[1:-1] == actual.ranks
+    assert expected.shape == actual.shape
+
+    a = tn.rand([10, 15, 20])
+    a_expected = (
+        ctg.einsum("abcd,defg,ghij,cfi->abehj", *tt_rand_tntt.cores, a)
+        .squeeze_(0)
+        .squeeze_(-1)
+    )
+    a_ttop = tt_rand @ a
+    # Check tensors are close
+    tn.testing.assert_close(a_ttop, a_expected)
 
 
 def test_tt_operator_python():

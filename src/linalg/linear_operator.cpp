@@ -1,7 +1,10 @@
 #include "ttnte/linalg/linear_operator.hpp"
 #include "ttnte/linalg/operator.hpp"
+#include "ttnte/linalg/tt_operator.hpp"
 #include <numeric>
 #include <stdexcept>
+#include <typeindex>
+#include <unordered_map>
 
 namespace ttnte::linalg {
 
@@ -62,15 +65,13 @@ torch::Tensor LinearOperator::apply(const torch::Tensor& x) const
 {
   torch::InferenceMode gaurd;
 
-  // Iterate through and sum
-  const auto& result = operators_[0]->apply(x);
-
-  // Run through the remaining
-  for (size_t i = 1; i < operators_.size(); i++) {
-    result.add_(operators_[i]->apply(x));
-  }
-
-  return result;
+  // Sum all results
+  return std::accumulate(operators_.cbegin() + 1, operators_.cend(),
+    operators_[0]->apply(x),
+    [&](torch::Tensor& result, const std::shared_ptr<Operator>& op) {
+      return result + op->apply(x);
+    })
+    .reshape({-1, 1});
 }
 
 void LinearOperator::cuda(const int64_t idx)
@@ -85,6 +86,72 @@ void LinearOperator::cpu()
   for (auto& op : operators_) {
     op->cpu();
   }
+}
+
+std::shared_ptr<Operator> LinearOperator::add_(
+  const std::shared_ptr<Operator>& other)
+{
+  throw std::runtime_error("Adding two LinearOperators is not allowed");
+}
+
+std::shared_ptr<Operator> LinearOperator::combine() const
+{
+  // Group all types
+  std::unordered_map<std::type_index, std::vector<std::shared_ptr<Operator>>>
+    grouped;
+  for (const auto& op : this->operators_) {
+    const Operator& opref = *op;
+    grouped[typeid(opref)].push_back(op);
+  }
+
+  // Combine operators
+  std::vector<std::shared_ptr<Operator>> combined_operators;
+  combined_operators.reserve(grouped.size());
+
+  for (const auto& [type, ops] : grouped) {
+    combined_operators.push_back(
+      (ops.size() > 1)
+        ? std::reduce(std::next(ops.begin()), ops.end(), *ops.begin(),
+            [](const std::shared_ptr<Operator>& a,
+              const std::shared_ptr<Operator>& b) { return a->add(b); })
+        : ops[0]);
+  }
+
+  // Set scale and return
+  return std::make_shared<LinearOperator>(combined_operators);
+}
+
+std::shared_ptr<Operator> LinearOperator::round(const double& eps,
+  const int64_t& max_rank, std::optional<int64_t> gpu_idx) const
+{
+  // Vector of operators
+  std::vector<std::shared_ptr<Operator>> operators;
+  operators.reserve(operators_.size());
+
+  // New TTOperator
+  std::shared_ptr<Operator> new_ttop = nullptr;
+
+  for (const auto& op : operators_) {
+    // Sum all TTOperators and append the rest
+    if (const auto& ttop = std::dynamic_pointer_cast<TTOperator>(op)) {
+      if (new_ttop == nullptr) {
+        new_ttop = ttop;
+      } else {
+        new_ttop = new_ttop->add_(ttop);
+      }
+    } else {
+      operators.push_back(op);
+    }
+  }
+
+  // Round the TTOperator and append it
+  if (new_ttop != nullptr) {
+    operators.push_back(std::dynamic_pointer_cast<TTOperator>(new_ttop)->round(
+      eps, max_rank, gpu_idx));
+  }
+
+  // Set scale and return
+  return std::make_shared<LinearOperator>(operators);
 }
 
 } // namespace ttnte::linalg

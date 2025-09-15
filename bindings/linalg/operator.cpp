@@ -16,30 +16,12 @@ void register_Operator(py::module_& m)
     .def("__matmul__", &Operator::apply)
     .def("__add__", &Operator::operator+)
     .def("__sub__",
-      [](const std::shared_ptr<ttnte::linalg::Operator> self,
-        const std::shared_ptr<ttnte::linalg::LinearOperator> other) {
+      [](const std::shared_ptr<Operator>& self,
+        const std::shared_ptr<Operator>& other) {
         return self->operator-(other);
       })
-    .def("__sub__",
-      [](const std::shared_ptr<ttnte::linalg::Operator> self,
-        const std::shared_ptr<ttnte::linalg::TTOperator> other) {
-        return self->operator-(other);
-      })
-    .def("__sub__",
-      [](const std::shared_ptr<ttnte::linalg::Operator> self,
-        const std::shared_ptr<ttnte::linalg::SparseOperator> other) {
-        return self->operator-(other);
-      })
-    .def("__sub__",
-      [](const std::shared_ptr<ttnte::linalg::Operator> self,
-        const std::shared_ptr<ttnte::linalg::ScatterOperator> other) {
-        return self->operator-(other);
-      })
-    .def("__sub__",
-      [](const std::shared_ptr<ttnte::linalg::Operator> self,
-        const std::shared_ptr<ttnte::linalg::FissionOperator> other) {
-        return self->operator-(other);
-      })
+    .def("__neg__",
+      [](const std::shared_ptr<Operator>& self) { return self->operator-(); })
     .def("matvec", &Operator::apply)
     .def("apply", &Operator::apply)
     .def("cuda", &Operator::cuda)

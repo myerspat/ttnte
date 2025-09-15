@@ -29,7 +29,7 @@ jobs:
         python -m pip install flake8 pytest
         pip install https://github.com/dalcinl/igakit/archive/refs/heads/master.zip
         pip install git+https://github.com/ion-g-ion/torchTT.git
-        pip install .
+        TTNTE_CPP_BACKEND=True pip install .
     - name: Lint with flake8
       run: |
         cd ttnte
@@ -41,4 +41,5 @@ jobs:
       run: |
         cd tests
         pytest unit/*
-        pytest regression/*
+        TTNTE_CPP_BACKEND=False pytest regression/*
+        TTNTE_CPP_BACKEND=True pytest regression/*

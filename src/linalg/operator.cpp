@@ -7,6 +7,18 @@ namespace ttnte::linalg {
 // =================================================
 // Public methods
 // =================================================
+Operator::~Operator() = default;
+
+std::shared_ptr<Operator> Operator::add(
+  const std::shared_ptr<Operator>& other) const
+{
+  // Clone
+  auto op = this->clone();
+
+  // Add in place
+  return op->add_(other);
+}
+
 std::shared_ptr<Operator> Operator::operator+(
   const std::shared_ptr<Operator>& other)
 {
@@ -30,12 +42,17 @@ std::shared_ptr<Operator> Operator::operator+(
     std::vector<std::shared_ptr<Operator>> {self, other});
 }
 
-std::shared_ptr<Operator> Operator::operator*(const double& other)
+std::shared_ptr<Operator> Operator::operator-(
+  const std::shared_ptr<Operator>& other)
 {
-  // Get pointer for self
-  auto self = ptr();
-  self->multiply(other);
-  return self;
+  return this->operator+(other->operator-());
+}
+
+std::shared_ptr<Operator> Operator::operator-()
+{
+  auto copy = this->clone();
+  copy->set_scale(-copy->scale());
+  return copy;
 }
 
 } // namespace ttnte::linalg

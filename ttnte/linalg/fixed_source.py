@@ -36,11 +36,11 @@ def fixed_source(
     """
     # Send operators to GPU
     if device is not None:
-        T = T.cuda(device)
+        T.cuda(device)
         q = q.cuda(device)
 
     # Create initial guess
-    psi0 = tn.ones(T.M, device=device).flatten()
+    psi0 = tn.ones(T.input_shape, device=device).flatten()
     psi0 /= tn.linalg.norm(psi0, 2)
     psi = None
 
@@ -50,17 +50,17 @@ def fixed_source(
         LinOp=T,
         b=q.reshape((-1, 1)),
         x0=psi0.reshape((-1, 1)),
-        N=np.prod(T.N),
+        N=np.prod(T.output_shape),
         max_iterations=max_iters,
         threshold=tol,
         resets=restarts,
-    )[0].reshape(T.N)
+    )[0].reshape(T.output_shape)
 
     # Print finish
     print(f"GMRES Finished\nElapsed Time: {time.time() - start}")
 
     # Move operators back to CPU
-    T = T.cpu()
+    T.cpu()
     q = q.cpu()
     psi = psi.cpu()
     del psi0

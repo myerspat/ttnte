@@ -35,11 +35,19 @@ torch::Tensor FissionOperator::apply(const torch::Tensor& x) const
     torch::einsum("abcd,b,c->d", {x.reshape(shape), w_mu_, w_eta_});
 
   // Apply fission operator
-  return torch::einsum(
-    "abc,d->abcd", {torch::ones({4, w_mu_.size(0), w_eta_.size(0)},
-                      torch::TensorOptions().device(F_.device())),
-                     torch::matmul(F_, result)})
-    .reshape(x.sizes());
+  return (this->scale() != 1.0)
+           ? this->scale() * torch::einsum("abc,d->abcd",
+                               {torch::ones({4, w_mu_.size(0), w_eta_.size(0)},
+                                  torch::TensorOptions().device(F_.device())),
+                                 torch::matmul(F_, result)})
+                               .reshape(x.sizes())
+                               .contiguous()
+           : torch::einsum(
+               "abc,d->abcd", {torch::ones({4, w_mu_.size(0), w_eta_.size(0)},
+                                 torch::TensorOptions().device(F_.device())),
+                                torch::matmul(F_, result)})
+               .reshape(x.sizes())
+               .contiguous();
 }
 
 void FissionOperator::cuda(const int64_t idx)
@@ -67,6 +75,12 @@ void FissionOperator::cpu()
   F_ = F_.to(device);
   w_mu_ = w_mu_.to(device);
   w_eta_ = w_eta_.to(device);
+}
+
+std::shared_ptr<Operator> FissionOperator::add_(
+  const std::shared_ptr<Operator>& other)
+{
+  throw std::runtime_error("Combining two FissionOperators is not allowed");
 }
 
 } // namespace ttnte::linalg

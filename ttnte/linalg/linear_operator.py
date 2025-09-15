@@ -1,295 +1,179 @@
-import time
-from typing import List, Optional, Tuple, Union
+from functools import reduce
+from typing import Optional
+import sys
 
-import cotengra as ctg
 import numpy as np
 import torch as tn
-import torchtt as tntt
-
-from ttnte.assemblers.operators import SparseOperator
 
 
-class LinearOperator(object):
-    """
-    Linear operator class for ``(N, M)`` operator.
+class LinearOperator:
+    def __init__(self, *operators):
+        """"""
+        # Set operators
+        self._operators = list(operators)
 
-    Attributes
-    ----------
-    N: tuple of int
-        Output shape.
-    M: tuple of int
-        Input shape.
-    shape: list of tuple of int
-        Shape of operator.
-    mv_time: tuple of float
-        Matrix-vector timing average and standard deviation.
-    """
+        # Check the size of input and output
+        input_size = np.prod(self._operators[0].input_shape)
+        output_size = np.prod(self._operators[0].output_shape)
 
-    def __init__(
-        self,
-        ops: List[Union[tntt.TT, SparseOperator]],
-        N: Tuple[int],
-        M: Tuple[int],
-        P: Optional[Union[tntt.TT, SparseOperator]] = None,
-    ):
-        """
-        Initialize linear operator class.
-
-        Parameters
-        ----------
-        ops: list of torchtt.TT or ttnte.assemblers.operators.SparseOperator
-            List of operators. Each is applied and the results are summed.
-        N: tuple of int
-            Output shape.
-        M: tuple of int
-            Input shape.
-        P: torchtt.TT, ttnte.assemblers.operators.SparseOperator, or None
-            Preconditioner if applicable.
-        """
-        assert len(M) == len(N)
-        self._ops = ops
-        self._N = N
-        self._M = M
-
-        # Timing statistics
-        self._avg_mv_time = 0
-        self._sum_of_squares = 0
-        self._num_mv = 0
-
-        # Get correct linear operator method
-        if P is not None:
-            self._ops += [P]
-            self._matvec_method = LinearOperator._preconditioned
-        else:
-            self._matvec_method = LinearOperator._nonpreconditioned
-
-        # Create expressions
-        self._update_expressions()
+        for op in self._operators[1:]:
+            if input_size != np.prod(op.input_shape):
+                raise RuntimeError("Size of input must be the same for each operator")
+            if output_size != np.prod(op.output_shape):
+                raise RuntimeError("Size of output must be the same for each operator")
 
     # ========================================================================
-    # Methods
+    # Public methods
 
-    def matvec(self, x):
-        """
-        Apply operator to ``x``.
+    def append(self, op):
+        """"""
+        op = op if isinstance(op, list) else [op]
+        self._operators += op
 
-        Parameters
-        ----------
-        x: torch.Tensor
-            Input vector.
+    def prepend(self, op):
+        """"""
+        op = op if isinstance(op, list) else [op]
+        self._operators = op + self._operators
 
-        Returns
-        Ax: torch.Tensor
-            Flattened output vector.
-        """
-        # Increment number of matrix-vector products
-        self._num_mv += 1
+    def apply(self, x: tn.Tensor):
+        """"""
+        result = self._operators[0].apply(x)
+        for op in self._operators[1:]:
+            result += op.apply(x)
+        return result.reshape((-1, 1))
 
-        # Time and apply matrix to vector
-        start = time.time()
-        result = self._matvec_method(self._exprs, x.reshape(self._N)).reshape((-1, 1))
-        stop = time.time()
+    def matvec(self, x: tn.Tensor):
+        """"""
+        return self.apply(x)
 
-        # Calculate new variance
-        diff = stop - start
-        square = diff - self._avg_mv_time
-
-        # Calculate average time
-        self._avg_mv_time += (diff - self._avg_mv_time) / self._num_mv
-
-        # Update sum of squares
-        self._sum_of_squares = (
-            self._sum_of_squares + square * (diff - self._avg_mv_time)
-            if self._num_mv > 1
-            else 0
-        )
-
-        return result
-
-    def cuda(self, device):
-        """
-        Send operator to GPU.
-
-        Parameters
-        ----------
-        device: int
-            Index of device to send to.
-
-        Returns
-        -------
-        operator: ttnte.linalg.LinearOperator
-            Operator on GPU.
-        """
-        self._ops = [op.cuda(device) for op in self._ops]
-        self._update_expressions()
-        return self
+    def cuda(self, idx: int):
+        """"""
+        for op in self._operators:
+            op.cuda(idx)
 
     def cpu(self):
-        """
-        Get operator from GPU.
+        """"""
+        for op in self._operators:
+            op.cpu()
 
-        Returns
-        -------
-        operator: ttnte.linalg.LinearOperator
-            Operator taken from GPU.
-        """
-        self._ops = [op.cpu() for op in self._ops]
-        self._update_expressions()
+    def combine(self):
+        """"""
+        # Group operators by type
+        grouped = {}
+        for op in self._operators:
+            op_type = type(op)
+            if op_type in grouped:
+                grouped[op_type].append(op)
+            else:
+                grouped[op_type] = [op]
+
+        # Sum operators
+        new_ops = []
+        for ops in grouped.values():
+            if len(ops) == 1:
+                new_ops.append(ops[0])
+            else:
+                new_ops.append(reduce(lambda lop, rop: lop.add(rop), ops))
+
+        return LinearOperator(*new_ops)
+
+    def round(
+        self, eps: float = 1e-12, max_rank=sys.maxsize, gpu_idx: Optional[int] = None
+    ):
+        """"""
+        from ttnte.linalg.tt_operator import TTOperator
+
+        new_ops = []
+        tt = None
+
+        for op in self._operators:
+            if isinstance(op, TTOperator):
+                tt = op if tt is None else tt.add(op)
+            else:
+                new_ops.append(op)
+
+        # Round TT
+        if tt is not None:
+            new_ops.append(tt.round(eps, max_rank, gpu_idx))
+
+        return LinearOperator(*new_ops)
+
+    def clone(self):
+        """"""
+        return LinearOperator(*[op.clone() for op in self._operators])
+
+    def set_scale(self, scale):
+        """"""
+        # Set scale for operators
+        for i in range(len(self._operators)):
+            self._operators[i].scale *= scale
+
+    # ========================================================================
+    # Overloads
+
+    def __add__(self, other):
+        """"""
+        # Check if the other is another linear operator
+        if isinstance(other, LinearOperator):
+            # Clone operators and append
+            self._operators += [op.clone() for op in other.operators]
+        else:
+            # Append operators
+            self._operators.append(other)
+
         return self
 
-    def _update_expressions(self):
-        """
-        Create operator application method.
+    def __sub__(self, other):
+        """"""
+        # Check if the other is another linear operator
+        if isinstance(other, LinearOperator):
+            # Clone ops, flip scale, and append
+            for op in other.operators:
+                new_op = op.clone()
+                new_op.set_scale(-1.0)
+                self._operators.append(new_op)
 
-        This uses traditional ``@`` for
-        ``ttnte.assemblers.operators.SparseOperator``s and uses ``cotengra``
-        for ``torch.TT``s.
-        """
-        self._exprs = []
-        for i in range(len(self._ops)):
-            if isinstance(self._ops[i], tntt.TT):
-                self._exprs.append(
-                    ctg.contract_expression(
-                        self._gen_expression(self._ops[i]),
-                        *(
-                            [self._ops[i].cores[0][0, ...]]
-                            + self._ops[i].cores[1:-1]
-                            + [self._ops[i].cores[-1][..., 0]]
-                            + [tuple(s[0] for s in self._ops[i].shape)]
-                        ),
-                        constants=np.arange(len(self._ops[i].cores)),
-                    )
-                )
+        else:
+            # Clone and flip scale
+            new_op = other.clone()
+            new_op.scale *= -1.0
+            self._operators.append(new_op)
 
-            elif isinstance(self._ops[i], SparseOperator):
-                self._exprs.append(lambda x, i=i: self._ops[i] @ x)
+        return self
 
-            else:
-                raise RuntimeError(
-                    "Operator must be tntt.TT, tn.Tensor, ScatteringOperator, "
-                    + "FissionOperator"
-                )
+    def __neg__(self):
+        """"""
+        new_self = self.clone()
+        new_self.set_scale(-1)
+        return new_self
 
-    @staticmethod
-    def _gen_expression(op):
-        """
-        Generate einsum expression for TT operator.
-
-        Parameters
-        ----------
-        op: torch.TT
-            TT operator.
-
-        Returns
-        -------
-        ex: str
-            Einsum expression.
-        """
-        # Generate matrix-vector contraction expressions
-        ex = ""
-        inn = ""
-        out = ""
-        idx = 0
-        for _ in op.cores:
-            # Add core to expression
-            chars = [ctg.get_symbol(i) for i in range(idx, idx + 4)]
-            ex += "".join(chars) + ","
-
-            # Save indices for hitting vector
-            inn += chars[2]
-            out += chars[1]
-
-            idx += 3
-
-        ex = ex[1:-2] + ","
-        ex += f"{inn}->{out}"
-
-        return ex
-
-    @staticmethod
-    def _preconditioned(exprs, x):
-        """
-        Compute preconditioned application of this operator.
-
-        Parameters
-        ----------
-        x: tn.Tensor
-            Input tensor.
-
-        Returns
-        -------
-        Ax: tn.Tensor
-            Flattened output tensor.
-        """
-        return exprs[-1](LinearOperator._nonpreconditioned(exprs[:-1], x))
-
-    @staticmethod
-    def _nonpreconditioned(exprs, x):
-        """
-        Compute nonpreconditioned application of this operator.
-
-        Parameters
-        ----------
-        x: tn.Tensor
-            Input tensor.
-
-        Returns
-        -------
-        Ax: tn.Tensor
-            Flattened output tensor.
-        """
-        return sum(expr(x).flatten() for expr in exprs)
+    def __matmul__(self, x: tn.Tensor):
+        """"""
+        return self.apply(x)
 
     # ========================================================================
-    # Operations
-
-    def __matmul__(self, x):
-        """
-        Apply operator to ``x``.
-
-        Parameters
-        ----------
-        x: torch.Tensor
-            Input vector.
-
-        Returns
-        Ax: torch.Tensor
-            Flattened output vector.
-        """
-        return self.matvec(x)
-
-    # ========================================================================
-    # Properties
+    # Getters / Setters
 
     @property
-    def N(self):
-        return self._N
+    def operators(self):
+        return self._operators
 
     @property
-    def M(self):
-        return self._M
+    def input_shape(self):
+        return [np.prod(self._operators[0].input_shape)]
+
+    @property
+    def output_shape(self):
+        return [np.prod(self._operators[0].output_shape)]
 
     @property
     def shape(self):
-        return [(self._N[i], self._M[i]) for i in range(len(self._N))]
+        return self.output_shape + self.input_shape
 
     @property
-    def mv_time(self):
-        return self._avg_mv_time, np.sqrt(self._sum_of_squares / (self._num_mv - 1))
-
-    @property
-    def num_entries(self):
-        return sum(
-            [
-                (
-                    (sum([tn.numel(c) for c in op.cores]))
-                    if isinstance(op, tntt.TT)
-                    else op.num_entries
-                )
-                for op in self._ops
-            ]
-        )
+    def nelements(self):
+        return sum([op.nelements for op in self._operators])
 
     @property
     def compression(self):
-        return np.prod(self.N) * np.prod(self.M) / self.num_entries
+        return np.prod(self.input_shape + self.output_shape) / self.nelements

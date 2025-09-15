@@ -25,10 +25,15 @@ public:
   torch::Tensor apply(const torch::Tensor& x) const final override;
   void cuda(const int64_t idx) final override;
   void cpu() final override;
-  void multiply(const double& other) final override { w_mu_ *= other; }
+  std::shared_ptr<Operator> add_(
+    const std::shared_ptr<Operator>& other) final override;
 
   // =================================================
   // Getters / Setters
+  std::shared_ptr<Operator> clone() const final override
+  {
+    return std::make_shared<ScatterOperator>(*this);
+  }
   std::vector<torch::Tensor> S() const noexcept { return S_; }
   torch::Tensor Y() const noexcept { return Y_; }
   std::vector<int64_t> output_shape() const noexcept final override

@@ -3,18 +3,21 @@ import torch as tn
 import numpy as np
 import cotengra as ctg
 
+from ttnte.linalg.operator import Operator
 
-class ScatterOperator:
+
+class ScatterOperator(Operator):
     def __init__(
         self, S: List[tn.Tensor], Y: tn.Tensor, w_mu: tn.Tensor, w_eta: tn.Tensor
     ):
         """"""
+        super().__init__()
         assert Y.ndim == 4 and w_mu.ndim == 1 and w_eta.ndim == 1
 
-        self._S = S
-        self._Y = Y
-        self._w_mu = w_mu
-        self._w_eta = w_eta
+        self._S = [s.clone() for s in S]
+        self._Y = Y.clone()
+        self._w_mu = w_mu.clone()
+        self._w_eta = w_eta.clone()
 
         for s in S:
             assert s.ndim == 2
@@ -26,8 +29,10 @@ class ScatterOperator:
     # ========================================================================
     # Public methods
 
-    def matvec(self, x: tn.Tensor):
+    def apply(self, x: tn.Tensor):
         """"""
+        shape = x.shape
+
         # Apply spherical harmonics and angular integration
         result = ctg.einsum(
             "abcd,labc,b,c->ld",
@@ -41,16 +46,21 @@ class ScatterOperator:
         result[0,] = self._S[0] @ result[0,]
 
         # Compute remaining moments
-        i = 0
+        i = 1
         for n in range(1, len(self._S)):
-            for m in range(n + 1):
+            for _ in range(n + 1):
                 result[i,] = self._S[n] @ result[i,]
                 i += 1
 
         # Outer product with spherical harmonics
-        return (
-            ctg.einsum("ld,labc->abcd", result, self._Y).reshape(x.shape).contiguous()
+        result = (
+            ctg.einsum("ld,labc->abcd", result, self._Y).reshape(shape).contiguous()
         )
+        return result if self.scale == 1.0 else (self.scale * result)
+
+    def matvec(self, x: tn.Tensor):
+        """"""
+        return self.apply(x)
 
     def cuda(self, idx: int):
         """"""
@@ -66,11 +76,19 @@ class ScatterOperator:
         self._w_mu = self._w_mu.cpu()
         self._w_eta = self._w_eta.cpu()
 
+    def clone(self):
+        """"""
+        return ScatterOperator(self._S, self._Y, self._w_mu, self._w_eta)
+
+    def add_(self, other):
+        """"""
+        raise RuntimeError("This operator does not support addition")
+
     # ========================================================================
     # Overloads
 
     def __matmul__(self, x: tn.Tensor):
-        return self.matvec(x)
+        return self.apply(x)
 
     # ========================================================================
     # Getters / Setters
@@ -85,11 +103,15 @@ class ScatterOperator:
 
     @property
     def output_shape(self):
-        return np.prod(self._Y[1:]) * self._S[0].shape[0]
+        return [int(np.prod(self._Y.shape[1:]) * self._S[0].shape[0])]
 
     @property
     def input_shape(self):
         return self.output_shape
+
+    @property
+    def shape(self):
+        return self.output_shape + self.input_shape
 
     @property
     def nelements(self):
@@ -113,4 +135,4 @@ class ScatterOperator:
 
     @property
     def compression(self):
-        return self.output_shape * self.input_shape / self.nelements
+        return float(self.output_shape[0] * self.input_shape[0] / self.nelements)

@@ -31,7 +31,13 @@ SparseOperator::SparseOperator(const torch::Tensor& tensor) : Operator()
 // =================================================
 torch::Tensor SparseOperator::apply(const torch::Tensor& x) const
 {
-  return torch::matmul(tensor_, x.reshape({-1, 1})).reshape(x.sizes());
+  return (this->scale() != 1.0)
+           ? this->scale() * torch::matmul(tensor_, x.reshape({-1, 1}))
+                               .reshape(x.sizes())
+                               .contiguous()
+           : torch::matmul(tensor_, x.reshape({-1, 1}))
+               .reshape(x.sizes())
+               .contiguous();
 }
 
 void SparseOperator::cuda(const int64_t idx)
@@ -54,6 +60,27 @@ void SparseOperator::cpu()
 
   // Send tensor to CPU
   tensor_ = tensor_.to(device);
+}
+
+std::shared_ptr<Operator> SparseOperator::add_(
+  const std::shared_ptr<Operator>& other)
+{
+  if (auto sparse_other = std::dynamic_pointer_cast<SparseOperator>(other)) {
+    // Combine tensors
+    this->tensor_ = ((this->scale() != 1.0) ? (this->scale() * this->tensor_)
+                                            : this->tensor_) +
+                    ((sparse_other->scale() != 1.0)
+                        ? (sparse_other->scale() * sparse_other->tensor())
+                        : sparse_other->tensor());
+    this->set_scale(1.0);
+    return ptr();
+  }
+  throw std::runtime_error("Both operators must be a SparseOperator to add");
+}
+
+torch::Tensor SparseOperator::to_dense() const
+{
+  return tensor_.to_dense();
 }
 
 } // namespace ttnte::linalg

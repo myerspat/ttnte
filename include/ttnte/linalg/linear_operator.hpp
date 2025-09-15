@@ -2,6 +2,7 @@
 
 #include "ttnte/linalg/operator.hpp"
 #include <cstdint>
+#include <numeric>
 #include <torch/extension.h>
 
 namespace ttnte::linalg {
@@ -27,26 +28,40 @@ public:
   torch::Tensor apply(const torch::Tensor& x) const final override;
   void cuda(const int64_t idx) final override;
   void cpu() final override;
-  void multiply(const double& other) final override
-  {
-    for (auto& op : operators_) {
-      op->multiply(other);
-    }
-  }
+  std::shared_ptr<Operator> add_(
+    const std::shared_ptr<Operator>& other) final override;
+  std::shared_ptr<Operator> combine() const;
+  std::shared_ptr<Operator> round(const double& eps = 1e-12,
+    const int64_t& max_rank = std::numeric_limits<int64_t>::max(),
+    std::optional<int64_t> gpu_idx = std::nullopt) const;
 
   // =================================================
   // Getters / Setters
+  std::shared_ptr<Operator> clone() const final override
+  {
+    return std::make_shared<LinearOperator>(*this);
+  }
+  void set_scale(const double& scale) final override
+  {
+    for (auto& op : operators_) {
+      op->set_scale(scale * op->scale());
+    }
+  }
   std::vector<std::shared_ptr<Operator>> operators() const noexcept
   {
     return operators_;
   }
   std::vector<int64_t> input_shape() const noexcept final override
   {
-    return operators_.back()->input_shape();
+    const auto& shape = operators_.front()->input_shape();
+    return std::vector<int64_t> {std::accumulate(
+      shape.cbegin(), shape.cend(), 1, std::multiplies<int64_t> {})};
   }
   std::vector<int64_t> output_shape() const noexcept final override
   {
-    return operators_.front()->output_shape();
+    const auto& shape = operators_.front()->output_shape();
+    return std::vector<int64_t> {std::accumulate(
+      shape.cbegin(), shape.cend(), 1, std::multiplies<int64_t> {})};
   }
   int64_t nelements() const noexcept final override
   {
