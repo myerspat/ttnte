@@ -27,10 +27,9 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         python -m pip install flake8 pytest
-        pip install torch --index-url https://download.pytorch.org/whl/cpu
         pip install https://github.com/dalcinl/igakit/archive/refs/heads/master.zip
         pip install git+https://github.com/ion-g-ion/torchTT.git
-        TTNTE_CPP_BACKEND=True pip install .
+        TTNTE_CPP_BACKEND=True USE_CUDA=False pip install .
     - name: Lint with flake8
       run: |
         cd ttnte
