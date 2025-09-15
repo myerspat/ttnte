@@ -31,6 +31,33 @@ if(TTNTE_OPTIMIZED)
   list(APPEND flags -O3 -march=native)
 endif()
 
+if(NOT TORCH_INSTALL_PREFIX)
+  execute_process(
+    COMMAND
+      "${Python3_EXECUTABLE}" -c
+      "import torch, os; print(os.path.abspath(os.path.dirname(torch.__file__)))"
+    RESULT_VARIABLE _torch_query_result
+    OUTPUT_VARIABLE TORCH_INSTALL_PREFIX
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+
+  if(NOT _torch_query_result EQUAL 0)
+    message(FATAL_ERROR "Failed to locate torch via Python")
+  endif()
+endif()
+
+if(NOT _GLIBCXX_USE_CXX11_ABI)
+  execute_process(
+    COMMAND "${Python3_EXECUTABLE}" -c
+            "import torch; print(int(torch._C._GLIBCXX_USE_CXX11_ABI))"
+    RESULT_VARIABLE _torch_query_result
+    OUTPUT_VARIABLE _GLIBCXX_USE_CXX11_ABI
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+
+  if(NOT _torch_query_result EQUAL 0)
+    message(FATAL_ERROR "Failed to locate torch via Python")
+  endif()
+endif()
+
 # Add to compile definitions
 list(APPEND flags _GLIBCXX_USE_CXX11_ABI=${_GLIBCXX_USE_CXX11_ABI})
 

@@ -44,8 +44,6 @@ class CMakeBuild(BuildExtension):
             self.build_extension(ext)
 
     def build_extension(self, ext):
-        import torch
-
         ext_fullpath = self.get_ext_fullpath(ext.name)
         extdir = os.path.abspath(os.path.dirname(ext_fullpath))
 
@@ -64,34 +62,36 @@ class CMakeBuild(BuildExtension):
                         "Python3_INCLUDE_DIR",
                         "Python3_EXECUTABLE",
                         "CMAKE_EXPORT_COMPILE_COMMANDS",
-                        "TORCH_INSTALL_PREFIX",
                         "TTNTE_PROFILE",
                         "TTNTE_OPTIMIZED",
                         "USE_CUDA",
-                        "_GLIBCXX_USE_CXX11_ABI",
                     ],
                     [
                         sys.prefix,
                         sysconfig.get_path("include"),
                         sys.executable,
                         "ON",
-                        (
-                            os.path.abspath(os.path.dirname(torch.__file__))
-                            if not "TORCH_INSTALL_PREFIX" in os.environ
-                            else os.environ["TORCH_INSTALL_PREFIX"]
-                        ),
                         get_environ_bool("DEBUG", "false")
                         or get_environ_bool("TTNTE_PROFILE", "false"),
                         not get_environ_bool("DEBUG", "false")
                         or get_environ_bool("TTNTE_OPTIMIZED", "false"),
                         get_environ_bool("USE_CUDA", "true"),
-                        int(torch._C._GLIBCXX_USE_CXX11_ABI),
                     ],
                 )
             ] + [
                 f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extdir}",
                 f"-DCMAKE_BUILD_TYPE={cfg}",
             ]
+
+            if "TORCH_INSTALL_PREFIX" in os.environ:
+                cmake_args.append(
+                    f"-DTORCH_INSTALL_PREFIX={os.environ['TORCH_INSTALL_PREFIX']}"
+                )
+
+            if "_GLIBCXX_USE_CXX11_ABI" in os.environ:
+                cmake_args.append(
+                    f"-D_GLIBCXX_USE_CXX11_ABI={os.environ['_GLIBCXX_USE_CXX11_ABI']}"
+                )
 
             # Temporary build directory
             build_temp = os.path.abspath(self.build_temp)
