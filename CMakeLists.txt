@@ -31,9 +31,11 @@ if(TTNTE_OPTIMIZED)
   list(APPEND flags -O3 -march=native)
 endif()
 
-# Set environment variable
 if(USE_CUDA)
-  set(TORCH_USE_CUDA off)
+  # Disable CUDA
+  set(TORCH_USE_CUDA OFF)
+  set(CAFFE2_USE_CUDA OFF)
+  set(Torch_CUDA_FOUND OFF)
 endif()
 
 # Add to compile definitions
