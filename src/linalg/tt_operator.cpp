@@ -270,7 +270,7 @@ void TTOperator::lr_orthogonalize(std::optional<int64_t> gpu_idx)
       {ranks[i] * std::get<0>(shape[i]) * std::get<1>(shape[i]), -1});
 
     // Run QR
-    const auto& [Q, R] = at::qr(lcore);
+    const auto& [Q, R] = torch::qr(lcore);
     lcore = torch::reshape(
       Q, {ranks[i], std::get<0>(shape[i]), std::get<1>(shape[i]), -1});
 
@@ -338,12 +338,12 @@ std::shared_ptr<TTOperator> TTOperator::round(
     // Run SVD
     torch::Tensor u, s, v;
     if (rcore.size(0) < 10 * rcore.size(1)) {
-      const auto& result = at::svd(rcore, true);
+      const auto& result = torch::svd(rcore, false);
       u = std::get<0>(result);
       s = std::get<1>(result);
       v = std::get<2>(result);
     } else {
-      const auto& result = at::svd(rcore.t(), true);
+      const auto& result = torch::svd(rcore.t(), false);
       u = std::get<2>(result).t_();
       s = std::get<1>(result);
       v = std::get<0>(result).t_();
