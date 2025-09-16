@@ -7,8 +7,32 @@ import torch as tn
 
 
 class LinearOperator:
+    """
+    Linear operator class.
+
+    Attributes
+    ----------
+    operators: list of ttnte.linalg.Operator
+        List of operators in linear operator.
+    input_shape: list of int
+        Shape of input vector.
+    output_shape: list of int
+        Shape of output vector.
+    shape: list of int
+        Shape of the scattering operator.
+    nelements: int
+        Number of floating point numbers required to hold the operator.
+    compression: double
+        Compression ratio.
+    """
+
     def __init__(self, *operators):
-        """"""
+        """
+        Initialize linear operator.
+
+        *operators: list of ttnte.linalg.Operator
+            List of operators in linear operator.
+        """
         # Set operators
         self._operators = list(operators)
 
@@ -26,38 +50,80 @@ class LinearOperator:
     # Public methods
 
     def append(self, op):
-        """"""
+        """
+        Add operator(s) to the back of the list.
+
+        Parameters
+        ----------
+        op: ttnte.linalg.Operator
+            Operator to be added.
+        """
         op = op if isinstance(op, list) else [op]
         self._operators += op
 
     def prepend(self, op):
-        """"""
+        """
+        Add operator(s) to the front of the list.
+
+        Parameters
+        ----------
+        op: ttnte.linalg.Operator
+            Operator to be added.
+        """
         op = op if isinstance(op, list) else [op]
         self._operators = op + self._operators
 
     def apply(self, x: tn.Tensor):
-        """"""
+        """
+        Apply operator to a vector.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            Input vector.
+
+        Returns
+        -------
+        y: torch.Tensor
+            Output vector.
+        """
         result = self._operators[0].apply(x)
         for op in self._operators[1:]:
             result += op.apply(x)
         return result.reshape((-1, 1))
 
-    def matvec(self, x: tn.Tensor):
-        """"""
-        return self.apply(x)
+    # Other aliases
+    matvec = apply
+    __matmul__ = apply
 
     def cuda(self, idx: int):
-        """"""
+        """
+        Put operator on GPU.
+
+        Parameters
+        ----------
+        idx: int
+            GPU index.
+        """
         for op in self._operators:
             op.cuda(idx)
 
     def cpu(self):
-        """"""
+        """
+        Take operator off GPU.
+        """
         for op in self._operators:
             op.cpu()
 
     def combine(self):
-        """"""
+        """
+        Combine common operators.
+
+        Returns
+        -------
+        op: ttnte.linalg.LinearOperator
+            Combined operator.
+        """
         # Group operators by type
         grouped = {}
         for op in self._operators:
@@ -80,7 +146,23 @@ class LinearOperator:
     def round(
         self, eps: float = 1e-12, max_rank=sys.maxsize, gpu_idx: Optional[int] = None
     ):
-        """"""
+        """
+        Combine and round all ``ttnte.linalg.TTOperator``(s) in this linear operator.
+
+        Parameters
+        ----------
+        eps: float, default=1e-12
+            Tolerance for SVD truncation.
+        max_rank: int, default=sys.maxsize
+            Maximum rank in SVD truncation.
+        gpu_idx: int or None, default=None
+            Device index to run round on.
+
+        Returns
+        -------
+        op: ttnte.linalg.LinearOperator
+            Combined and rounded linear operator.
+        """
         from ttnte.linalg.tt_operator import TTOperator
 
         new_ops = []
@@ -99,11 +181,25 @@ class LinearOperator:
         return LinearOperator(*new_ops)
 
     def clone(self):
-        """"""
+        """
+        Clone operator class. This is a shallow clone.
+
+        Returns
+        -------
+        clone: ttnte.linalg.LinearOperator
+            The new clone.
+        """
         return LinearOperator(*[op.clone() for op in self._operators])
 
     def set_scale(self, scale):
-        """"""
+        """
+        Set scale of operators.
+
+        Parameters
+        ----------
+        scale: float
+            Scaler to multiply operators by.
+        """
         # Set scale for operators
         for i in range(len(self._operators)):
             self._operators[i].scale *= scale
@@ -112,7 +208,19 @@ class LinearOperator:
     # Overloads
 
     def __add__(self, other):
-        """"""
+        """
+        Add operators.
+
+        Parameters
+        ----------
+        other: ttnte.linalg.Operator or ttnte.linalg.LinearOperator
+            Add operators into one linear operator.
+
+        Returns
+        -------
+        op: ttnte.linalg.LinearOperator
+            New linear operator.
+        """
         # Check if the other is another linear operator
         if isinstance(other, LinearOperator):
             # Clone operators and append
@@ -124,7 +232,19 @@ class LinearOperator:
         return self
 
     def __sub__(self, other):
-        """"""
+        """
+        Subtract operators.
+
+        Parameters
+        ----------
+        other: ttnte.linalg.Operator or ttnte.linalg.LinearOperator
+            Subtract operators into one linear operator.
+
+        Returns
+        -------
+        op: ttnte.linalg.LinearOperator
+            New linear operator.
+        """
         # Check if the other is another linear operator
         if isinstance(other, LinearOperator):
             # Clone ops, flip scale, and append
@@ -142,14 +262,12 @@ class LinearOperator:
         return self
 
     def __neg__(self):
-        """"""
+        """
+        Negate operator.
+        """
         new_self = self.clone()
         new_self.set_scale(-1)
         return new_self
-
-    def __matmul__(self, x: tn.Tensor):
-        """"""
-        return self.apply(x)
 
     # ========================================================================
     # Getters / Setters

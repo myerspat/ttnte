@@ -7,10 +7,44 @@ from ttnte.linalg.operator import Operator
 
 
 class ScatterOperator(Operator):
+    """
+    Scatter operator class.
+
+    Attributes
+    ----------
+    S: torch.Tensor
+        Spatial and energy group potion of the operator.
+    Y: torch.Tensor
+        Moment information for higher order scattering.
+    input_shape: list of int
+        Shape of input vector.
+    output_shape: list of int
+        Shape of output vector.
+    shape: list of int
+        Shape of the scattering operator.
+    nelements: int
+        Number of floating point numbers required to hold the operator.
+    compression: double
+        Compression ratio.
+    """
+
     def __init__(
         self, S: List[tn.Tensor], Y: tn.Tensor, w_mu: tn.Tensor, w_eta: tn.Tensor
     ):
-        """"""
+        """
+        Initialize scattering operator.
+
+        Parameters
+        ----------
+        S: torch.Tensor
+            Spatial and energy group potion of the operator.
+        Y: torch.Tensor
+            Moment information for higher order scattering.
+        w_mu: torch.Tensor
+            Weights along polar cosine.
+        w_eta: torch.Tensor
+            Weights along azimuthal angle.
+        """
         super().__init__()
         assert Y.ndim == 4 and w_mu.ndim == 1 and w_eta.ndim == 1
 
@@ -30,7 +64,19 @@ class ScatterOperator(Operator):
     # Public methods
 
     def apply(self, x: tn.Tensor):
-        """"""
+        """
+        Apply operator to a vector.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            Input vector.
+
+        Returns
+        -------
+        y: torch.Tensor
+            Output vector.
+        """
         shape = x.shape
 
         # Apply spherical harmonics and angular integration
@@ -58,37 +104,49 @@ class ScatterOperator(Operator):
         )
         return result if self.scale == 1.0 else (self.scale * result)
 
-    def matvec(self, x: tn.Tensor):
-        """"""
-        return self.apply(x)
+    # Other aliases
+    matvec = apply
+    __matmul__ = apply
 
     def cuda(self, idx: int):
-        """"""
+        """
+        Put operator on GPU.
+
+        Parameters
+        ----------
+        idx: int
+            GPU index.
+        """
         self._S = [s.cuda(idx) for s in self._S]
         self._Y = self._Y.cuda(idx)
         self._w_mu = self._w_mu.cuda(idx)
         self._w_eta = self._w_eta.cuda(idx)
 
     def cpu(self):
-        """"""
+        """
+        Take operator off GPU.
+        """
         self._S = [s.cpu() for s in self._S]
         self._Y = self._Y.cpu()
         self._w_mu = self._w_mu.cpu()
         self._w_eta = self._w_eta.cpu()
 
     def clone(self):
-        """"""
+        """
+        Clone operator class. This is a shallow clone.
+
+        Returns
+        -------
+        clone: ttnte.linalg.ScatterOperator
+            The new clone.
+        """
         return ScatterOperator(self._S, self._Y, self._w_mu, self._w_eta)
 
     def add_(self, other):
-        """"""
+        """
+        Not implemented for scattering operator.
+        """
         raise RuntimeError("This operator does not support addition")
-
-    # ========================================================================
-    # Overloads
-
-    def __matmul__(self, x: tn.Tensor):
-        return self.apply(x)
 
     # ========================================================================
     # Getters / Setters

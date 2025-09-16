@@ -5,8 +5,38 @@ from ttnte.linalg.operator import Operator
 
 
 class SparseOperator(Operator):
+    """
+    Sparse operator class for dense, CSR, and COO pytorch tensors.
+
+    Attributes
+    ----------
+    tensor: torch.Tensor
+        The operator in pytorch.
+    output_shape: list of int
+        Output shape of operator.
+    input_shape: list of int
+        Input shape of operator
+    shape: list of int
+        Shape of the operator
+    nnz: int
+        Number of non-zeros.
+    nelements: int
+        Number of numbers used to store the operator.
+    compression: float
+        The compression ratio of this operator.
+    is_sparse: bool
+        Whether the operator is in a sparse format or not.
+    """
+
     def __init__(self, tensor: tn.Tensor):
-        """"""
+        """
+        Build SparseOperator.
+
+        Parameters
+        ----------
+        tensor: torch.Tensor
+            The operator as a pytorch tensor.
+        """
         super().__init__()
         if tensor.ndim > 2:
             raise RuntimeError("Tensors must be 2-D for SparseOperator")
@@ -22,27 +52,64 @@ class SparseOperator(Operator):
     # Public methods
 
     def apply(self, x: tn.Tensor):
-        """"""
+        """
+        Apply operator to a vector.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            Input vector.
+
+        Returns
+        -------
+        y: torch.Tensor
+            Output vector.
+        """
         shape = x.shape
         result = (self._tensor @ x.flatten()).reshape(shape).contiguous()
         return result if self.scale == 1.0 else self.scale * result
 
-    def matvec(self, x: tn.Tensor):
-        """"""
-        return self.apply(x)
+    # Aliases for this method
+    matvec = apply
+    __matmul__ = apply
 
     def cuda(self, idx):
-        """"""
+        """
+        Put operator on GPU.
+
+        Parameters
+        ----------
+        idx: int
+            GPU index.
+        """
         self._tensor = self._tensor.cuda(idx)
 
     def cpu(self):
-        """"""
+        """
+        Take operator off GPU.
+        """
         self._tensor = self._tensor.cpu()
 
     def clone(self):
+        """
+        Clone operator class. This is a shallow clone.
+
+        Returns
+        -------
+        clone: ttnte.linalg.SpaarseOperator
+            The new clone.
+        """
         return SparseOperator(self._tensor)
 
     def add_(self, other):
+        """
+        Add in-place two operators.
+
+        Parameters
+        ----------
+        other: ttnte.linalg.SparseOperator
+            The other operator.
+        """
         csr = False
         if (
             self._tensor.layout == tn.sparse_csr
@@ -61,13 +128,15 @@ class SparseOperator(Operator):
             self._tensor = self._tensor.to_sparse_csr()
 
     def to_dense(self):
+        """
+        Convert SparseOperator to a dense tensor.
+
+        Returns
+        -------
+        result: torch.Tensor
+            Resulting tensor.
+        """
         return self._tensor.to_dense()
-
-    # ========================================================================
-    # Overloads
-
-    def __matmul__(self, x: tn.Tensor):
-        return self.apply(x)
 
     # ========================================================================
     # Getters / Setters

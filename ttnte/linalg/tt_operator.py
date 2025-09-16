@@ -37,7 +37,14 @@ class TTOperator(Operator):
     """
 
     def __init__(self, tt: tntt.TT):
-        """"""
+        """
+        Build TTOperator.
+
+        Parameters
+        ----------
+        tt: torchtt.TT
+            The tensor train that is used. All cores should be 4-D.
+        """
         super().__init__()
         assert tt.is_ttm
 
@@ -66,8 +73,20 @@ class TTOperator(Operator):
     # ========================================================================
     # Public methods
 
-    def apply(self, x: tn.Tensor):
-        """"""
+    def apply(self, x: tn.Tensor) -> tn.Tensor:
+        """
+        Apply operator to a vector.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            Input vector.
+
+        Returns
+        -------
+        y: torch.Tensor
+            Output vector.
+        """
         shape = x.shape
         return (
             self._matvec(
@@ -88,12 +107,19 @@ class TTOperator(Operator):
             .contiguous()
         )
 
-    def matvec(self, x: tn.Tensor):
-        """"""
-        return self.apply(x)
+    # Aliases for this method
+    matvec = apply
+    __matmul__ = apply
 
-    def cuda(self, idx):
-        """"""
+    def cuda(self, idx: int):
+        """
+        Put operator on GPU.
+
+        Parameters
+        ----------
+        idx: int
+            GPU index.
+        """
         assert tn.cuda.is_available() and tn.cuda.device_count() > 0
 
         # Send cores to GPU
@@ -101,7 +127,9 @@ class TTOperator(Operator):
             self._cores[i] = self._cores[i].cuda(idx)
 
     def cpu(self):
-        """"""
+        """
+        Take operator off GPU.
+        """
         # Get cores from GPU
         for i in range(len(self._cores)):
             self._cores[i] = self._cores[i].cpu()
@@ -109,7 +137,19 @@ class TTOperator(Operator):
     def round(
         self, eps: float = 1e-12, max_rank=sys.maxsize, gpu_idx: Optional[int] = None
     ):
-        """"""
+        """
+        Round TT Operator.
+
+        Parameters
+        ----------
+        eps: float, default=1e-12
+            Tolerance for SVD rank truncation.
+        max_rank: int, default=sys.maxsize
+            Maximum rank for SVD rank truncaation.
+        gpu_idx: int or None, default=None
+            GPU index for rounding. If it's ``None`` then the rounding is done
+            on CPU.
+        """
         # Add back rank one ends
         self._cores[0].unsqueeze_(0)
         self._cores[-1].unsqueeze_(3)
@@ -139,13 +179,28 @@ class TTOperator(Operator):
         return op
 
     def clone(self):
-        """"""
+        """
+        Clone operator class. This is a shallow clone.
+
+        Returns
+        -------
+        clone: ttnte.linalg.TTOperator
+            The new clone.
+        """
         cores = self._cores
         cores[0].unsqueeze_(0)
         cores[-1].unsqueeze_(3)
         return TTOperator(tntt.TT(cores))
 
     def add_(self, other):
+        """
+        Add in-place two operators.
+
+        Parameters
+        ----------
+        other: ttnte.linalg.TTOperator
+            The other operator.
+        """
         if not isinstance(other, TTOperator) or self.shape != other.shape:
             raise RuntimeError("Both operators must be TTOperators of the same shape")
 
@@ -172,7 +227,14 @@ class TTOperator(Operator):
         self._scale = 1.0
 
     def to_dense(self):
-        """"""
+        """
+        Convert TTOperator to a dense tensor.
+
+        Returns
+        -------
+        result: torch.Tensor
+            Resulting tensor.
+        """
         # Add back rank one ends
         self._cores[0].unsqueeze_(0)
         self._cores[-1].unsqueeze_(3)
@@ -186,12 +248,6 @@ class TTOperator(Operator):
         self._cores[-1].squeeze_(3)
 
         return result
-
-    # ========================================================================
-    # Overloads
-
-    def __matmul__(self, x: tn.Tensor):
-        return self.apply(x)
 
     # ========================================================================
     # Getters / Setters

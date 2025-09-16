@@ -5,8 +5,38 @@ from ttnte.linalg.operator import Operator
 
 
 class FissionOperator(Operator):
+    """
+    Fission operator class.
+
+    Attributes
+    ----------
+    F: torch.Tensor
+        Spatial and energy group tensor for fission operator.
+    input_shape: list of int
+        Shape of input vector.
+    output_shape: list of int
+        Shape of output vector.
+    shape: list of int
+        Shape of the scattering operator.
+    nelements: int
+        Number of floating point numbers required to hold the operator.
+    compression: double
+        Compression ratio.
+    """
+
     def __init__(self, F: tn.Tensor, w_mu: tn.Tensor, w_eta: tn.Tensor):
-        """"""
+        """
+        Initialize fission operator.
+
+        Parameters
+        ----------
+        F: torch.Tensor
+            Spatial and energy group tensor for fission operator.
+        w_mu: torch.Tensor
+            Weights along polar cosine.
+        w_eta: torch.Tensor
+            Weights along azimuthal angle.
+        """
         super().__init__()
         assert F.ndim == 2 and w_mu.ndim == 1 and w_eta.ndim == 1
 
@@ -26,7 +56,19 @@ class FissionOperator(Operator):
     # Public methods
 
     def apply(self, x: tn.Tensor):
-        """"""
+        """
+        Apply operator to a vector.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            Input vector.
+
+        Returns
+        -------
+        y: torch.Tensor
+            Output vector.
+        """
         shape = x.shape
 
         # Angular integration
@@ -51,35 +93,47 @@ class FissionOperator(Operator):
         )
         return result if self.scale == 1.0 else self.scale * result
 
-    def matvec(self, x: tn.Tensor):
-        """"""
-        return self.apply(x)
+    # Other aliases
+    matvec = apply
+    __matmul__ = apply
 
     def cuda(self, idx: int):
-        """"""
+        """
+        Put operator on GPU.
+
+        Parameters
+        ----------
+        idx: int
+            GPU index.
+        """
         self._F = self._F.cuda(idx)
         self._w_mu = self._w_mu.cuda(idx)
         self._w_eta = self._w_eta.cuda(idx)
 
     def cpu(self):
-        """"""
+        """
+        Take operator off GPU.
+        """
         self._F = self._F.cpu()
         self._w_mu = self._w_mu.cpu()
         self._w_eta = self._w_eta.cpu()
 
     def clone(self):
-        """"""
+        """
+        Clone operator class. This is a shallow clone.
+
+        Returns
+        -------
+        clone: ttnte.linalg.ScatterOperator
+            The new clone.
+        """
         return FissionOperator(self._F, self._w_mu, self._w_eta)
 
     def add_(self, other):
-        """"""
+        """
+        Not implemented for fission operator.
+        """
         raise RuntimeError("This operator does not support addition")
-
-    # ========================================================================
-    # Overloads
-
-    def __matmul__(self, x: tn.Tensor):
-        return self.apply(x)
 
     # ========================================================================
     # Getters / Setters
