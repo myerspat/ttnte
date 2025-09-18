@@ -30,6 +30,7 @@ void register_TTOperator(py::module_& m)
       py::arg("max_rank") = std::numeric_limits<int64_t>::max(),
       py::arg("gpu_idx") = std::nullopt)
     .def("to_dense", &TTOperator::to_dense)
+    .def("clone", &TTOperator::clone)
     .def_property_readonly("num_cores", &TTOperator::num_cores)
     .def_property_readonly("cores", &TTOperator::cores)
     .def_property_readonly("output_shape", &TTOperator::output_shape)
