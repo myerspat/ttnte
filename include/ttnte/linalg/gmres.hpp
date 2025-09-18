@@ -67,4 +67,8 @@ void gmres_batched(LinearSystem& system, torch::Tensor& residual, double& rnorm,
 void gmres_incremental(LinearSystem& system, torch::Tensor& residual,
   double& rnorm, const double& ptol, const int64_t& restart);
 
+void rotate_vectors(const int64_t& i, torch::Tensor H, torch::Tensor givens);
+
+torch::Tensor givens_rotation(const torch::Tensor& factors);
+
 } // namespace ttnte::linalg

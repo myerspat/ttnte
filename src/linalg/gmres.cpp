@@ -164,7 +164,7 @@ std::tuple<torch::Tensor, torch::Tensor> gmres(std::shared_ptr<Operator> A,
 
   // Calculate residual
   torch::Tensor residual = system.calc_residual();
-  torch::Tensor residual_log = torch::empty({maxiter.value()});
+  torch::Tensor residual_log = torch::empty({maxiter.value() + 1});
   double rnorm = safe_normalize(residual);
   residual_log.index_put_({0}, rnorm + 1);
 
@@ -196,7 +196,7 @@ std::tuple<torch::Tensor, torch::Tensor> gmres(std::shared_ptr<Operator> A,
   }
 
   // Begin iteration
-  while (rnorm > atol && i < maxiter.value()) {
+  do {
     gmres_func(system, residual, rnorm, ptol, restart);
     i++;
 
@@ -218,7 +218,7 @@ std::tuple<torch::Tensor, torch::Tensor> gmres(std::shared_ptr<Operator> A,
         callback.value()(i, rnorm, system.x);
       }
     }
-  }
+  } while (rnorm > atol && i < maxiter.value());
 
   if (gpu_idx.has_value()) {
     // Get CPU
@@ -253,10 +253,10 @@ void gmres_batched(LinearSystem& system, torch::Tensor& residual, double& rnorm,
   int64_t k = 0;
 
   // Run iteration
-  while (k < restart && !breakdown) {
+  do {
     breakdown = kth_arnoldi_iteration(k, system.A, V, H);
     k++;
-  }
+  } while (k < restart && !breakdown);
 
   // Initialize beta
   torch::Tensor beta = torch::zeros({restart + 1, 1}, H.options());
@@ -283,24 +283,93 @@ void gmres_incremental(LinearSystem& system, torch::Tensor& residual,
   torch::Tensor V = residual.clone();
   V = torch::constant_pad_nd(V, {0, restart});
 
-  // Create initial upper Hessenberg matrix
-  torch::Tensor H = torch::eye(restart, restart + 1, V.options());
+  // Create initial upper rectangular matrix
+  torch::Tensor R = torch::eye(restart, restart + 1, V.options());
 
   // Givens and beta
   torch::Tensor givens = torch::zeros({restart, 2}, V.options());
-  torch::Tensor beta = torch::zeros({restart + 1, 1}, H.options());
-  beta.index_put_({0, 0}, rnorm);
+  torch::Tensor beta = torch::zeros({restart + 1}, V.options());
+  beta.index_put_({0}, rnorm);
 
   // Iteration data
   int64_t k = 0;
-
-  throw std::runtime_error("Incremental GMRES is not finished");
+  double presid = 1.0;
+  bool breakdown = false;
 
   do {
     // Run kth arnoldi iteration
-    kth_arnoldi_iteration(k, system.A, V, H);
+    bool breakdown = kth_arnoldi_iteration(k, system.A, V, R);
 
-  } while (rnorm > ptol && k < restart);
+    // Get view into kth row of R
+    torch::Tensor R_row = R.index({k, Slice()});
+
+    // Apply rotation
+    for (int64_t i = 0; i < k; i++) {
+      rotate_vectors(i, R_row, givens.index({i, Slice()}));
+    }
+
+    // Calculate Givens factors and apply last rotation to R
+    givens.index_put_(
+      {k, Slice()}, givens_rotation(R_row.index({Slice(k, k + 2)})));
+    rotate_vectors(k, R_row, givens.index({k, Slice()}));
+
+    // Rotate beta vector and update residual norm
+    rotate_vectors(k, beta, givens.index({k, Slice()}));
+    presid =
+      abs(beta[k + 1].item<double>() * givens.index({k, 1}).item<double>());
+
+    k++;
+  } while (presid > ptol * 1e-2 && k < restart && !breakdown);
+
+  // Solve system and update x
+  system.x += V.index({Slice(), Slice(0, -1)})
+                .matmul(torch::linalg_solve_triangular(
+                  R.index({Slice(), Slice(0, -1)}).t(),
+                  beta.index({Slice(0, -1)}).reshape({-1, 1}), true));
+
+  // Update residual and its norm
+  residual = system.calc_residual();
+  rnorm = safe_normalize(residual);
+}
+
+void rotate_vectors(const int64_t& i, torch::Tensor H, torch::Tensor givens)
+{
+  assert(givens.ndimensional() == 1 && givens.size(0) == 2);
+  assert(H.ndimensional() == 1);
+
+  double x = givens[0].item<double>() * H[i].item<double>() -
+             givens[1].item<double>() * H[i + 1].item<double>();
+  double y = givens[1].item<double>() * H[i].item<double>() +
+             givens[0].item<double>() * H[i + 1].item<double>();
+
+  H.index_put_({Slice(i, i + 2)}, torch::tensor({x, y}, H.options()));
+}
+
+torch::Tensor givens_rotation(const torch::Tensor& factors)
+{
+  torch::Tensor new_factors = torch::tensor({1, 0});
+
+  // If second factor is zero
+  if (abs(factors.index({1}).item<double>()) == 0) {
+    return torch::tensor({1.0, 0.0}, factors.options());
+  }
+
+  // If first factor < second factor
+  if (abs(factors.index({0}).item<double>()) <
+      abs(factors.index({1}).item<double>())) {
+    double t =
+      -(factors.index({0}).item<double>() / factors.index({1}).item<double>());
+    double r = 1 / std::sqrt(1.0 + abs(t) * abs(t));
+
+    return torch::tensor({r * t, r}, factors.options());
+  }
+
+  // If first factor > second factor
+  double t =
+    -(factors.index({1}).item<double>() / factors.index({0}).item<double>());
+  double r = 1 / std::sqrt(1.0 + abs(t) * abs(t));
+
+  return torch::tensor({r, r * t}, factors.options());
 }
 
 } // namespace ttnte::linalg
