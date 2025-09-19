@@ -83,4 +83,10 @@ torch::Tensor SparseOperator::to_dense() const
   return tensor_.to_dense();
 }
 
+std::shared_ptr<Operator> SparseOperator::type(
+  const caffe2::TypeMeta& dtype) const
+{
+  return std::make_shared<SparseOperator>(tensor_.to(dtype));
+}
+
 } // namespace ttnte::linalg

@@ -24,6 +24,10 @@ class LinearOperator:
         Number of floating point numbers required to hold the operator.
     compression: double
         Compression ratio.
+    dtype: torch.dtype
+        Data type of operator.
+    device: torch.device
+        Device the operator is on.
     """
 
     def __init__(self, *operators):
@@ -191,6 +195,27 @@ class LinearOperator:
         """
         return LinearOperator(*[op.clone() for op in self._operators])
 
+    def type(self, dtype: tn.dtype):
+        """
+        Cast cores to a different type.
+
+        Parameters
+        ----------
+        dtype: torch.dtype
+            Type to cast to.
+
+        Returns
+        -------
+        op: ttnte.linalg.FissionOperator
+            New operator with casted cores.
+        """
+        ops = []
+
+        for op in self._operators:
+            ops.append(op.type(dtype))
+
+        return LinearOperator(ops)
+
     def set_scale(self, scale):
         """
         Set scale of operators.
@@ -295,3 +320,11 @@ class LinearOperator:
     @property
     def compression(self):
         return np.prod(self.input_shape + self.output_shape) / self.nelements
+
+    @property
+    def dtype(self):
+        return self._operators[0].dtype
+
+    @property
+    def device(self):
+        return self._operators[0].device

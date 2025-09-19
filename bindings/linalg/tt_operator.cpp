@@ -1,9 +1,13 @@
 #include "ttnte/linalg/tt_operator.hpp"
 #include "ttnte/linalg/operator.hpp"
+#include <c10/util/typeid.h>
 #include <memory>
 #include <pybind11/pybind11.h>
 
 namespace py = pybind11;
+
+py::object caffe2torch(const caffe2::TypeMeta& dtype);
+caffe2::TypeMeta torch2caffe(const py::object& dtype);
 
 void register_TTOperator(py::module_& m)
 {
@@ -31,6 +35,10 @@ void register_TTOperator(py::module_& m)
       py::arg("gpu_idx") = std::nullopt)
     .def("to_dense", &TTOperator::to_dense)
     .def("clone", &TTOperator::clone)
+    .def("type",
+      [](const TTOperator& self, const py::object& dtype) {
+        return self.type(torch2caffe(dtype));
+      })
     .def_property_readonly("num_cores", &TTOperator::num_cores)
     .def_property_readonly("cores", &TTOperator::cores)
     .def_property_readonly("output_shape", &TTOperator::output_shape)
@@ -39,5 +47,9 @@ void register_TTOperator(py::module_& m)
     .def_property_readonly("ranks", &TTOperator::ranks)
     .def_property_readonly("nelements", &TTOperator::nelements)
     .def_property_readonly("compression", &TTOperator::compression)
+    .def_property_readonly(
+      "device", [](const TTOperator& self) { return py::cast(self.device()); })
+    .def_property_readonly(
+      "dtype", [](const TTOperator& self) { return caffe2torch(self.dtype()); })
     .doc() = pyclass.attr("__doc__");
 }

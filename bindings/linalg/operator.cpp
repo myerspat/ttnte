@@ -1,11 +1,5 @@
 #include "ttnte/linalg/operator.hpp"
 
-#include "ttnte/linalg/fission_operator.hpp"
-#include "ttnte/linalg/linear_operator.hpp"
-#include "ttnte/linalg/scatter_operator.hpp"
-#include "ttnte/linalg/sparse_operator.hpp"
-#include "ttnte/linalg/tt_operator.hpp"
-
 namespace py = pybind11;
 
 void register_Operator(py::module_& m)

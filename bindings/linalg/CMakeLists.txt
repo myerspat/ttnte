@@ -8,7 +8,8 @@ set(LINALG_BINDINGS
     fission_operator.cpp
     operator.cpp
     linear_operator.cpp
-    gmres.cpp)
+    gmres.cpp
+    utils.cpp)
 
 # Relevant files from src
 set(LINALG_SRC

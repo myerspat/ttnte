@@ -26,6 +26,8 @@ def run_sparse_operator(SparseOperator):
     assert I.output_shape == [n]
     assert I.shape == (n, n)
     assert I.nnz == n
+    assert I.dtype == tn.float64
+    assert I.device == tn.device("cpu")
     assert I.nelements == 3 * n + 1
     assert I.compression == n * n / (3 * n + 1)
     assert tn.equal(I.tensor.values(), I_tn.values())
@@ -46,6 +48,10 @@ def run_sparse_operator(SparseOperator):
     a = tn.rand(n)
     b = I @ a
     assert tn.equal(a, b)
+
+    # Test type casting
+    I = I.type(tn.float32)
+    assert I.dtype == tn.float32
 
 
 def test_tt_operator_python():

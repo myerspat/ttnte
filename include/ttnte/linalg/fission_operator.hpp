@@ -26,6 +26,8 @@ public:
   void cpu() final override;
   std::shared_ptr<Operator> add_(
     const std::shared_ptr<Operator>& other) final override;
+  std::shared_ptr<Operator> type(
+    const caffe2::TypeMeta& dtype) const final override;
 
   // =================================================
   // Getters / Setters
@@ -66,6 +68,8 @@ public:
     return static_cast<double>(output_shape()[0] * input_shape()[0]) /
            static_cast<double>(nelements());
   }
+  torch::Device device() const noexcept final override { return F_.device(); }
+  caffe2::TypeMeta dtype() const noexcept final override { return F_.dtype(); }
 };
 
 } // namespace ttnte::linalg

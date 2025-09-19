@@ -15,6 +15,15 @@ FissionOperator::FissionOperator(
   assert(w_mu_.ndimension() == 1);
   assert(w_eta_.ndimension() == 1);
 
+  const auto& dtype = F_.dtype();
+  const auto& device = F_.device();
+
+  if (w_mu_.dtype() != dtype || w_mu_.device() != device ||
+      w_eta_.dtype() != dtype || w_eta_.device() != device) {
+    throw std::runtime_error(
+      "F, w_mu, and w_eta must be the same type and on the same device");
+  }
+
   // Check layout
   if (F_.is_sparse() && F_.layout() != torch::kSparse &&
       F_.layout() != torch::kSparseCsr) {
@@ -81,6 +90,13 @@ std::shared_ptr<Operator> FissionOperator::add_(
   const std::shared_ptr<Operator>& other)
 {
   throw std::runtime_error("Combining two FissionOperators is not allowed");
+}
+
+std::shared_ptr<Operator> FissionOperator::type(
+  const caffe2::TypeMeta& dtype) const
+{
+  return std::make_shared<FissionOperator>(
+    F_.to(dtype), w_mu_.to(dtype), w_eta_.to(dtype));
 }
 
 } // namespace ttnte::linalg

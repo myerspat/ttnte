@@ -26,6 +26,10 @@ class SparseOperator(Operator):
         The compression ratio of this operator.
     is_sparse: bool
         Whether the operator is in a sparse format or not.
+    dtype: torch.dtype
+        Data type of tensor.
+    device: torch.device
+        Device the tensor is on.
     """
 
     def __init__(self, tensor: tn.Tensor):
@@ -138,6 +142,22 @@ class SparseOperator(Operator):
         """
         return self._tensor.to_dense()
 
+    def type(self, dtype: tn.dtype):
+        """
+        Cast cores to a different type.
+
+        Parameters
+        ----------
+        dtype: torch.dtype
+            Type to cast to.
+
+        Returns
+        -------
+        op: ttnte.linalg.SparseOperator
+            New operator with casted cores.
+        """
+        return SparseOperator(self._tensor.to(dtype))
+
     # ========================================================================
     # Getters / Setters
 
@@ -179,3 +199,11 @@ class SparseOperator(Operator):
     @property
     def is_sparse(self):
         return True
+
+    @property
+    def dtype(self):
+        return self._tensor.dtype
+
+    @property
+    def device(self):
+        return self._tensor.device

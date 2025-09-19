@@ -26,6 +26,10 @@ class ScatterOperator(Operator):
         Number of floating point numbers required to hold the operator.
     compression: double
         Compression ratio.
+    dtype: torch.dtype
+        Data type of operator.
+    device: torch.device
+        Device the operator is on.
     """
 
     def __init__(
@@ -142,6 +146,29 @@ class ScatterOperator(Operator):
         """
         return ScatterOperator(self._S, self._Y, self._w_mu, self._w_eta)
 
+    def type(self, dtype: tn.dtype):
+        """
+        Cast cores to a different type.
+
+        Parameters
+        ----------
+        dtype: torch.dtype
+            Type to cast to.
+
+        Returns
+        -------
+        op: ttnte.linalg.FissionOperator
+            New operator with casted cores.
+        """
+        S = []
+
+        for s in self._S:
+            S.append(s.to(dtype))
+
+        return ScatterOperator(
+            S, self._Y.to(dtype), self._w_mu.to(dtype), self._w_eta.to(dtype)
+        )
+
     def add_(self, other):
         """
         Not implemented for scattering operator.
@@ -194,3 +221,11 @@ class ScatterOperator(Operator):
     @property
     def compression(self):
         return float(self.output_shape[0] * self.input_shape[0] / self.nelements)
+
+    @property
+    def dtype(self):
+        return self._Y.dtype
+
+    @property
+    def device(self):
+        return self._Y.device

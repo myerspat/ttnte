@@ -21,10 +21,15 @@ LinearSystem::LinearSystem(const std::shared_ptr<Operator>& A,
     return std::reduce(vec.begin(), vec.end(), 1, std::multiplies<int64_t>());
   };
 
+  // Get data type and device
+  const auto& dtype = A->dtype();
+  const auto& device = A->device();
+
   // Check data types
-  // TODO: Add check on A as well
-  if (b.dtype() != torch::kFloat64 && x.dtype() != torch::kFloat64) {
-    throw std::runtime_error("Only double precision is supported for GMRES");
+  if (b.dtype() != dtype || b.device() != b.device() || x.dtype() != dtype ||
+      x.device() != device) {
+    throw std::runtime_error(
+      "A, b, and x0 must be the same type and on the same device");
   }
 
   // Check shape of system
@@ -261,9 +266,12 @@ void gmres_batched(LinearSystem& system, torch::Tensor& residual, double& rnorm,
   beta.index_put_({0, 0}, rnorm);
 
   // Solve normal equation and apply it to x
-  system.x += V.index({Slice(), Slice(0, -1)})
-                .matmul(torch::cholesky_solve(
-                  H.matmul(beta), torch::linalg_cholesky(H.matmul(H.t()))));
+  system.x +=
+    V.index({Slice(), Slice(0, -1)})
+      .matmul((V.dtype() == torch::kFloat64)
+                ? torch::cholesky_solve(
+                    H.matmul(beta), torch::linalg_cholesky(H.matmul(H.t())))
+                : torch::linalg_solve(H.matmul(H.t()), H.matmul(beta)));
 
   // Update residual and its norm
   residual = system.calc_residual();

@@ -81,6 +81,22 @@ class Operator(ABC):
         """
         pass
 
+    def type(self, dtype: tn.dtype):
+        """
+        Cast cores to a different type.
+
+        Parameters
+        ----------
+        dtype: torch.dtype
+            Type to cast to.
+
+        Returns
+        -------
+        op: ttnte.linalg.FissionOperator
+            New operator with casted cores.
+        """
+        pass
+
     @abstractmethod
     def add_(self, other):
         """
@@ -175,4 +191,12 @@ class Operator(ABC):
     @property
     @abstractmethod
     def compression(self) -> float:
+        pass
+
+    @property
+    def dtype(self):
+        pass
+
+    @property
+    def device(self):
         pass

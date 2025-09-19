@@ -25,12 +25,20 @@ TTOperator::TTOperator(const std::vector<torch::Tensor>& cores,
   assert(csteps.size() == lidxs.size());
   assert(csteps.size() == ridxs.size());
 
+  const auto& dtype = cores[0].dtype();
+  const auto& device = cores[0].device();
+
   // Check cores are actually for an operator
   for (int i = 0; i < cores.size(); i++) {
     if ((cores[i].ndimension() + ((i == 0 || i == cores.size() - 1) ? 1 : 0)) <
         4) {
       throw std::runtime_error(
         "The first and last tensor must be 3-D and the rest 4-D");
+    }
+
+    if (dtype != cores[i].dtype() || device != cores[i].device()) {
+      throw std::runtime_error(
+        "All cores should be the same data type and on the same device");
     }
   }
 
@@ -410,6 +418,20 @@ torch::Tensor TTOperator::to_dense() const
   }
 
   return torch::permute(dense, axes);
+}
+
+std::shared_ptr<Operator> TTOperator::type(const caffe2::TypeMeta& dtype) const
+{
+  // Create new vector of cores
+  std::vector<torch::Tensor> cores;
+  cores.reserve(cores_.size());
+
+  // Replace with casted versions
+  for (const auto& core : cores_) {
+    cores.push_back(core.to(dtype));
+  }
+
+  return std::make_shared<TTOperator>(cores);
 }
 
 // =================================================

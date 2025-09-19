@@ -124,6 +124,100 @@ def run_gmres(Operator, SparseOperator, gmres):
         assert x_calc.shape == (200, 1)
         tn.testing.assert_close(x_calc, x_exac)
 
+    # ==================================================================
+    # Test the single precision versions
+    A = A.type(tn.float32)
+    b = b.to(tn.float32)
+    x_exac = x_exac.to(tn.float32)
+
+    # ==================================================================
+    # Test on CPU (batched)
+    x_calc, rnorms = gmres(
+        A=A,
+        b=b,
+        gpu_idx=None,
+        tol=1e-6,
+        restart=100,
+        maxiter=200,
+        solve_method="batched",
+    )
+
+    # Check solution
+    assert not x_calc.is_cuda
+    assert not A.tensor.is_cuda
+    assert not b.is_cuda
+    assert x_calc.shape == (200, 1)
+    if rnorms is not None:
+        assert rnorms.shape[0] <= 200 + 1
+    tn.testing.assert_close(x_calc, x_exac)
+
+    # ==================================================================
+    # Test on GPU (batched)
+    if tn.cuda.is_available() and tn.cuda.device_count() > 0:
+        # Run gmres
+        x_calc, rnorms = gmres(
+            A=A,
+            b=b,
+            gpu_idx=0,
+            tol=1e-6,
+            restart=100,
+            maxiter=200,
+            solve_method="batched",
+        )
+
+        # Check solution
+        assert not x_calc.is_cuda
+        assert not A.tensor.is_cuda
+        assert not b.is_cuda
+        if rnorms is not None:
+            assert rnorms.shape[0] <= 200 + 1
+        assert x_calc.shape == (200, 1)
+        tn.testing.assert_close(x_calc, x_exac)
+
+    # ==================================================================
+    # Test on GPU (incremental)
+    x_calc, rnorms = gmres(
+        A=A,
+        b=b,
+        gpu_idx=None,
+        tol=1e-6,
+        restart=100,
+        maxiter=200,
+        solve_method="incremental",
+    )
+
+    # Check solution
+    assert not x_calc.is_cuda
+    assert not A.tensor.is_cuda
+    assert not b.is_cuda
+    if rnorms is not None:
+        assert rnorms.shape[0] <= 200 + 1
+    assert x_calc.shape == (200, 1)
+    tn.testing.assert_close(x_calc, x_exac)
+
+    # ==================================================================
+    # Test on GPU (incremental)
+    if tn.cuda.is_available() and tn.cuda.device_count() > 0:
+        # Run gmres
+        x_calc, rnorms = gmres(
+            A=A,
+            b=b,
+            gpu_idx=0,
+            tol=1e-6,
+            restart=100,
+            maxiter=200,
+            solve_method="incremental",
+        )
+
+        # Check solution
+        assert not x_calc.is_cuda
+        assert not A.tensor.is_cuda
+        assert not b.is_cuda
+        if rnorms is not None:
+            assert rnorms.shape[0] <= 200 + 1
+        assert x_calc.shape == (200, 1)
+        tn.testing.assert_close(x_calc, x_exac)
+
 
 def test_gmres_python():
     run_gmres(O_python, SO_python, gmres_python)

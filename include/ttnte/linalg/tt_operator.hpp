@@ -50,6 +50,8 @@ public:
   std::shared_ptr<Operator> add_(
     const std::shared_ptr<Operator>& other) final override;
   torch::Tensor to_dense() const;
+  std::shared_ptr<Operator> type(
+    const caffe2::TypeMeta& dtype) const final override;
 
   void lr_orthogonalize(std::optional<int64_t> gpu_idx = std::nullopt);
   std::shared_ptr<TTOperator> round(const double& eps = 1e-12,
@@ -121,6 +123,14 @@ public:
 
     return static_cast<double>(full_nelements) /
            static_cast<double>(nelements());
+  }
+  torch::Device device() const noexcept final override
+  {
+    return cores_[0].device();
+  }
+  caffe2::TypeMeta dtype() const noexcept final override
+  {
+    return cores_[0].dtype();
   }
 
   // =================================================

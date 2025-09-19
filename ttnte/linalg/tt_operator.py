@@ -34,6 +34,10 @@ class TTOperator(Operator):
         Number of numbers stored in the TT format.
     compression: float
         The compression ratio of the TT format.
+    dtype: torch.dtype
+        Data type of cores.
+    device: torch.device
+        Device the cores are on.
     """
 
     def __init__(self, tt: tntt.TT):
@@ -52,9 +56,17 @@ class TTOperator(Operator):
         self._cores[0].squeeze_(0)
         self._cores[-1].squeeze_(-1)
 
+        dtype = self._cores[0].dtype
+        device = self._cores[0].device
+
         # Make all tensors contiguous
         for i in range(len(self._cores)):
             self._cores[i] = self._cores[i].contiguous()
+
+            if dtype != self._cores[i].dtype or device != self._cores[i].device:
+                raise RuntimeError(
+                    "All cores should be the same data type and on the same device"
+                )
 
         # Get shapes
         shape = [tuple(core.shape) for core in self._cores] + [
@@ -192,6 +204,29 @@ class TTOperator(Operator):
         cores[-1].unsqueeze_(3)
         return TTOperator(tntt.TT(cores))
 
+    def type(self, dtype: tn.dtype):
+        """
+        Cast cores to a different type.
+
+        Parameters
+        ----------
+        dtype: torch.dtype
+            Type to cast to.
+
+        Returns
+        -------
+        op: ttnte.linalg.TTOperator
+            New operator with casted cores.
+        """
+        cores = []
+
+        for i in range(self.num_cores):
+            cores.append(self._cores[i].to(dtype))
+        cores[0].unsqueeze_(0)
+        cores[-1].unsqueeze_(3)
+
+        return TTOperator(tntt.TT(cores))
+
     def add_(self, other):
         """
         Add in-place two operators.
@@ -286,3 +321,11 @@ class TTOperator(Operator):
             np.prod([o * i for o, i in zip(self.output_shape, self.input_shape)])
             / self.nelements
         )
+
+    @property
+    def dtype(self):
+        return self._cores[0].dtype
+
+    @property
+    def device(self):
+        return self._cores[0].device

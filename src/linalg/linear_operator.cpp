@@ -21,6 +21,10 @@ LinearOperator::LinearOperator(
       vec.cbegin(), vec.cend(), 1, std::multiplies<int64_t> {});
   };
 
+  // Datatype and device
+  const auto& dtype = operators_[0]->dtype();
+  const auto& device = operators_[0]->device();
+
   // Calculate size of input and output
   const int64_t input_size = prod(operators_[0]->input_shape());
   const int64_t output_size = prod(operators_[0]->output_shape());
@@ -33,6 +37,11 @@ LinearOperator::LinearOperator(
     if (output_size != prod(op->output_shape())) {
       throw std::runtime_error(
         "Size of output must be the same for each operator");
+    }
+
+    if (op->dtype() != dtype || op->device() != device) {
+      throw std::runtime_error(
+        "All operators should be on the same device with the same data type");
     }
   }
 }
@@ -150,6 +159,19 @@ std::shared_ptr<Operator> LinearOperator::round(const double& eps,
 
   // Set scale and return
   return std::make_shared<LinearOperator>(operators);
+}
+
+std::shared_ptr<Operator> LinearOperator::type(
+  const caffe2::TypeMeta& dtype) const
+{
+  std::vector<std::shared_ptr<Operator>> ops;
+  ops.reserve(operators_.size());
+
+  for (const auto& op : operators_) {
+    ops.push_back(op->type(dtype));
+  }
+
+  return std::make_shared<LinearOperator>(ops);
 }
 
 } // namespace ttnte::linalg

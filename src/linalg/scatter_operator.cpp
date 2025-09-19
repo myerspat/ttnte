@@ -15,8 +15,22 @@ ScatterOperator::ScatterOperator(const std::vector<torch::Tensor>& S,
   assert(w_mu_.ndimension() == 1);
   assert(w_eta_.ndimension() == 1);
 
+  const auto& dtype = Y_.dtype();
+  const auto& device = Y_.device();
+
+  if (w_mu_.dtype() != dtype || w_mu_.device() != device ||
+      w_eta_.dtype() != dtype || w_eta_.device() != device) {
+    throw std::runtime_error(
+      "S, Y, w_mu, and w_eta must be the same type and on the same device");
+  }
+
   for (const auto& s : S_) {
     assert(s.ndimension() == 2);
+
+    if (s.dtype() != dtype || s.device() != device) {
+      throw std::runtime_error(
+        "S, Y, w_mu, and w_eta must be the same type and on the same device");
+    }
 
     // Check layout
     if (s.is_sparse() && s.layout() != torch::kSparse &&
@@ -101,6 +115,20 @@ std::shared_ptr<Operator> ScatterOperator::add_(
   const std::shared_ptr<Operator>& other)
 {
   throw std::runtime_error("Combining two ScatterOperators is not allowed");
+}
+
+std::shared_ptr<Operator> ScatterOperator::type(
+  const caffe2::TypeMeta& dtype) const
+{
+  std::vector<torch::Tensor> S;
+  S.reserve(S_.size());
+
+  for (const auto& s : S_) {
+    S.push_back(s.to(dtype));
+  }
+
+  return std::make_shared<ScatterOperator>(
+    S, Y_.to(dtype), w_mu_.to(dtype), w_eta_.to(dtype));
 }
 
 } // namespace ttnte::linalg

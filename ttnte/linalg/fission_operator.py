@@ -22,6 +22,10 @@ class FissionOperator(Operator):
         Number of floating point numbers required to hold the operator.
     compression: double
         Compression ratio.
+    dtype: torch.dtype
+        Data type of operator.
+    device: torch.device
+        Device the operator is on.
     """
 
     def __init__(self, F: tn.Tensor, w_mu: tn.Tensor, w_eta: tn.Tensor):
@@ -40,9 +44,22 @@ class FissionOperator(Operator):
         super().__init__()
         assert F.ndim == 2 and w_mu.ndim == 1 and w_eta.ndim == 1
 
+        dtype = F.dtype
+        device = F.device
+
         self._F = F.clone()
         self._w_mu = w_mu.clone()
         self._w_eta = w_eta.clone()
+
+        if (
+            self._w_mu.dtype != dtype
+            or self._w_eta.dtype != dtype
+            or self._w_mu.device != device
+            or self._w_eta.device != device
+        ):
+            raise RuntimeError(
+                "F, w_mu, and w_eta must be the same type and on the same device"
+            )
 
         # Check layout
         if (
@@ -129,6 +146,24 @@ class FissionOperator(Operator):
         """
         return FissionOperator(self._F, self._w_mu, self._w_eta)
 
+    def type(self, dtype: tn.dtype):
+        """
+        Cast cores to a different type.
+
+        Parameters
+        ----------
+        dtype: torch.dtype
+            Type to cast to.
+
+        Returns
+        -------
+        op: ttnte.linalg.FissionOperator
+            New operator with casted cores.
+        """
+        return FissionOperator(
+            self._F.to(dtype), self._w_mu.to(dtype), self._w_eta.to(dtype)
+        )
+
     def add_(self, other):
         """
         Not implemented for fission operator.
@@ -176,3 +211,11 @@ class FissionOperator(Operator):
     @property
     def compression(self):
         return float(self.output_shape[0] * self.input_shape[0] / self.nelements)
+
+    @property
+    def dtype(self):
+        return self._F.dtype
+
+    @property
+    def device(self):
+        return self._F.device

@@ -32,6 +32,8 @@ def run_tt_operator(TTOperator):
     assert I.input_shape == list(shape)
     assert I.output_shape == list(shape)
     assert I.shape == [(s, s) for s in shape]
+    assert I.dtype == tn.float64
+    assert I.device == tn.device("cpu")
     assert I.nelements == np.sum([s * s for s in shape])
     assert I.compression == (np.prod(shape) ** 2) / I.nelements
 
@@ -58,6 +60,10 @@ def run_tt_operator(TTOperator):
     a = tn.rand(shape)
     b = I @ a
     assert tn.equal(a, b)
+
+    # Test type casting
+    I = I.type(tn.float32)
+    assert I.dtype == tn.float32
 
     # ==================================================================
     # Get random tensor train

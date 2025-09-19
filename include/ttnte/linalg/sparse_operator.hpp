@@ -28,6 +28,8 @@ public:
   void cuda(const int64_t idx) final override;
   void cpu() final override;
   torch::Tensor to_dense() const;
+  std::shared_ptr<Operator> type(
+    const caffe2::TypeMeta& dtype) const final override;
 
   // =================================================
   // Getters / Setters
@@ -64,6 +66,14 @@ public:
            static_cast<double>(nelements());
   }
   bool is_sparse() const noexcept { return true; }
+  torch::Device device() const noexcept final override
+  {
+    return tensor_.device();
+  }
+  caffe2::TypeMeta dtype() const noexcept final override
+  {
+    return tensor_.dtype();
+  }
 };
 
 } // namespace ttnte::linalg

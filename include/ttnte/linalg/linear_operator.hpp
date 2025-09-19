@@ -28,6 +28,8 @@ public:
   torch::Tensor apply(const torch::Tensor& x) const final override;
   void cuda(const int64_t idx) final override;
   void cpu() final override;
+  std::shared_ptr<Operator> type(
+    const caffe2::TypeMeta& dtype) const final override;
   std::shared_ptr<Operator> add_(
     const std::shared_ptr<Operator>& other) final override;
   std::shared_ptr<Operator> combine() const;
@@ -87,6 +89,14 @@ public:
 
     return static_cast<double>(total_input * total_output) /
            static_cast<double>(nelements());
+  }
+  torch::Device device() const noexcept final override
+  {
+    return operators_[0]->device();
+  }
+  caffe2::TypeMeta dtype() const noexcept final override
+  {
+    return operators_[0]->dtype();
   }
 };
 

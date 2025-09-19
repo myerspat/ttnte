@@ -25,6 +25,8 @@ public:
   virtual std::shared_ptr<Operator> clone() const = 0;
   virtual std::shared_ptr<Operator> add_(
     const std::shared_ptr<Operator>& other) = 0;
+  virtual std::shared_ptr<Operator> type(
+    const caffe2::TypeMeta& dtype) const = 0;
   std::shared_ptr<Operator> add(const std::shared_ptr<Operator>& other) const;
 
   // =================================================
@@ -42,6 +44,8 @@ public:
   virtual std::vector<int64_t> output_shape() const noexcept = 0;
   virtual int64_t nelements() const noexcept = 0;
   virtual double compression() const noexcept = 0;
+  virtual torch::Device device() const noexcept = 0;
+  virtual caffe2::TypeMeta dtype() const noexcept = 0;
 };
 
 } // namespace ttnte::linalg
