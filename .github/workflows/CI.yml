@@ -26,7 +26,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libppl-dev libppl9
+        sudo apt-get install -y libppl-dev
         python -m pip install --upgrade pip
         python -m pip install flake8 pytest
         pip install https://github.com/dalcinl/igakit/archive/refs/heads/master.zip
