@@ -3,10 +3,8 @@ import torch as tn
 
 from ttnte.assemblers import MatrixAssembler, TTAssembler
 from ttnte.iga import IGAMesh
-from ttnte.linalg import eig, fixed_source
+from ttnte.linalg import eig, gmres
 from ttnte.xs import Server
-
-tn.set_default_dtype(tn.float64)
 
 
 def run_eig(mesh: IGAMesh, xs_server: Server, k_ref: float, num_ordinates: int):
@@ -130,17 +128,17 @@ def run_fixed_source(
     mats = assembler.build()
 
     # Run eigenvalue problem
-    psi = fixed_source(
-        (
+    psi = gmres(
+        A=(
             (mats.H + mats.B_out - mats.B_in)
             if mats.B_in is not None
             else (mats.H + mats.B_out)
         )
         - mats.S,
-        mats.q,
+        b=mats.q,
         tol=1e-8,
-        device=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
-    )
+        gpu_idx=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
+    )[0]
     psi = psi.reshape(assembler.discretization)
     assert isinstance(psi, tn.Tensor)
 
@@ -198,34 +196,34 @@ def run_fixed_source(
         ).all()
 
     # Run eigenvalue problem
-    psi_m = fixed_source(
-        (
+    psi_m = gmres(
+        A=(
             (mats.H + mats.B_out - mats.B_in)
             if mats.B_in is not None
             else (mats.H + mats.B_out)
         )
         - mats.S,
-        mats.q,
+        b=mats.q,
         tol=1e-10,
-        max_iters=100,
-        device=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
-    )
+        restart=50,
+        gpu_idx=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
+    )[0]
     psi_m = psi_m.reshape(assembler.discretization)
     leakage_frac_m = assembler_m.outward_current(psi_m) / assembler_m.total_production()
 
     # Run eigenvalue problem
-    psi_tt = fixed_source(
-        (
+    psi_tt = gmres(
+        A=(
             (tts.H + tts.B_out - tts.B_in)
             if tts.B_in is not None
             else (tts.H + tts.B_out)
         )
         - tts.S,
-        tts.q,
+        b=tts.q,
         tol=1e-10,
-        max_iters=100,
-        device=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
-    )
+        restart=50,
+        gpu_idx=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
+    )[0]
     psi_tt = psi_tt.reshape(assembler.discretization)
     leakage_frac_tt = (
         assembler_m.outward_current(psi_tt) / assembler_m.total_production()

@@ -22,6 +22,7 @@ if TTNTE_CPP_BACKEND:
             ScatterOperator,
             FissionOperator,
             LinearOperator,
+            gmres,
         )
 
         cpp_available = True
@@ -34,6 +35,7 @@ if TTNTE_CPP_BACKEND:
         from .fission_operator import FissionOperator
         from .linear_operator import LinearOperator
         from .operator import Operator
+        from .gmres import gmres
 
 else:
     from .tt_operator import TTOperator
@@ -42,6 +44,8 @@ else:
     from .fission_operator import FissionOperator
     from .linear_operator import LinearOperator
     from .operator import Operator
+    from .gmres import gmres
 
 from .eig import eig
-from .fixed_source import fixed_source
+
+# from .fixed_source import fixed_source

@@ -129,8 +129,6 @@ std::tuple<torch::Tensor, torch::Tensor> gmres(std::shared_ptr<Operator> A,
   const std::string& solve_method, std::optional<py::function> callback,
   const int64_t& callback_frequency, const bool& verbose)
 {
-  torch::InferenceMode gaurd;
-
   // Send to GPU
   if (gpu_idx.has_value()) {
     if (torch::cuda::is_available() && torch::cuda::device_count() > 0) {

@@ -1,12 +1,14 @@
 import torch as tn
 import pytest
 
+from ttnte.linalg.operator import Operator as O_python
+from ttnte.linalg.sparse_operator import SparseOperator as SO_python
+from ttnte.linalg.gmres import gmres as gmres_python
+
 try:
-    from ttnte.cpp.linalg import (
-        gmres,
-        SparseOperator,
-        Operator,
-    )
+    from ttnte.cpp.linalg import Operator as O_cpp
+    from ttnte.cpp.linalg import SparseOperator as SO_cpp
+    from ttnte.cpp.linalg import gmres as gmres_cpp
 
     cpp_available = True
 
@@ -14,8 +16,7 @@ except ImportError:
     cpp_available = False
 
 
-@pytest.mark.skipif(not cpp_available, reason="C++ backend failed to import")
-def test_gmres_cpp():
+def run_gmres(Operator, SparseOperator, gmres):
     tn.set_default_dtype(tn.float64)
 
     # Create basic Laplace equation problem
@@ -38,7 +39,13 @@ def test_gmres_cpp():
     # ==================================================================
     # Test on CPU (batched)
     x_calc, rnorms = gmres(
-        A, b, gpu_idx=None, tol=1e-8, restart=100, maxiter=200, solve_method="batched"
+        A=A,
+        b=b,
+        gpu_idx=None,
+        tol=1e-8,
+        restart=100,
+        maxiter=200,
+        solve_method="batched",
     )
 
     # Check solution
@@ -46,7 +53,8 @@ def test_gmres_cpp():
     assert not A.tensor.is_cuda
     assert not b.is_cuda
     assert x_calc.shape == (200, 1)
-    assert rnorms.shape[0] <= 200 + 1
+    if rnorms is not None:
+        assert rnorms.shape[0] <= 200 + 1
     tn.testing.assert_close(x_calc, x_exac)
 
     # ==================================================================
@@ -54,22 +62,29 @@ def test_gmres_cpp():
     if tn.cuda.is_available() and tn.cuda.device_count() > 0:
         # Run gmres
         x_calc, rnorms = gmres(
-            A, b, gpu_idx=0, tol=1e-8, restart=100, maxiter=200, solve_method="batched"
+            A=A,
+            b=b,
+            gpu_idx=0,
+            tol=1e-8,
+            restart=100,
+            maxiter=200,
+            solve_method="batched",
         )
 
         # Check solution
         assert not x_calc.is_cuda
         assert not A.tensor.is_cuda
         assert not b.is_cuda
-        assert rnorms.shape[0] <= 200 + 1
+        if rnorms is not None:
+            assert rnorms.shape[0] <= 200 + 1
         assert x_calc.shape == (200, 1)
         tn.testing.assert_close(x_calc, x_exac)
 
     # ==================================================================
     # Test on GPU (incremental)
     x_calc, rnorms = gmres(
-        A,
-        b,
+        A=A,
+        b=b,
         gpu_idx=None,
         tol=1e-8,
         restart=100,
@@ -81,7 +96,8 @@ def test_gmres_cpp():
     assert not x_calc.is_cuda
     assert not A.tensor.is_cuda
     assert not b.is_cuda
-    assert rnorms.shape[0] <= 200 + 1
+    if rnorms is not None:
+        assert rnorms.shape[0] <= 200 + 1
     assert x_calc.shape == (200, 1)
     tn.testing.assert_close(x_calc, x_exac)
 
@@ -90,8 +106,8 @@ def test_gmres_cpp():
     if tn.cuda.is_available() and tn.cuda.device_count() > 0:
         # Run gmres
         x_calc, rnorms = gmres(
-            A,
-            b,
+            A=A,
+            b=b,
             gpu_idx=0,
             tol=1e-8,
             restart=100,
@@ -103,6 +119,16 @@ def test_gmres_cpp():
         assert not x_calc.is_cuda
         assert not A.tensor.is_cuda
         assert not b.is_cuda
-        assert rnorms.shape[0] <= 200 + 1
+        if rnorms is not None:
+            assert rnorms.shape[0] <= 200 + 1
         assert x_calc.shape == (200, 1)
         tn.testing.assert_close(x_calc, x_exac)
+
+
+def test_gmres_python():
+    run_gmres(O_python, SO_python, gmres_python)
+
+
+@pytest.mark.skipif(not cpp_available, reason="C++ backend failed to import")
+def test_gmres_cpp():
+    run_gmres(O_cpp, SO_cpp, gmres_cpp)

@@ -63,8 +63,6 @@ void LinearOperator::prepend(const std::shared_ptr<Operator>& op)
 
 torch::Tensor LinearOperator::apply(const torch::Tensor& x) const
 {
-  torch::InferenceMode gaurd;
-
   // Sum all results
   return std::accumulate(operators_.cbegin() + 1, operators_.cend(),
     operators_[0]->apply(x),
