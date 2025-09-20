@@ -48,5 +48,5 @@ jobs:
       run: |
         cd tests
         pytest unit/*
-        TTNTE_CPP_BACKEND=1 pytest regression/*
+        TTNTE_CPP_BACKEND=0 pytest regression/*
         TTNTE_CPP_BACKEND=1 pytest regression/*
