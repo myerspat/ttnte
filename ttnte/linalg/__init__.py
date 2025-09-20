@@ -23,6 +23,8 @@ if TTNTE_CPP_BACKEND:
             FissionOperator,
             LinearOperator,
             gmres,
+            power,
+            LinearSolverOptions,
         )
 
         cpp_available = True
@@ -36,6 +38,7 @@ if TTNTE_CPP_BACKEND:
         from .linear_operator import LinearOperator
         from .operator import Operator
         from .gmres import gmres
+        from .eig import LinearSolverOptions, power
 
 else:
     from .tt_operator import TTOperator
@@ -45,7 +48,4 @@ else:
     from .linear_operator import LinearOperator
     from .operator import Operator
     from .gmres import gmres
-
-from .eig import eig
-
-# from .fixed_source import fixed_source
+    from .eig import LinearSolverOptions, power

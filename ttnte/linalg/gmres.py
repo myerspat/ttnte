@@ -48,7 +48,7 @@ def gmres(
     maxiter: int or None, default=None
         Maximum number of times to rebuild the size-``restart`` Krylov space
         starting from the solution found at the last iteration.
-    solve_method: "batched" or "incremental"
+    solve_method: "batched" or "incremental", default="batched"
         The "incremental" solve method builds a QR decomposition for the
         Krylov subspace incrementally using Givens rotation. This enables
         early stopping and is overall more stable than the "batched"
@@ -74,6 +74,7 @@ def gmres(
         the C++ backend.
     """
     n = np.prod(b.shape)
+    maxiter = maxiter if maxiter is not None else 10 * n
 
     # Do some checks
     if np.prod(A.input_shape) != n or np.prod(A.output_shape) != n:
@@ -109,7 +110,7 @@ def gmres(
         N=n,
         max_iterations=restart,
         threshold=tol,
-        resets=restart,
+        resets=maxiter,
     )[0].reshape((-1, 1))
 
     if verbose:

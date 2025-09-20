@@ -49,7 +49,7 @@ torch::Tensor iterative_classical_gram_schmidt(const torch::Tensor& Q,
 // =========================================================================
 // General GMRES method
 std::tuple<torch::Tensor, torch::Tensor> gmres(std::shared_ptr<Operator> A,
-  torch::Tensor& b, const std::optional<torch::Tensor>& x0 = std::nullopt,
+  torch::Tensor b, const std::optional<torch::Tensor>& x0 = std::nullopt,
   const std::optional<int64_t>& gpu_idx = std::nullopt, double tol = 1e-5,
   double atol = 0.0, int64_t restart = 20,
   std::optional<int64_t> maxiter = std::nullopt,

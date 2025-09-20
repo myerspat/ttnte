@@ -9,7 +9,8 @@ set(LINALG_BINDINGS
     operator.cpp
     linear_operator.cpp
     gmres.cpp
-    utils.cpp)
+    utils.cpp
+    eig.cpp)
 
 # Relevant files from src
 set(LINALG_SRC
@@ -20,7 +21,8 @@ set(LINALG_SRC
     ${PROJECT_SOURCE_DIR}/src/linalg/fission_operator.cpp
     ${PROJECT_SOURCE_DIR}/src/linalg/operator.cpp
     ${PROJECT_SOURCE_DIR}/src/linalg/linear_operator.cpp
-    ${PROJECT_SOURCE_DIR}/src/linalg/gmres.cpp)
+    ${PROJECT_SOURCE_DIR}/src/linalg/gmres.cpp
+    ${PROJECT_SOURCE_DIR}/src/linalg/eig.cpp)
 
 add_library(linalg MODULE ${LINALG_BINDINGS} ${LINALG_SRC})
 target_include_directories(

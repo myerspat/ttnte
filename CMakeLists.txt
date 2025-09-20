@@ -58,9 +58,6 @@ if(NOT _GLIBCXX_USE_CXX11_ABI)
   endif()
 endif()
 
-# Add to compile definitions
-list(APPEND flags _GLIBCXX_USE_CXX11_ABI=${_GLIBCXX_USE_CXX11_ABI})
-
 # Show flags
 message(STATUS "Compiling ttnte C++ backend")
 message(STATUS "Project source directory: ${PROJECT_SOURCE_DIR}")
@@ -68,7 +65,8 @@ message(STATUS "ttnte C++ flags: ${flags}")
 message(STATUS "TORCH_INSTALL_PREFIX: ${TORCH_INSTALL_PREFIX}")
 
 # Set compile flags as global for now add_compile_definitions(${flags})
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${flags}")
+string(JOIN " " flags_str ${flags})
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${flags_str}")
 
 # ================================================================================
 # Get dependencies

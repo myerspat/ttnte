@@ -128,7 +128,7 @@ torch::Tensor iterative_classical_gram_schmidt(const torch::Tensor& Q,
 // =========================================================================
 // General GMRES method
 std::tuple<torch::Tensor, torch::Tensor> gmres(std::shared_ptr<Operator> A,
-  torch::Tensor& b, const std::optional<torch::Tensor>& x0,
+  torch::Tensor b, const std::optional<torch::Tensor>& x0,
   const std::optional<int64_t>& gpu_idx, double tol, double atol,
   int64_t restart, std::optional<int64_t> maxiter,
   const std::string& solve_method, std::optional<py::function> callback,

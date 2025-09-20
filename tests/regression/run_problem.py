@@ -3,7 +3,7 @@ import torch as tn
 
 from ttnte.assemblers import MatrixAssembler, TTAssembler
 from ttnte.iga import IGAMesh
-from ttnte.linalg import eig, gmres
+from ttnte.linalg import gmres, power
 from ttnte.xs import Server
 
 
@@ -15,16 +15,16 @@ def run_eig(mesh: IGAMesh, xs_server: Server, k_ref: float, num_ordinates: int):
     mats = assembler.build()
 
     # Run eigenvalue problem
-    k, psi = eig(
-        LHS=(
+    psi, k = power(
+        T=(
             (mats.H + mats.B_out - mats.B_in - mats.S)
             if mats.B_in is not None
             else (mats.H + mats.B_out - mats.S)
         ),
-        RHS=mats.F,
-        tols=1e-8,
-        max_iters=500,
-        device=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
+        F=mats.F,
+        tol=1e-8,
+        maxiter=500,
+        gpu_idx=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
     )
     assert isinstance(k, float)
     assert isinstance(psi, tn.Tensor)
@@ -86,30 +86,30 @@ def run_eig(mesh: IGAMesh, xs_server: Server, k_ref: float, num_ordinates: int):
         ).all()
 
     # Run eigenvalue problem
-    k_m, psi_m = eig(
-        LHS=(
+    psi_m, k_m = power(
+        T=(
             (mats.H + mats.B_out - mats.B_in - mats.S).combine()
             if mats.B_in is not None
             else (mats.H + mats.B_out - mats.S).combine()
         ),
-        RHS=mats.F,
-        tols=1e-8,
-        max_iters=500,
-        device=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
+        F=mats.F,
+        tol=1e-8,
+        maxiter=500,
+        gpu_idx=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
     )
     psi_m = psi_m.reshape(assembler.discretization)
 
     # Run eigenvalue problem
-    k_tt, psi_tt = eig(
-        LHS=(
+    psi_tt, k_tt = power(
+        T=(
             (tts.H + tts.B_out - tts.B_in - tts.S)
             if tts.B_in is not None
             else (tts.H + tts.B_out - tts.S)
         ),
-        RHS=tts.F,
-        tols=1e-8,
-        max_iters=500,
-        device=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
+        F=tts.F,
+        tol=1e-8,
+        maxiter=500,
+        gpu_idx=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
     )
     psi_tt = psi_tt.reshape(assembler.discretization)
 
