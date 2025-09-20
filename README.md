@@ -77,8 +77,9 @@ pre-commit install
 - `ttnte.iga.IGAMesh`: Meshing object for NURBS surfaces defined as `igakit.nurbs.NURBS`.
 - `ttnte.assemblers.MatrixAssembler`: Assembler discretized system into `ttnte.assemblers.operators.SparseOperator`s.
 - `ttnte.assemblers.TTAssembler`: Assembler discretized system into `torchtt.TT`s.
-- `ttnte.linalg.eig()`: Method for solving the resulting discretized eigenvalue problem.
-- `ttnte.linalg.fixed_source()`: Method for solving a fixed source problem.
+- `ttnte.linalg.gmres()`: Method for solving the resulting discretized fixed source systems
+- `ttnte.linalg.power()`: Method for solving the resulting discretized eigenvalue problem.
+- `ttnte.linalg.LinearSolverOptions`: Options class for GMRES used in `ttnte.linalg.power()`.
 
 ## Modules
 
