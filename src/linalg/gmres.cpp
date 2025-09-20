@@ -2,6 +2,7 @@
 #include <c10/core/Device.h>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <stdexcept>
 #include <torch/extension.h>
 
@@ -209,19 +210,23 @@ std::tuple<torch::Tensor, torch::Tensor> gmres(std::shared_ptr<Operator> A,
     // Run callback and prints
     if (i % callback_frequency == 0) {
       if (verbose) {
-        printf("-- (%d): |r| = %.12f, |r|/|b| = %.12f, Elapsed Time = %.3f s\n",
-          static_cast<int>(i), rnorm, bnorm_inv * rnorm,
-          static_cast<double>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-              std::chrono::high_resolution_clock::now() - start)
-              .count()) *
-            1e-3);
+        std::cout << "-- (" << i << "): |r| = " << std::fixed
+                  << std::setprecision(12) << rnorm
+                  << ", |r|/|b| = " << std::fixed << std::setprecision(12)
+                  << bnorm_inv * rnorm << ", Elapsed Time = " << std::fixed
+                  << std::setprecision(3)
+                  << static_cast<double>(
+                       std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::high_resolution_clock::now() - start)
+                         .count()) *
+                       1e-3
+                  << " s" << std::endl;
       }
       if (callback.has_value()) {
         callback.value()(i, rnorm, system.x);
       }
     }
-  } while (rnorm > atol && i < maxiter.value());
+  } while (rnorm >= atol && i < maxiter.value());
 
   if (gpu_idx.has_value()) {
     // Get CPU
@@ -232,6 +237,12 @@ std::tuple<torch::Tensor, torch::Tensor> gmres(std::shared_ptr<Operator> A,
     system.b = b.to(device);
     system.x = system.x.to(device);
     residual = residual.to(device);
+  }
+
+  if (verbose) {
+    std::cout << "-- "
+              << ((rnorm < atol) ? "Converged!" : "Failed to Converge!")
+              << std::endl;
   }
 
   return {system.x, residual_log.narrow(0, 0, i + 1)};

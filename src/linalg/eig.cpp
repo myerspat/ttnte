@@ -113,14 +113,17 @@ std::tuple<torch::Tensor, double> power(std::shared_ptr<Operator> T,
     // Print progress
     if (i % callback_frequency == 0) {
       if (verbose) {
-        printf("-- (%d): k = %.6f, Angular Flux L2-Error = %.12f, Elapsed Time "
-               "= %.3f s\n",
-          static_cast<int>(i), k, error,
-          static_cast<double>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-              std::chrono::high_resolution_clock::now() - start)
-              .count()) *
-            1e-3);
+        std::cout << "-- (" << i << "): k = " << std::fixed
+                  << std::setprecision(6) << k
+                  << ", Angular Flux L2-Error = " << std::fixed
+                  << std::setprecision(12) << error
+                  << ", Elapsed Time = " << std::fixed << std::setprecision(3)
+                  << static_cast<double>(
+                       std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::high_resolution_clock::now() - start)
+                         .count()) *
+                       1e-3
+                  << " s" << std::endl;
       }
       if (callback.has_value()) {
         callback.value()(i, error, psi);

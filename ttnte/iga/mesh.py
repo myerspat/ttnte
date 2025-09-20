@@ -653,6 +653,7 @@ class IGAMesh(object):
         plot_ctrlpts: bool = True,
         use_3d: bool = False,
         color_by: Literal["material", "patch"] = "material",
+        colors: Optional[Dict] = None,
         cmap: str = "plasma",
         backend: Literal["matplotlib", "plotly"] = "matplotlib",
         **kwargs,
@@ -667,6 +668,13 @@ class IGAMesh(object):
             Whether to plot the control points.
         use_3d: bool, default=False
             Plot mesh in 2-D or 3-D.
+        color_by: "material" or "patch"
+            What to color the patches by for a categorical plot.
+        colors: dict of string and color
+            By default the categorical colors will be from ``tableau-colorblind10``
+            but using ``colors`` you can change that. Each color has a name
+            corresponding to a material or patch. The color is than anything
+            that can be passed to ``matplotlib.pyplot``.
         cmap: str, default="plasma"
             Matplotlib colormap.
         meshlines: bool, default=True
@@ -711,9 +719,38 @@ class IGAMesh(object):
             kwargs = {}
             if categorical:
                 use_3d = False
-                pltcolors = list(mcolors.TABLEAU_COLORS.values())
-                color_idxs = {}
-                legend_handles = []
+                pltcolors = (
+                    [
+                        "#007ACC",
+                        "#FF800E",
+                        "#ABABAB",
+                        "#595959",
+                        "#5F9ED1",
+                        "#FFBC79",
+                        "#C85200",
+                        "#898989",
+                        "#A2C8EC",
+                        "#FFB979",
+                    ]
+                    if colors is None
+                    else list(colors.values())
+                )
+                color_idxs = (
+                    {}
+                    if colors is None
+                    else {key: i for i, key in enumerate(colors.keys())}
+                )
+                legend_handles = (
+                    []
+                    if colors is None
+                    else [
+                        mpatches.Patch(
+                            color=pltcolors[color_idxs[label]],
+                            label=label,
+                        )
+                        for label in color_idxs.keys()
+                    ]
+                )
 
                 # Iterate through patches
                 for i, patch in enumerate(self._patches.values()):
@@ -731,6 +768,10 @@ class IGAMesh(object):
                     # Check if label exists already
                     if label not in color_idxs:
                         # Add color
+                        if len(pltcolors) < len(color_idxs) + 1:
+                            raise RuntimeError(
+                                "Not enough colors given, define all colors in the 'colors' argument"
+                            )
                         color_idxs[label] = len(color_idxs)
 
                         # Add to legend
