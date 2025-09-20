@@ -1,6 +1,7 @@
 import numpy as np
 import torch as tn
 from igakit import cad
+import pytest
 from run_problem import run_eig, run_fixed_source
 
 from ttnte.cad import Patch
@@ -28,7 +29,7 @@ def test_square_vac():
     ).reshape((2, 2, -1))
 
     # Create mesh
-    mesh = IGAMesh()
+    mesh = IGAMesh(max_processes=16)
     mesh.add_patch(Patch(cad.bilinear(points), "Pu-239"))
 
     # Refine mesh resolution
@@ -60,7 +61,7 @@ def test_square_anisotropic():
     ).reshape((2, 2, -1))
 
     # Create mesh
-    mesh = IGAMesh()
+    mesh = IGAMesh(max_processes=16)
     mesh.add_patch(Patch(cad.bilinear(points), "Research Reactor"))
 
     # Refine mesh resolution
@@ -88,7 +89,7 @@ def test_square_multiregion():
     mod_length = 1.126151  # cm
 
     # Initilize IGA mesh
-    mesh = IGAMesh()
+    mesh = IGAMesh(max_processes=16)
 
     # Fuel patch
     points = np.array([[-0.5, 0], [0.5, 0], [-0.5, fuel_length], [0.5, fuel_length]])
@@ -145,7 +146,7 @@ def test_square_fixed_source():
     patch.set_source(source)
 
     # Create mesh
-    mesh = IGAMesh()
+    mesh = IGAMesh(max_processes=4)
     mesh.add_patch(patch)
 
     # Refine mesh resolution

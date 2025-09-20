@@ -8,16 +8,11 @@ import numpy as np
 import torch as tn
 import torchtt as tntt
 
-from ttnte.__init__ import IS_NOTEBOOK
-from ttnte.assemblers.matrix_assembler import MatrixAssembler, Operators, PatchInfo
+from ttnte.assemblers.matrix_assembler import MatrixAssembler, OperatorData, PatchInfo
+from ttnte.linalg import TTOperator
 from ttnte.cad.patch import Patch
 from ttnte.iga import IGAMesh
 from ttnte.xs import Server
-
-if IS_NOTEBOOK:
-    import tqdm.notebook as tqdm
-else:
-    import tqdm
 
 
 class TTAssembler(MatrixAssembler):
@@ -151,7 +146,11 @@ class TTAssembler(MatrixAssembler):
         # Print final operators
         self._print_final(ops)
 
-        return Operators(**ops)
+        for key in ops.keys():
+            if not isinstance(ops[key], tn.Tensor):
+                ops[key] = TTOperator(ops[key])
+
+        return OperatorData(**ops)
 
     def _build_local_integrals(self, pinfo: PatchInfo, R, JRT, J=None, dR=None):
         if not self._use_tt:
@@ -165,7 +164,10 @@ class TTAssembler(MatrixAssembler):
                 [pidx]
                 + tntt.TT(
                     Intg_int,
-                    shape=2 * [(Intg_int.shape[0], Intg_int.shape[1])],
+                    shape=[
+                        (Intg_int.shape[0], Intg_int.shape[2]),
+                        (Intg_int.shape[1], Intg_int.shape[1]),
+                    ],
                     eps=self._eps,
                 ).cores,
                 eps=0,
@@ -178,7 +180,11 @@ class TTAssembler(MatrixAssembler):
                     [pidx]
                     + tntt.TT(
                         Intg_str,
-                        shape=2 * [(Intg_str.shape[0], Intg_str.shape[1])] + [(2, 1)],
+                        shape=[
+                            (Intg_str.shape[0], Intg_str.shape[3]),
+                            (Intg_str.shape[1], Intg_str.shape[4]),
+                            (Intg_str.shape[2], Intg_str.shape[-1]),
+                        ],
                         eps=self._eps,
                     ).cores,
                     eps=0,

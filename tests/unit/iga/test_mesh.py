@@ -27,7 +27,7 @@ def test_inverse_map():
     mod2 = cad.ruled(c2, l2)
 
     # Create mesh
-    mesh = IGAMesh()
+    mesh = IGAMesh(max_processes=4)
 
     # Add NURBS patches
     mesh.add_patch(Patch(fuel1, "UO2"))

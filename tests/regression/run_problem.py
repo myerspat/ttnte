@@ -1,43 +1,36 @@
 import numpy as np
-import pytest
 import torch as tn
 
 from ttnte.assemblers import MatrixAssembler, TTAssembler
 from ttnte.iga import IGAMesh
-from ttnte.linalg import LinearOperator, eig, fixed_source
+from ttnte.linalg import gmres, power
 from ttnte.xs import Server
-
-tn.set_default_dtype(tn.float64)
 
 
 def run_eig(mesh: IGAMesh, xs_server: Server, k_ref: float, num_ordinates: int):
     # Create operators in sparse format
     assembler = MatrixAssembler(
-        mesh=mesh, xs_server=xs_server, num_ordinates=num_ordinates
+        mesh=mesh, xs_server=xs_server, num_ordinates=num_ordinates, max_processes=2
     )
     mats = assembler.build()
 
     # Run eigenvalue problem
-    k, psi = eig(
-        LHS=LinearOperator(
-            [
-                (
-                    (mats.H + mats.B_out - mats.B_in)
-                    if mats.B_in is not None
-                    else (mats.H + mats.B_out)
-                ),
-                -mats.S,
-            ],
-            N=assembler.N,
-            M=assembler.M,
+    psi, k = power(
+        T=(
+            (mats.H + mats.B_out - mats.B_in - mats.S)
+            if mats.B_in is not None
+            else (mats.H + mats.B_out - mats.S)
         ),
-        RHS=LinearOperator([mats.F], N=assembler.N, M=assembler.M),
-        tols=1e-8,
-        max_iters=500,
-        device=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
+        F=mats.F,
+        tol=1e-8,
+        maxiter=500,
+        gpu_idx=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
     )
     assert isinstance(k, float)
     assert isinstance(psi, tn.Tensor)
+
+    # Reshape for discretization
+    psi = psi.reshape(assembler.discretization)
 
     # Check eignvalue is within 50 pcm of OpenMC
     assert abs(k - k_ref) * 1e5 < 50
@@ -46,8 +39,7 @@ def run_eig(mesh: IGAMesh, xs_server: Server, k_ref: float, num_ordinates: int):
     assert psi.shape == tuple(
         [4]
         + 2 * [int(np.sqrt(num_ordinates / 4))]
-        + ([xs_server.num_groups] if xs_server.num_groups > 1 else [])
-        + ([mesh.num_patches] if mesh.num_patches > 1 else [])
+        + [xs_server.num_groups, mesh.num_patches]
         + list(mesh.patches[mesh.patch_ids[0]].shape)
     )
 
@@ -59,7 +51,7 @@ def run_eig(mesh: IGAMesh, xs_server: Server, k_ref: float, num_ordinates: int):
         + list(mesh.patches[mesh.patch_ids[0]].shape)
     )
     assert (phi > 0).all()
-    del mats, k, psi, phi
+    del mats, k, psi, phi, assembler
 
     # ===============================================
     # Check with TTs
@@ -69,64 +61,57 @@ def run_eig(mesh: IGAMesh, xs_server: Server, k_ref: float, num_ordinates: int):
 
     # Create operators in sparse format
     assembler = MatrixAssembler(
-        mesh=mesh, xs_server=xs_server, num_ordinates=num_ordinates
+        mesh=mesh, xs_server=xs_server, num_ordinates=num_ordinates, max_processes=2
     )
     mats = assembler.build()
 
     # Create operators in TT format
-    assembler = TTAssembler(mesh=mesh, xs_server=xs_server, num_ordinates=num_ordinates)
-    assembler.interp_jacobian = False
-    assembler.interp_jacobian_det = False
-    assembler.interp_boundary_jacobian_det = False
+    assembler = TTAssembler(
+        mesh=mesh, xs_server=xs_server, num_ordinates=num_ordinates, max_processes=2
+    )
     tts = assembler.build(use_tt=True, eps=1e-10)
 
     # Check loss and boundary operators
     assert (
-        tn.abs(mats.H.to_dense() - tts.H.full().reshape(mats.H.shape)) < 1e-10
+        tn.abs(mats.H.to_dense() - tts.H.to_dense().reshape(mats.H.shape)) < 1e-10
     ).all()
     assert (
-        tn.abs(mats.B_out.to_dense() - tts.B_out.full().reshape(mats.B_out.shape))
+        tn.abs(mats.B_out.to_dense() - tts.B_out.to_dense().reshape(mats.B_out.shape))
         < 1e-10
     ).all()
     if mats.B_in is not None:
         assert (
-            tn.abs(mats.B_in.to_dense() - tts.B_in.full().reshape(mats.B_in.shape))
+            tn.abs(mats.B_in.to_dense() - tts.B_in.to_dense().reshape(mats.B_in.shape))
             < 1e-10
         ).all()
 
     # Run eigenvalue problem
-    k_m, psi_m = eig(
-        LHS=LinearOperator(
-            [
-                (
-                    (mats.H + mats.B_out - mats.B_in)
-                    if mats.B_in is not None
-                    else (mats.H + mats.B_out)
-                ),
-                -mats.S,
-            ],
-            N=assembler.N,
-            M=assembler.M,
+    psi_m, k_m = power(
+        T=(
+            (mats.H + mats.B_out - mats.B_in - mats.S).combine()
+            if mats.B_in is not None
+            else (mats.H + mats.B_out - mats.S).combine()
         ),
-        RHS=LinearOperator([mats.F], N=assembler.N, M=assembler.M),
-        tols=1e-8,
-        max_iters=500,
+        F=mats.F,
+        tol=1e-8,
+        maxiter=500,
+        gpu_idx=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
     )
+    psi_m = psi_m.reshape(assembler.discretization)
 
     # Run eigenvalue problem
-    k_tt, psi_tt = eig(
-        LHS=LinearOperator(
-            (
-                [tts.H, -tts.S, tts.B_out]
-                + ([-tts.B_in] if tts.B_in is not None else [])
-            ),
-            N=assembler.N,
-            M=assembler.M,
+    psi_tt, k_tt = power(
+        T=(
+            (tts.H + tts.B_out - tts.B_in - tts.S)
+            if tts.B_in is not None
+            else (tts.H + tts.B_out - tts.S)
         ),
-        RHS=LinearOperator([tts.F], N=assembler.N, M=assembler.M),
-        tols=1e-8,
-        max_iters=500,
+        F=tts.F,
+        tol=1e-8,
+        maxiter=500,
+        gpu_idx=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
     )
+    psi_tt = psi_tt.reshape(assembler.discretization)
 
     # Check solution
     assert abs(k_m - k_tt) * 1e5 < 1
@@ -138,28 +123,23 @@ def run_fixed_source(
 ):
     # Create operators in sparse format
     assembler = MatrixAssembler(
-        mesh=mesh, xs_server=xs_server, num_ordinates=num_ordinates
+        mesh=mesh, xs_server=xs_server, num_ordinates=num_ordinates, max_processes=2
     )
     mats = assembler.build()
 
     # Run eigenvalue problem
-    psi = fixed_source(
-        LinearOperator(
-            [
-                (
-                    (mats.H + mats.B_out - mats.B_in)
-                    if mats.B_in is not None
-                    else (mats.H + mats.B_out)
-                ),
-                -mats.S,
-            ],
-            N=assembler.N,
-            M=assembler.M,
-        ),
-        mats.q,
+    psi = gmres(
+        A=(
+            (mats.H + mats.B_out - mats.B_in)
+            if mats.B_in is not None
+            else (mats.H + mats.B_out)
+        )
+        - mats.S,
+        b=mats.q,
         tol=1e-8,
-        device=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
-    )
+        gpu_idx=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
+    )[0]
+    psi = psi.reshape(assembler.discretization)
     assert isinstance(psi, tn.Tensor)
 
     # Calculate leakage fraction
@@ -171,8 +151,7 @@ def run_fixed_source(
     assert psi.shape == tuple(
         [4]
         + 2 * [int(np.sqrt(num_ordinates / 4))]
-        + ([xs_server.num_groups] if xs_server.num_groups > 1 else [])
-        + ([mesh.num_patches] if mesh.num_patches > 1 else [])
+        + [xs_server.num_groups, mesh.num_patches]
         + list(mesh.patches[mesh.patch_ids[0]].shape)
     )
 
@@ -200,17 +179,14 @@ def run_fixed_source(
 
     # Create operators in TT format
     assembler = TTAssembler(mesh=mesh, xs_server=xs_server, num_ordinates=num_ordinates)
-    assembler.interp_jacobian = False
-    assembler.interp_jacobian_det = False
-    assembler.interp_boundary_jacobian_det = False
     tts = assembler.build(use_tt=True, eps=1e-10)
 
     # Check loss and boundary operators
     assert (
-        tn.abs(mats.H.to_dense() - tts.H.full().reshape(mats.H.shape)) < 1e-10
+        tn.abs(mats.H.to_dense() - tts.H.to_dense().reshape(mats.H.shape)) < 1e-10
     ).all()
     assert (
-        tn.abs(mats.B_out.to_dense() - tts.B_out.full().reshape(mats.B_out.shape))
+        tn.abs(mats.B_out.to_dense() - tts.B_out.to_dense().reshape(mats.B_out.shape))
         < 1e-10
     ).all()
     if mats.B_in is not None:
@@ -220,45 +196,35 @@ def run_fixed_source(
         ).all()
 
     # Run eigenvalue problem
-    psi_m = fixed_source(
-        LinearOperator(
-            [
-                (
-                    (mats.H + mats.B_out - mats.B_in)
-                    if mats.B_in is not None
-                    else (mats.H + mats.B_out)
-                ),
-                -mats.S,
-            ],
-            N=assembler.N,
-            M=assembler.M,
-        ),
-        mats.q,
+    psi_m = gmres(
+        A=(
+            (mats.H + mats.B_out - mats.B_in)
+            if mats.B_in is not None
+            else (mats.H + mats.B_out)
+        )
+        - mats.S,
+        b=mats.q,
         tol=1e-10,
-        max_iters=100,
-        device=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
-    )
+        restart=50,
+        gpu_idx=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
+    )[0]
+    psi_m = psi_m.reshape(assembler.discretization)
     leakage_frac_m = assembler_m.outward_current(psi_m) / assembler_m.total_production()
 
     # Run eigenvalue problem
-    psi_tt = fixed_source(
-        LinearOperator(
-            [
-                (
-                    (tts.H + tts.B_out - tts.B_in)
-                    if tts.B_in is not None
-                    else (tts.H + tts.B_out)
-                ),
-                -tts.S,
-            ],
-            N=assembler.N,
-            M=assembler.M,
-        ),
-        tts.q,
+    psi_tt = gmres(
+        A=(
+            (tts.H + tts.B_out - tts.B_in)
+            if tts.B_in is not None
+            else (tts.H + tts.B_out)
+        )
+        - tts.S,
+        b=tts.q,
         tol=1e-10,
-        max_iters=100,
-        device=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
-    )
+        restart=50,
+        gpu_idx=0 if tn.cuda.is_available() and tn.cuda.device_count() > 0 else None,
+    )[0]
+    psi_tt = psi_tt.reshape(assembler.discretization)
     leakage_frac_tt = (
         assembler_m.outward_current(psi_tt) / assembler_m.total_production()
     )

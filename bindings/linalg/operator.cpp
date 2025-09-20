@@ -1,0 +1,27 @@
+#include "ttnte/linalg/operator.hpp"
+
+namespace py = pybind11;
+
+void register_Operator(py::module_& m)
+{
+  using Operator = ttnte::linalg::Operator;
+
+  py::class_<Operator, std::shared_ptr<Operator>>(m, "Operator")
+    .def("__matmul__", &Operator::apply)
+    .def("__add__", &Operator::operator+)
+    .def("__sub__",
+      [](const std::shared_ptr<Operator>& self,
+        const std::shared_ptr<Operator>& other) {
+        return self->operator-(other);
+      })
+    .def("__neg__",
+      [](const std::shared_ptr<Operator>& self) { return self->operator-(); })
+    .def("matvec", &Operator::apply)
+    .def("apply", &Operator::apply)
+    .def("cuda", &Operator::cuda)
+    .def("cpu", &Operator::cpu)
+    .def_property_readonly("input_shape", &Operator::input_shape)
+    .def_property_readonly("output_shape", &Operator::output_shape)
+    .def_property_readonly("nelements", &Operator::nelements)
+    .def_property_readonly("compression", &Operator::compression);
+}

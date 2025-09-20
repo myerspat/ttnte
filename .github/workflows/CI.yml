@@ -25,11 +25,18 @@ jobs:
         python-version: ${{ matrix.python-version }}
     - name: Install dependencies
       run: |
+        sudo apt-get update
+        sudo apt-get install -y libppl-dev
         python -m pip install --upgrade pip
         python -m pip install flake8 pytest
         pip install https://github.com/dalcinl/igakit/archive/refs/heads/master.zip
         pip install git+https://github.com/ion-g-ion/torchTT.git
-        pip install .
+        pip install torch
+        curl -LO https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.8.0%2Bcpu.zip
+        unzip -q libtorch-shared-with-deps-2.8.0%2Bcpu.zip
+        export TORCH_INSTALL_PREFIX=$(pwd)/libtorch
+        export _GLIBCXX_USE_CXX11_ABI=$(python3 -c "import torch; print(int(torch._C._GLIBCXX_USE_CXX11_ABI))")
+        TTNTE_CPP_BACKEND=1 USE_CUDA=0 pip install .
     - name: Lint with flake8
       run: |
         cd ttnte
@@ -41,4 +48,5 @@ jobs:
       run: |
         cd tests
         pytest unit/*
-        pytest regression/*
+        TTNTE_CPP_BACKEND=0 pytest regression/*
+        TTNTE_CPP_BACKEND=1 pytest regression/*

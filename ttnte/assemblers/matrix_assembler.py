@@ -10,15 +10,10 @@ import cotengra as ctg
 import numpy as np
 import pandas as pd
 import torch as tn
-import torchtt as tntt
 from scipy.special import lpmv
 
 from ttnte.__init__ import IS_NOTEBOOK
-from ttnte.assemblers.operators import (
-    FissionOperator,
-    ScatteringOperator,
-    SparseOperator,
-)
+from ttnte.linalg import TTOperator, FissionOperator, ScatterOperator, SparseOperator
 from ttnte.cad.patch import Patch
 from ttnte.iga import IGAMesh
 from ttnte.xs import Server
@@ -42,13 +37,13 @@ class PatchInfo:
 
 
 @dataclass
-class Operators:
-    H: Optional[Union[SparseOperator, tntt.TT]] = None
-    S: Optional[Union[ScatteringOperator, tntt.TT]] = None
-    F: Optional[Union[FissionOperator, tntt.TT]] = None
+class OperatorData:
+    H: Optional[Union[SparseOperator, TTOperator]] = None
+    S: Optional[Union[ScatterOperator, TTOperator]] = None
+    F: Optional[Union[FissionOperator, TTOperator]] = None
     q: Optional[tn.Tensor] = None
-    B_in: Optional[Union[SparseOperator, tntt.TT]] = None
-    B_out: Optional[Union[SparseOperator, tntt.TT]] = None
+    B_in: Optional[Union[SparseOperator, TTOperator]] = None
+    B_out: Optional[Union[SparseOperator, TTOperator]] = None
 
 
 class MatrixAssembler(object):
@@ -186,16 +181,21 @@ class MatrixAssembler(object):
         """
         ops = {
             name: {
-                "H": SparseOperator,
-                "S": lambda S: ScatteringOperator(
-                    self._Y, S, self._ordinates[0][:, 0], self._ordinates[1][:, 0]
+                "H": lambda H: SparseOperator(H.to_sparse_csr()),
+                "S": lambda S: ScatterOperator(
+                    [S[i].to_sparse_csr() for i in range(S.shape[0])],
+                    self._Y,
+                    tn.tensor(self._ordinates[0][:, 0]),
+                    tn.tensor(self._ordinates[1][:, 0]),
                 ),
                 "F": lambda F: FissionOperator(
-                    F, self._ordinates[0][:, 0], self._ordinates[1][:, 0]
+                    F.to_sparse_csr(),
+                    tn.tensor(self._ordinates[0][:, 0]),
+                    tn.tensor(self._ordinates[1][:, 0]),
                 ),
                 "q": lambda q: q,
-                "B_in": SparseOperator,
-                "B_out": SparseOperator,
+                "B_in": lambda B_in: SparseOperator(B_in.to_sparse_csr()),
+                "B_out": lambda B_out: SparseOperator(B_out.to_sparse_csr()),
             }[name](op)
             for name, op in self._build(kwargs, verbose).items()
         }
@@ -204,7 +204,7 @@ class MatrixAssembler(object):
         self._print_final(ops)
 
         # Place resulting operators in the correct sparse operators
-        return Operators(**ops)
+        return OperatorData(**ops)
 
     def _build(self, kwargs, verbose):
         get_volumes = any(op in self._only for op in ["H", "S", "F", "q"])
@@ -262,7 +262,7 @@ class MatrixAssembler(object):
                 pbar.update(1)
                 pbar.refresh()
 
-            executor.shutdown(wait=False)
+            # executor.shutdown(wait=False)
 
         return ops
 
@@ -353,7 +353,6 @@ class MatrixAssembler(object):
                 ops.append(self._build_loss(pinfo, Intg_int, Intg_str))
             del Intg_str
 
-            start = time.time()
             if "S" in self._only:
                 ops.append(self._build_scatter(pinfo, Intg_int))
 
@@ -1303,9 +1302,7 @@ class MatrixAssembler(object):
     def _append_info(self, name, A, final=False):
         """"""
         # Get number of entries
-        num_entries = (
-            A.num_entries if isinstance(A, SparseOperator) else np.prod(A.shape)
-        )
+        num_entries = np.prod(A.shape) if isinstance(A, tn.Tensor) else A.nelements
 
         # Get info
         info = {
@@ -1730,6 +1727,21 @@ class MatrixAssembler(object):
     @property
     def M(self):
         return self.N
+
+    @property
+    def discretization(self):
+        return tuple(
+            np.array(
+                [
+                    self._quadrants.shape[0],
+                    self._ordinates[0].shape[0],
+                    self._ordinates[1].shape[0],
+                    self._xs_server.num_groups,
+                    self._mesh.num_patches,
+                    *list(self._mesh.patches.values())[0].shape,
+                ]
+            ).astype(int)
+        )
 
     @property
     def shape(self):
