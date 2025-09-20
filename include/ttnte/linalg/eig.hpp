@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ttnte/linalg/operator.hpp"
+#include "ttnte/utils/visibility.hpp"
 #include <optional>
 #include <pybind11/pybind11.h>
 #include <torch/torch.h>
@@ -9,12 +10,12 @@ namespace py = pybind11;
 
 namespace ttnte::linalg {
 
-struct LinearSolverOptions {
+struct TTNTE_API LinearSolverOptions {
   // Options
   double tol = 1e-10;
   double atol = 0.0;
   int64_t restart = 100;
-  int64_t maxiter = 20;
+  int64_t maxiter = 5;
   std::string solve_method = "batched";
   std::optional<py::function> callback = std::nullopt;
   std::optional<int64_t> gpu_idx = std::nullopt;

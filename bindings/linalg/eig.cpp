@@ -9,7 +9,13 @@ void register_eig(py::module_& m)
   using LinearSolverOptions = ttnte::linalg::LinearSolverOptions;
 
   py::class_<LinearSolverOptions>(m, "LinearSolverOptions")
-    .def(py::init<>())
+    .def(
+      py::init<double, double, int64_t, int64_t, std::string,
+        std::optional<py::function>, std::optional<int64_t>, int64_t, bool>(),
+      py::arg("tol") = 1e-10, py::arg("atol") = 0.0, py::arg("restart") = 100,
+      py::arg("maxiter") = 5, py::arg("solve_method") = "batched",
+      py::arg("callback") = std::nullopt, py::arg("gpu_idx") = std::nullopt,
+      py::arg("callback_frequency") = 1, py::arg("verbose") = false)
     .def_readwrite("tol", &LinearSolverOptions::tol)
     .def_readwrite("atol", &LinearSolverOptions::atol)
     .def_readwrite("restart", &LinearSolverOptions::restart)
