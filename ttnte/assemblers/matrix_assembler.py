@@ -1747,28 +1747,27 @@ class MatrixAssembler(object):
     def shape(self):
         return [(self.N[i], self.N[i]) for i in range(len(self.N))]
 
-    # @property
-    # def avg_element_size(self):
-    #     # Turn off printing
-    #     verbose = self._verbose
-    #     self._verbose = False
-    #
-    #     # Iterate through patches
-    #     size = 0
-    #     for p in range(self._mesh.num_patches):
-    #         # Set the current patch
-    #         self._setup_current_patch(p)
-    #
-    #         # Cross-interpolate Jacobian determinant
-    #         J_det = self._jacobian_det()
-    #
-    #         # Calculate basis data at quadrature points for each knot span
-    #         R, _ = self._basis()
-    #
-    #         # Add contribution
-    #         size += 1 / (self._I1 * self._I2) * ctg.einsum("abcdef,abcd->", R, J_det)
-    #
-    #     # Reset verbose
-    #     self._verbose = verbose
-    #
-    #     return size / self._mesh.num_patches
+    @property
+    def avg_element_size(self):
+        # Turn off printing
+        verbose = self._verbose
+        self._verbose = False
+
+        # Get basis data
+        R, _ = self._basis(self._get_patch_info(0))
+
+        # Iterate through patches
+        size = 0
+        for p in range(self._mesh.num_patches):
+            pinfo = self._get_patch_info(p)
+
+            # Cross-interpolate Jacobian determinant
+            J_det = self._jacobian_det(pinfo)
+
+            # Add contribution
+            size += 1 / (pinfo.I1 * pinfo.I2) * ctg.einsum("abcdef,abcd->", R, J_det)
+
+        # Reset verbose
+        self._verbose = verbose
+
+        return size / self._mesh.num_patches
