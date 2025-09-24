@@ -17,13 +17,13 @@ repos:
           entry: npx prettier --write
           language: node
           types: [markdown]
-    - repo: local
-      hooks:
-        - id: clang-format
-          name: Format C/C++ with clang-format
-          entry: clang-format -i
-          language: system
-          files: \.(c|cpp|h|hpp|cu|cuh)
+    # - repo: local
+    #   hooks:
+    #     - id: clang-format
+    #       name: Format C/C++ with clang-format
+    #       entry: clang-format -i
+    #       language: system
+    #       files: \.(c|cpp|h|hpp|cu|cuh)$
     #- repo: https://github.com/PyCQA/docformatter
     #  rev: v1.7.8-rc1
     #  hooks:
