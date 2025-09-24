@@ -10,6 +10,10 @@ repos:
       rev: 25.1.0
       hooks:
           - id: black
+    - repo: https://github.com/PKUcoldkeyboard/md-format
+      rev: 0.0.5
+      hooks:
+        - id: md-format
     #- repo: https://github.com/PyCQA/docformatter
     #  rev: v1.7.8-rc1
     #  hooks:

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Union, Tuple
 
 if __name__ == "__main__":
-    multiprocessing.set_start_method("forkserver")
+    multiprocessing.set_start_method("spawn")
     sys.path.append("../..")
 
 import numpy as np
@@ -49,13 +49,14 @@ def get_mesh(factor: Union[int, Tuple[int]], degree: Union[int, Tuple[int]]):
         ]
     ).reshape((2, 2, -1))
     patch = Patch(cad.bilinear(points), "Source")
+    patch._id = 0
 
     # Add uniform source of 1/cm to patch
     source = IsotropicInternalSource(np.ones((1, *patch.shape)))
     patch.set_source(source)
 
     # Create mesh
-    mesh = IGAMesh()
+    mesh = IGAMesh(max_processes=32)
     mesh.add_patch(patch)
 
     # Refine mesh resolution
@@ -79,7 +80,7 @@ if __name__ == "__main__":
 
     # Combinations to run
     num_groups = [1]
-    degrees = [2, 3, 6]
+    degrees = [2, 3, 4, 6]
     eps = [1e-8, 1e-5, 1e-3]
 
     # Define GMRES configuration
@@ -89,7 +90,8 @@ if __name__ == "__main__":
 
     # =======================================================
     # Direction scaling study
-    num_ordinates = [16, 64, 256, 1024, 4096, 16384, 65536, 262144]
+    # num_ordinates = [16, 64, 256, 1024, 4096, 16384, 65536, 262144]
+    num_ordinates = [262144]
     factors = [10]
 
     # Create runner
@@ -116,7 +118,7 @@ if __name__ == "__main__":
     # =======================================================
     # Mesh scaling study
     num_ordinates = [256]
-    factors = np.geomspace(5, 10, 8).astype(int).tolist()
+    factors = np.geomspace(5, 100, 8).astype(int).tolist()
 
     # Create runner
     runner = Runner(
