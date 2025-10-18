@@ -142,7 +142,7 @@ std::shared_ptr<Operator> LinearOperator::round(const double& eps,
     // Sum all TTOperators and append the rest
     if (const auto& ttop = std::dynamic_pointer_cast<TTOperator>(op)) {
       if (new_ttop == nullptr) {
-        new_ttop = ttop;
+        new_ttop = ttop->clone();
       } else {
         new_ttop = new_ttop->add_(ttop);
       }

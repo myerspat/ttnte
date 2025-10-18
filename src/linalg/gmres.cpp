@@ -65,7 +65,8 @@ bool kth_arnoldi_iteration(const int64_t& k, std::shared_ptr<Operator> A,
   torch::Tensor& V, torch::Tensor& H)
 {
   // Compute next candidate vector
-  torch::Tensor v = A->apply(V.index({Slice(), k})).reshape({-1, 1});
+  torch::Tensor v =
+    A->apply(V.index({Slice(), k}).reshape({-1, 1})).reshape({-1, 1});
 
   // Calculate norm of candidate
   double vnorm = v.norm().item<double>();
