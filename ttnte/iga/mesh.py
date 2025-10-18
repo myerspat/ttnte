@@ -709,6 +709,8 @@ class IGAMesh(object):
 
         # Handle figure size if not given
         figsize = kwargs.pop("figsize", None)
+        edgecolors = kwargs.pop("edgecolors", "none")
+        linewidth = kwargs.pop("linewidth", None)
 
         # Legend updates
         legend_args = {"loc": "upper right", "fancybox": True}
@@ -802,7 +804,7 @@ class IGAMesh(object):
                 _, ax = plt.subplots(figsize=figsize)
 
                 # 2D settings
-                kwargs["shading"] = "gouraud"
+                kwargs["shading"] = "gouraud" if edgecolors == "none" else "nearest"
 
                 for i, patch in enumerate(self._patches.values()):
                     # Plot 2D surface
@@ -810,6 +812,8 @@ class IGAMesh(object):
                         points[i, ..., 0],
                         points[i, ..., 1],
                         points[i, ..., 2],
+                        edgecolors=edgecolors,
+                        linewidth=linewidth,
                         **kwargs,
                     )
 

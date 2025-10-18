@@ -13,9 +13,9 @@ import torch as tn
 from scipy.special import lpmv
 
 from ttnte.__init__ import IS_NOTEBOOK
-from ttnte.linalg import TTOperator, FissionOperator, ScatterOperator, SparseOperator
 from ttnte.cad.patch import Patch
 from ttnte.iga import IGAMesh
+from ttnte.linalg import FissionOperator, ScatterOperator, SparseOperator, TTOperator
 from ttnte.xs import Server
 
 if IS_NOTEBOOK:
@@ -1478,7 +1478,7 @@ class MatrixAssembler(object):
             Yl.append(Ym)
 
         Yl = np.array(Yl)
-        Yl[1:,] *= 2
+        Yl[1:,] *= np.sqrt(2)
         return Yl
 
     # ========================================================================
