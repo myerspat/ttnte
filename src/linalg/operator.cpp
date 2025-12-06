@@ -27,7 +27,11 @@ std::shared_ptr<Operator> Operator::operator+(
 
   // Pointer is a LinearOperator
   if (auto op = std::dynamic_pointer_cast<LinearOperator>(self)) {
-    op->append(other);
+    if (auto other_op = std::dynamic_pointer_cast<LinearOperator>(other)) {
+      op->append(other_op->operators());
+    } else {
+      op->append(other);
+    }
     return op;
   }
 
