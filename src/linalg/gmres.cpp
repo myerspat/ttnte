@@ -333,8 +333,7 @@ void gmres_incremental(LinearSystem& system, torch::Tensor& residual,
 
     // Rotate beta vector and update residual norm
     rotate_vectors(k, beta, givens.index({k, Slice()}));
-    presid =
-      abs(beta[k + 1].item<double>() * givens.index({k, 1}).item<double>());
+    presid = abs(beta[k + 1].item<double>());
 
     k++;
   } while (presid > ptol * 1e-2 && k < restart && !breakdown);
