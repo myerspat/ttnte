@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import plotly.graph_objects as go
 import torch as tn
+from matplotlib.patches import Polygon
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from ttnte.cad.patch import Patch
@@ -509,9 +510,9 @@ class IGAMesh(object):
         full_bbox[0, :] = np.inf
 
         for bbox in self._bboxes:
-            if (bbox[0, :] < full_bbox[0, :]).all():
+            if (bbox[0, :] <= full_bbox[0, :]).all():
                 full_bbox[0, :] = bbox[0, :]
-            if (bbox[1, :] > full_bbox[1, :]).all():
+            if (bbox[1, :] >= full_bbox[1, :]).all():
                 full_bbox[1, :] = bbox[1, :]
 
         # Create regular mesh edges
@@ -651,6 +652,7 @@ class IGAMesh(object):
         self,
         num_nodes: int = 256,
         plot_ctrlpts: bool = True,
+        plot_boundaries: bool = False,
         use_3d: bool = False,
         color_by: Literal["material", "patch"] = "material",
         colors: Optional[Dict] = None,
@@ -666,6 +668,7 @@ class IGAMesh(object):
             Number of positions to sample the mesh for each patch.
         plot_ctrlpts: bool, default=True
             Whether to plot the control points.
+        plot_boundaries: bool, default=False
         use_3d: bool, default=False
             Plot mesh in 2-D or 3-D.
         color_by: "material" or "patch"
@@ -830,6 +833,25 @@ class IGAMesh(object):
                         # Save for legend
                         if i == 0 and categorical:
                             legend_handles.append(sc)
+
+                    if plot_boundaries:
+                        outline = np.array(
+                            [
+                                points[i, 0, :, :-1],
+                                points[i, :, -1, :-1],
+                                points[i, -1, ::-1, :-1],
+                                points[i, ::-1, 0, :-1],
+                            ]
+                        ).reshape((-1, 2))
+                        ax.add_patch(
+                            Polygon(
+                                outline,
+                                closed=True,
+                                edgecolor="black",
+                                facecolor="none",
+                                linewidth=1.5,
+                            )
+                        )
 
                 ax.set_xlabel("$x(\\hat{x}, \\hat{y})~(cm)$")
                 ax.set_ylabel("$y(\\hat{x}, \\hat{y})~(cm)$")
