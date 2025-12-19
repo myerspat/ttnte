@@ -2,11 +2,13 @@ import openmc
 import matplotlib.pyplot as plt
 import numpy as np
 
+num_groups = 2
+
 # Load statepoint file
 sp = openmc.StatePoint("./statepoint.20000.h5")
 
 # Print eigenvalue
-print(f"keff = {sp.keff}")
+print(f"keff = {sp.keff.nominal_value} +/- {sp.keff.std_dev}")
 
 # Get cell flux tally
 flux = (
@@ -24,10 +26,17 @@ flux = np.transpose(
     .reshape((128, 128, 2))[..., ::-1],
     axes=(2, 0, 1),
 )
+stdev = np.transpose(
+    sp.get_tally(name="Regular Mesh")
+    .get_values(scores=["flux"], value="std_dev")
+    .reshape((128, 128, num_groups))[..., ::-1],
+    axes=(2, 0, 1),
+)
 print(f"Mesh flux shape: {flux.shape}")
 
 # Save data
 np.save(open("./data/mesh_flux.npy", "wb"), flux)
+np.save(open("./data/mesh_stdev.npy", "wb"), stdev)
 
 # Plot fluxes
 X, Y = np.meshgrid(np.linspace(0, 6.5, 129), np.linspace(0, 6.5, 129))
