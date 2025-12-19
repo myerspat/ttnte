@@ -34,13 +34,13 @@ step.
 - [networkx](https://networkx.org/)
 - [opt_einsum](https://optimized-einsum.readthedocs.io/en/stable/)
 
-> [!NOTE] For best performance compile
+> [!NOTE]
+> For best performance compile
 > [geomdl with Cython](https://nurbs-python.readthedocs.io/en/5.x/install.html#compile-with-cython),
 > [PyTorch with CUDA](https://pytorch.org/get-started/locally/),
-> [torchTT with its C++ extension](https://github.com/ion-g-ion/torchTT), and
-> ensure `ttnte` compiles by setting `TTNTE_CPP_BACKEND=True` environment
-> variable. `ttnte` will compile the C++ backend by default but if it fails to
-> compile it will fall back on the Python implementations.
+> [torchTT with its C++ extension](https://github.com/ion-g-ion/torchTT), and ensure `ttnte`
+> compiles by setting `TTNTE_CPP_BACKEND=True` environment variable. `ttnte` will compile the C++
+> backend by default but if it fails to compile it will fall back on the Python implementations.
 
 ## Installation
 
@@ -130,6 +130,6 @@ pre-commit install
 - [Homogeneous circle](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/eigenvalue/circle/circle.ipynb)
 - [Homogeneous quarter circle](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/eigenvalue/quarter_circle/quarter_circle.ipynb)
 - [C5G7 infinite pincell array](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/eigenvalue/pincell/pincell.ipynb)
-- Infinite array of Lightbridge four-lobe fuel with a
+- Infinite array of cruciform four-lobe fuel with a
   - [burnable absorder displacer](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/eigenvalue/lightbridge/lightbridge_ba.ipynb)
   - [gas displacer](https://nbviewer.org/github/myerspat/ttnte/blob/develop/notebooks/eigenvalue/lightbridge/lightbridge_gas.ipynb)
