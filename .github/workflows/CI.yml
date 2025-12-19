@@ -36,7 +36,7 @@ jobs:
         unzip -q libtorch-shared-with-deps-2.8.0%2Bcpu.zip
         export TORCH_INSTALL_PREFIX=$(pwd)/libtorch
         export _GLIBCXX_USE_CXX11_ABI=$(python3 -c "import torch; print(int(torch._C._GLIBCXX_USE_CXX11_ABI))")
-        TTNTE_CPP_BACKEND=1 USE_CUDA=0 pip install .
+        TTNTE_CPP_BACKEND=1 USE_CUDA=0 pip install . -v
     - name: Lint with flake8
       run: |
         cd ttnte
