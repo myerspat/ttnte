@@ -29,9 +29,9 @@ jobs:
         sudo apt-get install -y libppl-dev
         python -m pip install --upgrade pip
         python -m pip install flake8 pytest
-        pip install https://github.com/dalcinl/igakit/archive/refs/heads/master.zip
-        pip install git+https://github.com/ion-g-ion/torchTT.git
-        pip install torch
+        pip install https://github.com/dalcinl/igakit/archive/refs/heads/master.zip --no-cache-dir
+        pip install torch --index-url https://download.pytorch.org/whl/cpu --no-cache-dir
+        pip install git+https://github.com/ion-g-ion/torchTT.git --no-cache-dir
         curl -LO https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.8.0%2Bcpu.zip
         unzip -q libtorch-shared-with-deps-2.8.0%2Bcpu.zip
         export TORCH_INSTALL_PREFIX=$(pwd)/libtorch
