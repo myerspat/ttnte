@@ -29,13 +29,22 @@ jobs:
         sudo apt-get install -y libppl-dev
         python -m pip install --upgrade pip
         python -m pip install flake8 pytest
+        # Install igakit and geomdl
         pip install https://github.com/dalcinl/igakit/archive/refs/heads/master.zip --no-cache-dir
+        SETUPTOOLS_USE_CYTHON=1 pip install git+https://github.com/orbingol/NURBS-Python.git --no-cache-dir
+        # Install torch and libtorch
         pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu --no-cache-dir
-        pip install git+https://github.com/ion-g-ion/torchTT.git --no-cache-dir
         curl -LO https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.8.0%2Bcpu.zip
         unzip -q libtorch-shared-with-deps-2.8.0%2Bcpu.zip
+        # Install torchTT
+        git clone https://github.com/ion-g-ion/torchTT
+        cd torchTT
+        python setup.py install
+        cd ../
+        # Set environment variables for ttnte install
         export TORCH_INSTALL_PREFIX=$(pwd)/libtorch
         export _GLIBCXX_USE_CXX11_ABI=$(python3 -c "import torch; print(int(torch._C._GLIBCXX_USE_CXX11_ABI))")
+        # Install ttnte
         TTNTE_CPP_BACKEND=1 USE_CUDA=0 pip install . -v
     - name: Lint with flake8
       run: |
