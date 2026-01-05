@@ -1,0 +1,25 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<geometry>
+  <cell id="1" material="1" region="((4 -5 6 -7 1) | (-2 | -3)) 8 9 18 -19" universe="1"/>
+  <cell id="2" material="3" region="10 -11 12 13 18 -19" universe="1"/>
+  <cell id="3" material="2" region="-16 -17 14 15 (((-4 | 5 | -6 | 7 | -1) (2 3)) | -8 | -9) (-10 | 11 | -12 | -13) 18 -19" universe="1"/>
+  <surface coeffs="2.5 2.5 2" id="1" type="z-cylinder"/>
+  <surface coeffs="4.0 16.0 0.0 0.0 0.0 0.0 0.0 -80.0 0.0 99.0" id="2" type="quadric"/>
+  <surface coeffs="16.0 4.0 0.0 0.0 0.0 0.0 -80.0 0.0 0.0 99.0" id="3" type="quadric"/>
+  <surface boundary="reflective" coeffs="0" id="4" type="x-plane"/>
+  <surface coeffs="2.5" id="5" type="x-plane"/>
+  <surface boundary="reflective" coeffs="0" id="6" type="y-plane"/>
+  <surface coeffs="2.5" id="7" type="y-plane"/>
+  <surface boundary="reflective" coeffs="0" id="8" type="x-plane"/>
+  <surface boundary="reflective" coeffs="0" id="9" type="y-plane"/>
+  <surface coeffs="0.0 0.0 3.75" id="10" type="z-cylinder"/>
+  <surface coeffs="0.0 0.0 4.5" id="11" type="z-cylinder"/>
+  <surface boundary="reflective" coeffs="0" id="12" type="x-plane"/>
+  <surface boundary="reflective" coeffs="0" id="13" type="y-plane"/>
+  <surface boundary="reflective" coeffs="0" id="14" type="x-plane"/>
+  <surface boundary="reflective" coeffs="0" id="15" type="y-plane"/>
+  <surface boundary="vacuum" coeffs="5.0" id="16" type="x-plane"/>
+  <surface boundary="vacuum" coeffs="5.0" id="17" type="y-plane"/>
+  <surface boundary="reflective" coeffs="-0.5" id="18" type="z-plane"/>
+  <surface boundary="reflective" coeffs="0.5" id="19" type="z-plane"/>
+</geometry>

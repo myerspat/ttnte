@@ -1,125 +1,232 @@
+import sys
 import time
-from typing import Optional, Tuple, Union
+from dataclasses import dataclass
+from typing import Optional, Union, Literal, Callable
 
 import numpy as np
 import torch as tn
-from torchtt._iterative_solvers import gmres_restart
 
+from .operator import Operator
 from .linear_operator import LinearOperator
+from .gmres import gmres
 
 
-def eig(
-    LHS: LinearOperator,
-    RHS: Union[Tuple[LinearOperator], LinearOperator],
-    tols: Optional[Union[Tuple[float], float]] = 1e-8,
-    max_iters: Optional[Union[Tuple[int], int]] = 500,
-    device: Optional[int] = None,
-    linear_solver_opts: dict = {
-        "max_iterations": 100,
-        "threshold": 1e-10,
-        "resets": 5,
-    },
+@dataclass
+class LinearSolverOptions:
+    """
+    Linear solver options for GMRES.
+
+    Attributes
+    ----------
+    gpu_idx: int or None, default=None
+        If ``gpu_idx`` is not None then GMRES is run on GPU with the given
+        index.
+    tol: float, default=1e-10
+        Tolerance of GMRES with convergence condition
+        ``norm(residual) <= max(tol*norm(b), atol)``.
+    atol: float, default=0.0
+        Tolerance of GMRES with convergence condition
+        ``norm(residual) <= max(tol*norm(b), atol)``.
+    restart: int, default=100
+        Size of the Krylov subspace ("number of iterations") built between
+        restarts.
+    maxiter: int or None, default=5
+        Maximum number of times to rebuild the size-``restart`` Krylov space
+        starting from the solution found at the last iteration.
+    solve_method: "batched" or "incremental", default="batched"
+        The "incremental" solve method builds a QR decomposition for the
+        Krylov subspace incrementally using Givens rotation. This enables
+        early stopping and is overall more stable than the "batched"
+        method. The "batched" solution method solves a least squares problem
+        from scratch at the end of each GMRES iteration. This has less overhead
+        on GPUs. The "batched" method is only implemented in the C++ backend.
+    callback: callable or None, default=None
+        A callable called after each restart. This callable takes three inputs:
+        iteration index ``i``, the residual norm for that iteration ``rnorm``,
+        and the solution for that iteration ``x``.
+    callback_frequency: int, default=1
+        How often updates are printed to terminal and how often the callback
+        is called.
+    verbose: bool, default=False
+        Whether to print the progress of GMRES.
+    """
+
+    tol: float = 1e-10
+    atol: float = 0.0
+    restart: int = 100
+    maxiter: int = 5
+    solve_method: Literal["batched", "incremental"] = "batched"
+    callback: Optional[Callable] = None
+    callback_frequency: int = 1
+    gpu_idx: Optional[int] = None
+    verbose: bool = False
+
+
+def power(
+    T: Union[LinearOperator, Operator],
+    F: Union[LinearOperator, Operator],
+    psi0: Optional[tn.Tensor] = None,
+    tol: float = 1e-8,
+    maxiter: int = 100,
+    gpu_idx: Optional[int] = None,
+    callback: Optional[Callable] = None,
+    callback_frequency: int = 1,
+    verbose: bool = True,
+    lsoptions: LinearSolverOptions = LinearSolverOptions(),
 ):
     """
-    Compute largest eigenvalue and corresponding eigenvector of :math:`Ax=\\lambda B_1 x
-    + B_2x + ...`. This solver uses power iteration with GMRES for the resulting linear
-    system.
+    Find the largest eigenvalue and corresponding eigenvector for the
+    k-eigenvalue neutron transport equation using power iteration.
+    The linear solver is ``ttnte.linalg.gmres`` and solves
+
+    .. math::
+        T\\psi^{(n + 1)} = \\frac{1}{k^{(n)}}F\\psi^{(n)}.
 
     Parameters
     ----------
-    LHS: ttnte.linalg.LinearOperator
-        Left hand side operator.
-    RHS: tuple of ttnte.linalg.LinearOperator
-        Right hand side operators.
-    tols: tuple of float, default=(1e-8,)
-        Tolerances for solvers of each ``RHS`` operator.
-    max_iters: tuple of int, default=(500,)
-        Maximum number of iterations for each ``RHS`` operator.
-    device: int, default=None
-        Device to compute problem on.
-    linear_solver_opts: dict
-        GMRES options including ``max_threshold``, ``threshold``, and ``resets``.
+    T: ttnte.linalg.LinearOperator or ttnte.linalg.Operator
+        The operator to invert.
+    F: ttnte.linalg.LinearOperator or ttnte.linalg.Operator
+        The fission operator.
+    psi0: torch.Tensor or None, default=None
+        An initial guess
+    tol: float, default=1e-8
+        The convergence criterion for the angular flux
+        relative L2-error.
+    maxiter: int, default=100
+        Maximum number of power iterations.
+    gpu_idx: int or None, default=None
+        Which GPU to run on.
+    callback: callable or None, default=None
+        A callback function that runs at the end of each power
+        iteration. This function takes three arguments:
+        the iteration index ``i``, the relative angular flux L2-error
+        ``error``, and the angular flux solution for that iteration
+        ``psii``.
+    callback_frequency: int, default=1
+        How often progress is printed to terminal and the
+        ``callback`` is ran.
+    verbose: bool, default=True
+        Print progress to terminal.
+    lsoptions: ttnte.linalg.LinearSolverOptions, default=ttnte.linalg.LinearSolverOptions()
+        Options to pass to ``ttnte.linalg.gmres``.
+
+    Returns
+    -------
+    psi: torch.Tensor
+        The eigenvector.
+    k: float
+        The eigenvalue.
     """
-    # Convert singles to tuples
-    RHS = (RHS,) if isinstance(RHS, LinearOperator) else RHS
-    tols = (tols,) if isinstance(tols, float) else tols
-    max_iters = (max_iters,) if isinstance(max_iters, int) else max_iters
+    # Get the size of the system
+    n = np.prod(T.input_shape)
 
-    # Check shapes of operators
-    assert (
-        isinstance(RHS, tuple)
-        and np.array([LHS.shape == RHS[i].shape for i in range(len(RHS))]).all()
-    )
+    # Get types and device
+    dtype = T.dtype
+    device = T.device
 
-    # Send operators to GPU
-    if device is not None:
-        LHS = LHS.cuda(device)
-        RHS = tuple([RHS[i].cuda(device) for i in range(len(RHS))])
+    # Get initial eigenvector
+    psi = psi0 if psi0 is not None else tn.ones((n, 1), dtype=dtype, device=device)
+    psi /= psi.norm(2)
 
-    # Create initial guess
-    k0 = tn.ones(1, device=device)
-    psi0 = tn.ones(LHS.M, device=device)
-    ft0 = (RHS[0] @ psi0).sum()
-    psi = None
+    # Check data types and device
+    if (
+        F.dtype != dtype
+        or F.device != device
+        or psi.dtype != dtype
+        or psi.device != device
+    ):
+        raise RuntimeError(
+            "T, F, and x0 should be on the same device with the same data type"
+        )
 
-    print("Starting power iteration")
-    error = np.inf
+    # Check shapes
+    if (
+        n != np.prod(T.output_shape)
+        or n != np.prod(F.input_shape)
+        or n != np.prod(F.output_shape)
+    ):
+        raise RuntimeError(
+            "The eigenvalue problem should be square with T and F matching in shape"
+        )
+
+    # Send to GPU
+    if gpu_idx != None and tn.cuda.is_available() and gpu_idx < tn.cuda.device_count():
+        T.cuda(gpu_idx)
+        F.cuda(gpu_idx)
+        psi = psi.cuda(gpu_idx)
+
+    # Get initial eigenvalue by Rayleigh quotient
+    k = psi.t() @ F.apply(psi) / (psi.t() @ T.apply(psi))
+
+    # Get total fission
+    ft = F.apply(psi).sum()
+
+    i = 0
+    error = sys.float_info.max
     start = time.time()
-    for i in range(max_iters[0]):
+    if verbose:
+        print(
+            "Running power iteration on " + ("GPU " + str(gpu_idx))
+            if gpu_idx is not None
+            else "CPU"
+        )
+
+    while error >= tol and i < maxiter:
         # Run GMRES
-        psi = gmres_restart(
-            LinOp=LHS,
-            b=1 / k0 * (RHS[0] @ psi0).reshape((-1, 1)),
-            x0=psi0.reshape((-1, 1)),
-            N=np.prod(LHS.N),
-            **linear_solver_opts
-        )[0].reshape(LHS.N)
+        psii = gmres(
+            T,
+            (1 / k) * F.apply(psi),
+            psi,
+            lsoptions.gpu_idx,
+            lsoptions.tol,
+            lsoptions.atol,
+            lsoptions.restart,
+            lsoptions.maxiter,
+            lsoptions.solve_method,
+            lsoptions.callback,
+            lsoptions.callback_frequency,
+            lsoptions.verbose,
+        )[0]
+
+        # Calculate error
+        error = ((psii - psi).norm(2) / psi.norm(2)).item()
+        psi = psii
 
         # Calculate total fission source
-        ft = (RHS[0] @ psi).sum()
+        fti = F.apply(psi).sum()
 
-        # Calculate new eigenvalue
-        k = k0 * ft / ft0
+        # Update the eigenvalue
+        k *= fti / ft
+        ft = fti
 
-        # Ensure eigenvector is pointing in the right direction
+        # Flip sign if needed
         if ft < 0 and k > 0:
             psi *= -1
             ft *= -1
 
-        # Calculate error
-        error = tn.linalg.norm((psi - psi0).flatten(), 2) / tn.linalg.norm(
-            psi0.flatten(), 2
-        )
-
         # Print progress
-        print(
-            "-- ({}): k = {}, Angular Flux L2-Error = {}, Elapsed Time = {}".format(
-                i,
-                round(k.item(), 8),
-                round(error.item(), 8),
-                round(time.time() - start, 3),
-            )
-        )
+        if i % callback_frequency == 0:
+            if verbose:
+                print(
+                    "-- ({}):  k = {:.6f}, Angular Flux L2-Error = {:.12f}, Elapsed Time = {:.3f} s".format(
+                        i, k.item(), error, time.time() - start
+                    )
+                )
 
-        # Exit iteration if we've converged
-        if error < tols[0]:
-            k0 = k
-            print(
-                "-- Converged: k = {}, Elapsed Time = {}".format(
-                    round(k0.item(), 8), round(time.time() - start, 3)
-                ),
-            )
-            break
+            if callback is not None:
+                callback(i, error, psi)
 
-        # Update old
-        psi0 = psi
-        k0 = k
-        ft0 = ft
+        i += 1
 
-    # Move operators back to CPU
-    LHS = LHS.cpu()
-    RHS = tuple([RHS[i].cpu() for i in range(len(RHS))])
-    psi0 = psi0.cpu()
-    psi = psi.cpu()
+    # Remove data from GPU
+    if gpu_idx is not None:
+        T.cpu()
+        F.cpu()
+        psi = psi.cpu()
 
-    return k0.item(), psi
+    # Print convergence
+    if verbose:
+        print("-- {}".format("Converged!" if error < tol else "Failed to Converge!"))
+
+    return psi, k.item()

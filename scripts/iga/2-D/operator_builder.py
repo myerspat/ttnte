@@ -817,9 +817,11 @@ class OperatorBuilder(object):
                         ]
                         + tntt.interpolate.dmrg_cross(
                             lambda idxs: self._sample_boundary_jacobian_det(i, idxs),
-                            [self._I1, self._num_points[0]]
-                            if i < 2
-                            else [self._I2, self._num_points[1]],
+                            (
+                                [self._I1, self._num_points[0]]
+                                if i < 2
+                                else [self._I2, self._num_points[1]]
+                            ),
                             eps=self._eps,
                             nswp=50,
                         ).cores,

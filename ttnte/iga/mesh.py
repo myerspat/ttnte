@@ -1,35 +1,49 @@
-from typing import List, Literal, Optional, Tuple, Union
+import itertools
+import multiprocessing as mp
+import warnings
+from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
 
 import cotengra as ctg
-import matplotlib as mpl
+import h5py as h5
 import matplotlib.colors as mcolors
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import plotly.graph_objects as go
-from geomdl import NURBS
-from geomdl.helpers import basis_functions, basis_functions_ders, find_spans
-from igakit import cad
+import torch as tn
+from matplotlib.patches import Polygon
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-from .boundary import Boundary
+from ttnte.cad.patch import Patch
 
 
 class IGAMesh(object):
     """
-    IGA Mesh object. This object handles all NURBS definitions, basis function
-    evaluations, and connectivity.
+    IGA mesh object. Handles boundary information for connecting
+    patches, plotting, etc.
 
     Attributes
     ----------
     num_patches: int
         Number of patches in the mesh
-    degree: list
-        The degree for each parametric axis of all patches.
-        This assumes all patches have the same degree.
-    ndim: int
-        Number of spatial dimensions.
+    patches: dict of int and ttnte.cad.Patch
+        The patches in the mesh.
+    patch_ids: list of int
+        A list of all the patch IDs in the mesh.
+    max_processes: int
+        Max number of processes at once.
+    name: str or None
+        Name of mesh object.
+    id: int
+        ID of mesh object.
+    has_reflective_boundary: bool
+        The mesh has a reflective boundary.
     """
 
-    def __init__(self, patches: dict):
+    # IGAMesh ID iterator
+    _id_iter = itertools.count()
+
+    def __init__(self, **kwargs):
         """
         Initialize IGAMesh object.
 
@@ -40,31 +54,87 @@ class IGAMesh(object):
 
         Parameters
         ----------
-        patches: dict of igakit.nurbs.NURBS and str
-            Patches in the IGA mesh. The keys are the patches
-            defined as ``igakit.nurbs.NURBS`` and the values
-            are the names of their materials.
+        name: str or None
+            Name of the mesh.
+        max_processes: int
+            Maximum number of processes allowed. Defaults to
+            ``multiprocessing.cpu_count() - 1``.
         """
-        # Get information
-        self.patches = list(patches.keys())
-        self._materials = list(patches.values())
+        # Initialize patches
+        self._patches = {}
 
-        # Interfaces and boundaries
-        self._incident_boundaries = {p: 4 * [None] for p in range(self.num_patches)}
-
-        # Boundaries
-        self._bcs_set = False
+        # Unpack kwargs
+        self._name = kwargs.get("name", None)
+        self._max_processes = kwargs.get("max_processes", max(1, mp.cpu_count() - 1))
 
         # States
+        self._bcs_set = False
         self._finalized = False
         self._connected = False
         self._mapped_regular_mesh = False
+        self._has_reflective_boundary = False
+
+        # Set the ID
+        self._id = next(self._id_iter)
+
+        # Other variables
+        self._decimals = 8
+        self._boundary_hash = {}
+        self._bboxes = []
+
+    # ========================================================================
+    # Methods for modifying the mesh
+
+    def add_patch(self, patch: Patch):
+        """
+        Add patch to the mesh.
+
+        Parameters
+        ----------
+        patch: ttnte.cad.Patch
+            New patch.
+        """
+        assert not self._connected
+
+        # Throw warning if patch has already been added
+        if patch.id in self._patches:
+            warnings.warn(f"Already added {patch} to IGAMesh")
+        else:
+            # Add patch
+            self._patches[patch.id] = patch
+
+    def refine(
+        self,
+        factor: Union[int, List[int]],
+        degree: Union[int, List[int]],
+    ):
+        """
+        Refine all the patches in the mesh.
+
+        Parameters
+        ----------
+        factor: int or list of two ints
+            Number of elements or knot spans along each parametric axis.
+            If an integer is given then that is applied to both parametric
+            axes.
+        degree: ind or list of two ints
+            Degree of NURBS surface along each parametric axis. If an
+            integer is given then that is applied to both parametric axes.
+        """
+        assert not self._finalized
+
+        for patch in self._patches.values():
+            patch.refine(factor, degree)
 
     def connect(self, decimals=8):
         """
-        Connect patches. Determine patch interfaces for passing boundary conditions.
-        Patches not connected are assumed to be vacuum boundary conditions unless
+        Connect patches. boundary conditions. Patches not connected are assumed to be
+        vacuum boundary conditions unless Determine patch interfaces for passing
         otherwise specified in :meth:`ttnte.iga.IGAMesh.set_reflective_condition`.
+
+        Convert patches and connect them. Patch boundaries not connected to another
+        patch are assumed to have vacuum boundaries unless specified in
+        :meth:`tttnte.iga.IGAMesh.set_reflective_conditions`
 
         Parameters
         ----------
@@ -76,85 +146,38 @@ class IGAMesh(object):
         assert not self._finalized and not self._connected
         self._decimals = decimals
 
-        # Iterate through patches
-        for i in range(self.num_patches):
-            patch = self.patches[i]
-
-            # Initialize geomdl NURBS object
-            geomdl_patch = NURBS.Surface()
-
-            # Set degree
-            geomdl_patch.degree_u, geomdl_patch.degree_v = patch.degree
-
-            # Set material
-            geomdl_patch.name = self._materials[i]
-
-            # Set control points
-            geomdl_patch.ctrlpts_size_u = patch.points.shape[0]
-            geomdl_patch.ctrlpts_size_v = patch.points.shape[1]
-
-            # Set control points
-            geomdl_patch.ctrlpts = patch.points.reshape((-1, 3)).tolist()
-
-            # Set weights
-            geomdl_patch.weights = patch.weights.flatten().tolist()
-
-            # Set knot vectors
-            geomdl_patch.knotvector_u = patch.knots[0].tolist()
-            geomdl_patch.knotvector_v = patch.knots[1].tolist()
-            self.patches[i] = geomdl_patch
-
-        del self._materials
-
         # Find all boundaries and build spatial hash table
         self._boundary_hash = {}
-        for p, patch in enumerate(self.patches):
-            # Evaluate boundary centers
-            for boundary_idx, coord in enumerate(
-                [(0.5, 0), (0.5, 1), (0, 0.5), (1, 0.5)]
-            ):
-                # Get orientation for normals
-                orientation = self.get_orientation(p, coord)
+        self._bboxes = []
 
-                # Check the normal is non-zero
-                point, normal = self.normal(p, np.array(coord).reshape((2, 1)))
+        # Convert and initialize all patches
+        for patch in self._patches.values():
+            # Convert patch to geomdl backend
+            patch.igakit2geomdl()
 
-                # Get physical position
-                point = tuple(np.round(point.flatten(), decimals))
+            # Get bounding box
+            self._bboxes.append(np.array(patch.bbox)[:, :-1])
 
-                # Create boundary
-                boundary = Boundary(
-                    p if orientation != 0 else None, orientation, boundary_idx
-                )
+            # Initialize patch boundaries
+            boundaries = patch.initialize_boundaries(self._decimals)
 
-                # Add boundary
+            # Add new boundaries or append for existing
+            for point, pid in boundaries.items():
                 if point in self._boundary_hash:
-                    self._boundary_hash[point].append(boundary)
+                    self._boundary_hash[point].append(pid)
                 else:
-                    self._boundary_hash[point] = [boundary]
+                    self._boundary_hash[point] = [pid]
 
-        # Check each face is connected to at most 1 other patch
-        for boundaries in self._boundary_hash.values():
-            if len(boundaries) > 2 and not np.all(
-                np.array([b.p for b in boundaries]) == None
-            ):
+        # Check connections
+        for connections in self._boundary_hash.values():
+            if len(connections) > 2 and not np.all(np.array(connections) == None):
                 raise RuntimeError(
                     "The boundary of each patch should have at most one other neighbor"
                 )
 
-        # Get bounding boxes for all patches
-        self._bboxes = [np.array(patch.bbox)[:, :-1] for patch in self.patches]
-
         self._connected = True
 
-    def finalize(self):
-        """Finalize mesh."""
-        self._finalized = True
-
-    # ========================================================================
-    # Boundary condition methods
-
-    def set_reflective_condition(
+    def set_reflective_conditions(
         self,
         faces: Union[
             tuple,
@@ -162,8 +185,7 @@ class IGAMesh(object):
         ],
     ):
         """
-        Set reflective boundary conditions. This method determines which patches have
-        reflective boundaries based on the face.
+        Set the reflective boundary conditions.
 
         .. warning::
            All reflective boundaries must be axis-aligned.
@@ -175,7 +197,6 @@ class IGAMesh(object):
         """
         if not self._connected or self._finalized:
             raise RuntimeError("Patches must be connected but not finalized")
-
         faces = set(np.array([faces]).flatten())
 
         # Get all boundary locations
@@ -196,11 +217,21 @@ class IGAMesh(object):
 
             # Append the same boundary
             for i in range(boundaries.shape[0]):
-                self._boundary_hash[tuple(boundaries[i, :])] += self._boundary_hash[
-                    tuple(boundaries[i, :])
-                ]
+                if self._boundary_hash[tuple(boundaries[i, :])][0] is not None:
+                    self._boundary_hash[tuple(boundaries[i, :])] += self._boundary_hash[
+                        tuple(boundaries[i, :])
+                    ]
 
-    def get_connected_patch(self, p: int, coord: tuple):
+        self._has_reflective_boundary = True
+
+    def finalize(self):
+        """Finalize mesh."""
+        self._finalized = True
+
+    # ========================================================================
+    # Boundary condition methods
+
+    def get_connected_patch(self, pid: int, centroid: tuple):
         """
         Get the patch a specific patch's boundary connects to.
 
@@ -210,12 +241,14 @@ class IGAMesh(object):
            connects to another.
 
         Parameters
+        ----------
         p: int
             Index of patch.
         coord: (0, 0.5), (1, 0.5), (0.5, 0), or (0.5, 1)
             Parametric coordinate of center of boundary.
 
         Returns
+        -------
         connected_p: int or None
             Index of the connected patch. If it is ``None`` then this
             boundary is a vacuum boundary condition.
@@ -224,531 +257,60 @@ class IGAMesh(object):
             raise RuntimeError("Patches must be connected and finalized")
 
         # Calculate physical point
-        point, _ = self.normal(p, np.array(coord).reshape((-1, 1)))
-        point = tuple(np.round(point.flatten(), self._decimals))
+        point = tuple(
+            np.round(np.array(self._patches[pid](centroid)[:-1]), self._decimals)
+        )
 
-        # Get boundary
-        boundary = self._boundary_hash[point][0]
+        # Get connected patch ID
+        pids = np.array(self._boundary_hash[point])
 
-        # Return None if not connected
-        if boundary.p is None:
+        if pids[0] == None or len(pids) == 1:
+            # Vacuum or no boundary
             return None
-
-        # Get connected patches
-        ps = np.array([b.p for b in self._boundary_hash[point]])
-
-        # Handle vacuume boundary condition
-        if ps.size == 1:
-            return None
-        elif (ps != p).any():
-            # Return adjacent patch
-            return ps[ps != p][0]
+        elif (pids != pid).any():
+            # Transmission boundary
+            return pids[pids != pid][0]
         else:
-            # Handle reflective boundary condition
-            return p
+            # Reflective boundary
+            return pid
 
-    def get_orientation(self, p: int, centroid: tuple):
-        """"""
-        # Get current patch
-        patch = self.patches[p]
+    def check_boundary_existance(self, pid: int, centroid: tuple):
+        """
+        Check if a boundary exists.
 
-        # Test points
-        coords = np.zeros((2, 3)) if 0 in centroid else np.ones((2, 3))
-        coords[0 if centroid[0] == 0.5 else 1, :] = np.array([0.25, 0.5, 0.75])
+        Parameters
+        ----------
+        p: int
+            Index of patch.
+        coord: (0, 0.5), (1, 0.5), (0.5, 0), or (0.5, 1)
+            Parametric coordinate of center of boundary.
 
-        # Evaluate points
-        points, normals = self.normal(p, coords)
+        Returns
+        -------
+        exists: bool
+            Whether the boundary has a non-zero length in physical space.
+        """
+        if not self._connected or not self._finalized:
+            raise RuntimeError("Patches must be connected and finalized")
 
-        # Return 0 if points are all the same
-        if np.isclose(points.T, points.T[0]).all():
-            return 0
+        # Calculate physical point
+        point = tuple(
+            np.round(np.array(self._patches[pid](centroid)[:-1]), self._decimals)
+        )
 
-        # Change to comparison points
-        coords[0 if centroid[0] != 0.5 else 1] = 0.5
-
-        # Evaluate points
-        comp_points = np.array(patch.evaluate_list(coords.T))[:, :2].T
-
-        # Calculate vectors
-        vecs = comp_points - points
-
-        return 1 if ((vecs * normals).sum(axis=0) < 0).any() else -1
+        # Get connected patch ID
+        pids = np.array(self._boundary_hash[point])
+        return pids[0] != None
 
     # ========================================================================
-    # Refinement methods
-
-    def refine(
-        self, p: int, factor: Union[int, List[int]], degree: Union[int, List[int]]
-    ):
-        """
-        Refine the mesh of a given patch.
-
-        Parameters
-        ----------
-        p: int
-            Patch index.
-        factor: int or list of two ints
-            Number of elements or knot spans along each parametric axis.
-            If an integer is given then that is applied to both parametric
-            axes.
-        degree: ind or list of two ints
-            Degree of NURBS surface along each parametric axis. If an
-            integer is given then that is applied to both parametric axes.
-        """
-        assert not self._finalized
-
-        # Refine patch
-        self.patches[p] = cad.refine(self.patches[p], factor=factor, degree=degree)
-
-    # ========================================================================
-    # Parametric methods
-
-    def find_spans(self, p: int, param_idx: int, coords: np.ndarray):
-        """
-        Compute the knot spans along a parametric dimension for a vector of parametric
-        coordinates.
-
-        Parameters
-        ----------
-        p: int
-            Index of patch.
-        param_idx: int
-            Which parametric axis.
-        coords: numpy.ndarray
-            Coordinates to find the knot spans. ``coords`` should be an array
-            of shape ``(n,)`` where ``n`` is the number of coordinates
-            to evaluate.
-
-        Returns
-        -------
-        spans: numpy.ndarray
-            Index in the knotvector for the start of the knot span that
-            the given coordinate is located in.
-        """
-        coords = np.array(coords, dtype=float)
-        assert coords.ndim == 1
-
-        # Find knot spans from knotvector
-        return np.array(
-            find_spans(
-                self.degree[param_idx],
-                self.patches[p].knotvector[param_idx],
-                self.patches[p].ctrlpts_size,
-                coords,
-            )
-        )
-
-    def basis_functions(self, p: int, coords: np.ndarray):
-        """
-        Compute all non-vanishing 2-D NURBS basis functions. The current implementation
-        assumes an open knot vector with single multiplicity on inner knots.
-
-        Parameters
-        ----------
-        p: int
-            Index of patch.
-        coords: numpy.ndarray
-            Coordinates to evaluate the basis functions. ``coords`` should be an
-            array of shape ``(2, n)`` where ``n`` is the number of coordinates
-            to evaluate.
-
-        Returns
-        -------
-        basis_data: numpy.ndarray
-            Non-zero basis function evaluations of shape ``(n, p + 1, q + 1)``
-            where ``p`` and ``q`` are the degrees of the basis functions along
-            each respective parametric dimension.
-        """
-        assert coords.ndim == 2 and coords.shape[0] == 2
-
-        # Get weights
-        weights = np.array(self.patches[p].weights).reshape(
-            (
-                self.patches[p].ctrlpts_size_u,
-                self.patches[p].ctrlpts_size_v,
-            )
-        )
-
-        # Compute B-Spline basis
-        spans = [[] for _ in range(self.ndim)]
-        basis = [[] for _ in range(self.ndim)]
-
-        for i in range(self.ndim):
-            # Handle cases when we're evaluating at exactly 1
-            spans[i] = (
-                len(self.patches[p].knotvector[i]) - 2 * self.degree[i]
-            ) * np.ones(coords.shape[1], dtype=int)
-            basis[i] = np.zeros((coords.shape[1], self.degree[i] + 1))
-            basis[i][:, -1] = 1
-
-            # Calculate cases when the coordinate < 1
-            if (coords[i, :] != 1).any():
-                spans[i][coords[i, :] != 1] = np.array(
-                    self.find_spans(p, i, coords[i, :][coords[i, :] != 1])
-                )
-                basis[i][coords[i, :] != 1, :] = np.array(
-                    basis_functions(
-                        self.degree[i],
-                        self.patches[p].knotvector[i],
-                        spans[i][coords[i, :] != 1],
-                        coords[i, :][coords[i, :] != 1],
-                    )
-                )
-
-        # Evaluate numerator of 2-D NURBS basis
-        basis_data = ctg.einsum("ij,ik->ijk", basis[0], basis[1]) * np.array(
-            list(
-                map(
-                    lambda i: weights[
-                        spans[0][i] - self.degree[0] : spans[0][i] + 1,
-                        spans[1][i] - self.degree[1] : spans[1][i] + 1,
-                    ],
-                    np.arange(coords.shape[1]),
-                ),
-            )
-        )
-
-        # Evaluate denominator and return
-        return basis_data / np.sum(np.sum(basis_data, axis=-1), axis=-1).reshape(
-            (-1, 1, 1)
-        )
-
-    def basis_function_grads(self, p: int, coords: np.ndarray, order: int = 1):
-        """
-        Compute gradients of the basis functions for a given patch. This implementation
-        assumes open knot vectors with all interior knots of single multiplicity.
-
-        Parameters
-        ----------
-        p: int
-            Index of patch.
-        coords: numpy.ndarray
-            Coordinates to evaluate the gradients of the basis functions. ``coords``
-            should be an array of shape ``(2, n)`` where ``n`` is the number of
-            coordinates to evaluate.
-        order: int, default=1
-            Derivative order to be evaluated.
-
-        Returns
-        -------
-        basis_data: numpy.ndarray
-            Basis data of shape ``(n, p + 1, q + 1, 3)`` where ``p`` and ``q`` are the
-            degrees of the basis functions for each parametric dimension.
-            ``(:, :, :, 0)`` contains non-vanishing basis function evaluations,
-            ``(:, :, :, 1)`` contains non-vanishing basis function derivatives with
-            respect to ``u`` and ``(:, :, :, 2)`` contains non-vanishing basis function
-            derivatives with respect to ``v``.
-        """
-        assert coords.ndim == 2 and coords.shape[0] == 2
-
-        # Get weights
-        weights = np.array(self.patches[p].weights).reshape(
-            (
-                self.patches[p].ctrlpts_size_u,
-                self.patches[p].ctrlpts_size_v,
-            )
-        )
-
-        # Compute B-Spline basis
-        spans = [[] for _ in range(self.ndim)]
-        basis = [[] for _ in range(self.ndim)]
-        basis_ders = [[] for _ in range(self.ndim)]
-
-        for i in range(self.ndim):
-            spans[i] = np.array(self.find_spans(p, i, coords[i, :]))
-            evals = np.array(
-                basis_functions_ders(
-                    self.degree[i],
-                    self.patches[p].knotvector[i],
-                    spans[i],
-                    coords[i, :],
-                    order,
-                )
-            )
-
-            basis[i] = evals[:, 0, :]
-            basis_ders[i] = evals[:, 1, :]
-
-        basis_data = np.zeros(
-            (coords.shape[1], self.degree[0] + 1, self.degree[1] + 1, 3)
-        )
-
-        # Compute numerator of basis functions
-        weights = np.array(
-            list(
-                map(
-                    lambda i: weights[
-                        spans[0][i] - self.degree[0] : spans[0][i] + 1,
-                        spans[1][i] - self.degree[1] : spans[1][i] + 1,
-                    ],
-                    np.arange(coords.shape[1]),
-                ),
-            )
-        )
-        basis_data[..., 0] = ctg.einsum("ij,ik->ijk", basis[0], basis[1]) * weights
-
-        # Compute denominator
-        denom = np.sum(np.sum(basis_data[..., 0], axis=-1), axis=-1).reshape((-1, 1, 1))
-
-        # Scale basis functions by denominator
-        basis_data[..., 0] /= denom
-
-        # Compute first term of quotient rule
-        basis_data[..., 1] += (
-            ctg.einsum("ij,ik->ijk", basis_ders[0], basis[1]) * weights / denom
-        )
-        basis_data[..., 2] += (
-            ctg.einsum("ij,ik->ijk", basis[0], basis_ders[1]) * weights / denom
-        )
-
-        # Compute second term of quotient rule
-        basis_data[..., 1] -= basis_data[..., 0] * np.sum(
-            np.sum(basis_data[..., 1], axis=-1), axis=-1
-        ).reshape((-1, 1, 1))
-        basis_data[..., 2] -= basis_data[..., 0] * np.sum(
-            np.sum(basis_data[..., 2], axis=-1), axis=-1
-        ).reshape((-1, 1, 1))
-
-        return basis_data
-
-    def normal(self, p: int, coords: np.ndarray):
-        """
-        Calculate the outward normal vector at given knots.
-
-        This currently is rather hard coded and not garenteed to generalize to
-        other NURBS geometries.
-
-        Parameters
-        ----------
-        p: int
-            Index of patch.
-        coords: numpy.ndarray
-            Parametric coordinates to evaluate the normals. ``coords``
-            should be an array of shape ``(2, n)`` where ``n`` is the number of
-            coordinates to evaluate. All coordinates should exits on the boundary
-            of the patch.
-
-        Returns
-        -------
-        points: numpy.ndarray
-            Locations in physical space of normal vectors.
-        normals: numpy.ndarray
-            Normal vectors of unit length.
-        """
-        assert coords.ndim == 2 and coords.shape[0] == 2
-
-        # Fill arrays
-        points = np.zeros(coords.shape)
-        normals = np.zeros(coords.shape)
-
-        # Get indices corresponding to each curve based on zero location
-        cv_idxs = np.argwhere(coords[0, :] == 0).flatten()
-        cu_idxs = np.argwhere(coords[1, :] == 0).flatten()
-
-        if self._connected:
-            point = tuple(
-                np.round(self.patches[p].evaluate_single((0, 0.5)), self._decimals)[:-1]
-            )
-            bv_orientation = None
-            for b in self._boundary_hash[point]:
-                if p == b.p or b.p == None:
-                    bv_orientation = b.orientation
-            assert bv_orientation is not None
-
-            point = tuple(
-                np.round(self.patches[p].evaluate_single((0.5, 0)), self._decimals)[:-1]
-            )
-            bu_orientation = None
-            for b in self._boundary_hash[point]:
-                if p == b.p or b.p == None:
-                    bu_orientation = b.orientation
-            assert bu_orientation is not None
-
-            points, normals = self._normal_along_boundary(
-                p,
-                coords,
-                points,
-                normals,
-                cv_idxs,
-                cu_idxs,
-                bv_orientation,
-                bu_orientation,
-            )
-
-        else:
-            points, normals = self._normal_along_boundary(
-                p, coords, points, normals, cv_idxs, cu_idxs, 1, 1
-            )
-
-        # Get indices corresponding to each curve based on zero location
-        cv_idxs = np.argwhere(coords[0, :] == 1).flatten()
-        cu_idxs = np.argwhere(coords[1, :] == 1).flatten()
-
-        if self._connected:
-            point = tuple(
-                np.round(self.patches[p].evaluate_single((1, 0.5)), self._decimals)[:-1]
-            )
-            bv_orientation = None
-            for b in self._boundary_hash[point]:
-                if p == b.p or b.p == None:
-                    bv_orientation = b.orientation
-            assert bv_orientation is not None
-
-            point = tuple(
-                np.round(self.patches[p].evaluate_single((0.5, 1)), self._decimals)[:-1]
-            )
-            bu_orientation = None
-            for b in self._boundary_hash[point]:
-                if p == b.p or b.p == None:
-                    bu_orientation = b.orientation
-            assert bu_orientation is not None
-
-            points, normals = self._normal_along_boundary(
-                p,
-                coords,
-                points,
-                normals,
-                cv_idxs,
-                cu_idxs,
-                bv_orientation,
-                bu_orientation,
-            )
-
-        else:
-            points, normals = self._normal_along_boundary(
-                p, coords, points, normals, cv_idxs, cu_idxs, 1, 1
-            )
-
-        return points, normals
-
-    def _normal_along_boundary(
-        self,
-        p: int,
-        coords: np.ndarray,
-        points: np.ndarray,
-        normals: np.ndarray,
-        cv_idxs: np.ndarray,
-        cu_idxs: np.ndarray,
-        cv_orientation: Literal[-1, 0, 1],
-        cu_orientation: Literal[-1, 0, 1],
-    ):
-        # Cases when u=0
-        for i in cv_idxs:
-            dv = np.array(
-                self.patches[p].derivatives(coords[0, i], coords[1, i], order=1)
-            )
-
-            # Save point in (x, y)
-            points[:, i] = dv[0, 0, :-1]
-
-            # Compute normal
-            normal = dv[0, 1, :-1][::-1]
-            if (normal != 0).any():
-                normal[0] *= -1
-                normal /= (-1 if coords[0, i] == 0 else 1) * np.sqrt(
-                    np.sum(normal**2)
-                )
-
-            # Save normal vector
-            normals[:, i] = cv_orientation * normal
-
-        # Cases when v=0
-        for i in cu_idxs:
-            du = np.array(
-                self.patches[p].derivatives(coords[0, i], coords[1, i], order=1)
-            )
-
-            # Save point in (x, y)
-            points[:, i] = du[0, 0, :-1]
-
-            # Compute normal
-            normal = du[1, 0, :-1][::-1]
-            if (normal != 0).any():
-                normal[0] *= -1
-                normal /= (-1 if coords[1, i] == 1 else 1) * np.sqrt(
-                    np.sum(normal**2)
-                )
-
-            # Save normal vector
-            normals[:, i] = cu_orientation * normal
-
-        return points, normals
-
-    def jacobian(self, p: int, coords: np.ndarray):
-        """
-        Computes the Jacobian matrix :math:`\\frac{\\partial(x, y)}{\\partial(\\hat{x},
-        \\hat{y})}` for the pull back from the parametric domain to the physical.
-
-        Parameters
-        ----------
-        p: int
-            Index of patch.
-        coords: numpy.ndarray
-            Parametric coordinates to evaluate the Jacobian at. ``coords``
-            should be an array of shape ``(2, n)`` where ``n`` is the number of
-            coordinates to evaluate.
-
-        Returns
-        -------
-        jacobian: numpy.ndarray
-            Jacobian matrix for each set of parametric coordinates or shape
-            ``(2, 2, n)``.
-        """
-        assert coords.ndim == 2 and coords.shape[0] == 2
-
-        # Array to fill
-        jacobian = np.zeros((2, 2, coords.shape[-1]))
-
-        # Calculate jacobian
-        for i in range(coords.shape[-1]):
-            # Compute derivatives
-            ders = self.patches[p].derivatives(coords[0, i], coords[1, i], order=1)
-
-            # Fill jacobian
-            jacobian[0, :, i] = ders[1][0][:2]
-            jacobian[1, :, i] = ders[0][1][:2]
-
-        return jacobian
-
-    def find_patches(
-        self,
-        physical_coords: np.ndarray,
-        x: np.ndarray = np.linspace(0, 1, 3),
-        y: np.ndarray = np.linspace(0, 1, 3),
-    ):
-        """"""
-        assert physical_coords.ndim == 2 and physical_coords.shape[0] == 2
-        X, Y = np.meshgrid(x, y)
-        points = np.concatenate([X.reshape((-1, 1)), Y.reshape((-1, 1))], axis=1)
-
-        # Evaluate locations for all patches
-        coords = np.array(
-            [self.patches[i].evaluate_list(points) for i in range(self.num_patches)]
-        )[:, :, :-1]
-
-        # Calculate distances
-        distances = np.sqrt(
-            np.sum(
-                (
-                    ctg.einsum("bcd,a->abcd", coords, np.ones(physical_coords.shape[1]))
-                    - ctg.einsum(
-                        "da,bc->abcd",
-                        physical_coords,
-                        np.ones((self.num_patches, points.shape[0])),
-                    )
-                )
-                ** 2,
-                axis=-1,
-            )
-        )
-
-        return np.argmin(np.sum(distances, axis=-1), axis=-1)
+    # Mapping methods
 
     def inverse_map(
         self,
         physical_coords: np.ndarray,
         max_iter: int = 100,
         tol: float = 1e-8,
+        batch_size: int = 500,
     ):
         """
         Map coordinates in the physical domain to the parametric domain.
@@ -756,46 +318,56 @@ class IGAMesh(object):
         Parameters
         ----------
         physical_coords: numpy.ndarray
-            Array or coordinates of shape ``(2, n)`` where ``n`` is the
-            number of coordinates. ``physical_coords[0, :]`` are the ``x``
-            positions and ``physical_coords[1, :]`` are the ``y`` positions.
+            Array or coordinates of shape ``(n, 2)`` where ``n`` is the
+            number of coordinates. ``physical_coords[:, 0]`` are the ``x``
+            positions and ``physical_coords[:, 1]`` are the ``y`` positions.
         max_iter: int, default=100
             Maximum number of Newton-Raphson iterations for each viable
             patch.
         tol: float, default=1e-8
             Tolerance of inverse map computed with Newton-Raphson.
+        batch_size: int, default=500
+            Number of samples to pass to ``ttnte.cad.Patch.inverse_map()``
+            for each process.
 
         Returns
         -------
         coords: numpy.ndarray
-            Physical coordinates of shape ``(2, n)``.
+            Physical coordinates of shape ``(n, 2)``.
         """
-        assert physical_coords.ndim == 2 and physical_coords.shape[0] == 2
+        assert physical_coords.ndim == 2 and physical_coords.shape[1] == 2
 
         # Find candidate patches
         pid_iterators = []
         if self.num_patches > 1:
-            for i in range(physical_coords.shape[-1]):
+            for i in range(physical_coords.shape[0]):
                 pid_iterators.append([])
-                for pid, bbox in enumerate(self._bboxes):
-                    if (bbox[0, :] - 0.00005 <= physical_coords[:, i]).all() and (
-                        bbox[1, :] + 0.00005 >= physical_coords[:, i]
+                for pid, bbox in zip(self._patches.keys(), self._bboxes):
+                    if (bbox[0, :] - 0.00005 <= physical_coords[i, :]).all() and (
+                        bbox[1, :] + 0.00005 >= physical_coords[i, :]
                     ).all():
                         pid_iterators[-1].append(pid)
 
         else:
-            pid_iterators = [[0] for _ in range(physical_coords.shape[-1])]
+            pid_iterators = [
+                [list(self._patches.keys())[0]] for _ in range(physical_coords.shape[0])
+            ]
 
         # Convert to np.array of iterators
         pid_iterators = np.array([iter(it) for it in pid_iterators])
 
         # Array for coordinates
-        coords = np.zeros((2, physical_coords.shape[-1]))
-        pids = np.zeros(physical_coords.shape[-1], dtype=int)
+        coords = np.zeros((physical_coords.shape[0], 2))
+        pids = np.zeros(physical_coords.shape[0], dtype=int)
 
         # Distances
-        old_distances = np.ones(physical_coords.shape[-1])
+        old_distances = np.ones(physical_coords.shape[0])
         new_distances = old_distances.copy()
+
+        # Evaluate coarse mesh on all patches
+        X, Y = np.meshgrid(np.linspace(0, 1, 12)[1:-1], np.linspace(0, 1, 12)[1:-1])
+        points = np.concatenate([X.reshape((-1, 1)), Y.reshape((-1, 1))], axis=-1)
+        mesh = np.array(self(points))[:, :, :-1]
 
         while True:
             # Get indices of the unconverged
@@ -815,119 +387,84 @@ class IGAMesh(object):
             if (unique_pids == -1).any():
                 raise RuntimeError("Failed to converge on all candidate patches")
 
-            # Evaluate coarse mesh on all patches
-            X, Y = np.meshgrid(np.linspace(0, 1, 12)[1:-1], np.linspace(0, 1, 12)[1:-1])
-            points = np.concatenate([X.reshape((-1, 1)), Y.reshape((-1, 1))], axis=-1)
-            mesh = np.array(
-                [self.patches[pid].evaluate_list(points) for pid in unique_pids]
-            )[:, :, :-1]
-
             # Find closest starting points
             idxs = np.array(
                 [np.argwhere(unique_pids == pid) for pid in pids[unconverged]]
             ).flatten()
-            local_distances = np.sqrt(
-                np.sum(
-                    (
-                        np.transpose(mesh[idxs, :, :], axes=(1, 2, 0))
-                        - ctg.einsum(
-                            "a,bc->abc",
-                            np.ones((points.shape[0])),
-                            physical_coords[:, unconverged],
-                        )
+            local_distances = np.linalg.norm(
+                (
+                    mesh[idxs, :, :]
+                    - ctg.einsum(
+                        "a,bc->bac",
+                        np.ones((points.shape[0])),
+                        physical_coords[unconverged, :],
                     )
-                    ** 2,
-                    axis=-2,
-                )
-            )
+                ).reshape((-1, 2)),
+                2,
+                axis=-1,
+            ).reshape((idxs.size, mesh.shape[1]))
 
             # Get minimum distances and set corresponding points
-            coords[:, unconverged] = points[np.argmin(local_distances, axis=0), :].T
-            old_distances[unconverged] = np.min(local_distances, axis=0)
+            coords[unconverged, :] = points[np.argmin(local_distances, axis=-1), :]
+            old_distances[unconverged] = np.min(local_distances, axis=-1)
 
-            # Begin Newton-Raphson for each patch
-            for pid in unique_pids:
-                # Get indices of the unconverged
-                unconverged = old_distances >= tol
+            # Run all unique ids
+            with mp.Pool(self._max_processes) as pool:
+                # Create a mask for each unique ID
+                masks = [unconverged & (pids == pid) for pid in unique_pids]
 
-                # Mask for current coordinates
-                mask = unconverged & (pids == pid)
+                # Build arg set
+                args = []
+                for pid, mask in zip(unique_pids, masks):
+                    # Get the number of batches
+                    num_batches = np.ceil(np.sum(mask) / batch_size).astype(int)
 
-                # Check if mask is empty
-                if (mask == False).all():
-                    break
-
-                for i in range(max_iter):
-                    # Calculate Jacobian
-                    jacobian = np.transpose(
-                        self.jacobian(pid, coords[:, mask]), axes=(1, 0, 2)
-                    )
-                    jacobian[1, 0, :] *= -1
-                    jacobian[0, 1, :] *= -1
-                    jacobian[0, 0, :], jacobian[1, 1, :] = (
-                        jacobian[1, 1, :].copy(),
-                        jacobian[0, 0, :].copy(),
-                    )
-
-                    # Calculate determinant
-                    determinant = np.zeros(physical_coords.shape[1])
-                    determinant[mask] = (
-                        jacobian[0, 0, :] * jacobian[1, 1, :]
-                        - jacobian[0, 1, :] * jacobian[1, 0, :]
-                    ).flatten()
-
-                    # Calculate new coordinates
-                    if (mask & (determinant != 0)).any():
-                        coords[:, mask & (determinant != 0)] -= (
-                            1
-                            / determinant[(determinant != 0)].reshape((1, -1))
-                            * ctg.einsum(
-                                "abc,bc->ac",
-                                jacobian[:, :, determinant[mask] != 0],
-                                (
-                                    np.array(
-                                        self.patches[pid].evaluate_list(
-                                            coords[:, mask & (determinant != 0)].T
-                                        )
-                                    ).T[:-1, :]
-                                    - physical_coords[:, mask & (determinant != 0)]
-                                ),
-                            )
+                    # Fill arguments
+                    args += [
+                        (
+                            pid,
+                            physical_coords[mask, :][
+                                i * batch_size : i * batch_size + batch_size, :
+                            ],
+                            max_iter,
+                            tol,
+                            coords[mask, :][
+                                i * batch_size : i * batch_size + batch_size, :
+                            ],
                         )
+                        for i in range(num_batches)
+                    ]
 
-                        # Check if coordinates outside of constraints
-                        coords[coords < 0] = 0
-                        coords[coords > 1] = 1
+                # Run pool
+                coords_list = pool.starmap(self._inverse_map_patch, args)
 
-                        # Check convergence
-                        new_distances[mask] = np.sqrt(
-                            np.sum(
-                                (
-                                    np.array(
-                                        self.patches[pid].evaluate_list(
-                                            coords[:, mask].T
-                                        )
-                                    ).T[:-1, :]
-                                    - physical_coords[:, mask]
-                                )
-                                ** 2,
-                                axis=0,
-                            )
-                        )
+                # Update coordinates
+                i = 0
+                for pid, mask in zip(unique_pids, masks):
+                    # Get the number of batches
+                    num_batches = np.ceil(np.sum(mask) / batch_size).astype(int)
 
-                    # Update unconverged and refine mask
-                    unconverged = (new_distances >= tol) & (
-                        (np.abs(new_distances - old_distances) / old_distances)
-                        > (tol * 1e-3)
+                    # Concatenate the arrays
+                    coords[mask, :] = np.concatenate(
+                        coords_list[i : i + num_batches], axis=0
                     )
-                    mask = unconverged & (pids == pid)
+                    i += num_batches
 
-                    # Update old distance
-                    old_distances[mask] = new_distances[mask]
+                    # Calculate new distances
+                    new_distances[mask] = np.linalg.norm(
+                        self._patches[pid](coords[mask, :])[:, :-1]
+                        - physical_coords[mask, :],
+                        2,
+                        axis=-1,
+                    )
 
-                    # Check if iteration converged or stalled
-                    if (mask == False).all():
-                        break
+                pool.close()
+
+            # Update old distances
+            old_distances[unconverged] = new_distances[unconverged]
+
+    def _inverse_map_patch(self, pid, physical_coords, max_iter, tol, coords):
+        return self._patches[pid].inverse_map(physical_coords, max_iter, tol, coords)[0]
 
     def map_regular_mesh(
         self,
@@ -935,6 +472,7 @@ class IGAMesh(object):
         N: Tuple[int] = (5, 5),
         max_iter: int = 100,
         tol: float = 1e-8,
+        batch_size: int = 500,
     ):
         """
         Find patches and parametric coordinates for cell averaging the scalar flux to a
@@ -953,6 +491,8 @@ class IGAMesh(object):
         max_iter: int, default=100
             Max number of iterations for Newton-Raphson in inverse map.
         tol: float, default=1e-8
+        batch_size: int, default=500
+            Number of samples in each process of ``ttnte.cad.Patch.inverse_map()``.
 
         Returns
         -------
@@ -961,7 +501,7 @@ class IGAMesh(object):
             resulting shape is ``(*shape, *N)``.
         coords: numpy.ndarray
             The parametric coordinates for each point. The resulting
-            shape is ``(2, *shape, *N)``.
+            shape is ``(*shape, *N, 2)``.
         """
         assert N[0] > 1 and N[1] > 1
 
@@ -970,15 +510,15 @@ class IGAMesh(object):
         full_bbox[0, :] = np.inf
 
         for bbox in self._bboxes:
-            if (bbox[0, :] < full_bbox[0, :]).all():
+            if (bbox[0, :] <= full_bbox[0, :]).all():
                 full_bbox[0, :] = bbox[0, :]
-            if (bbox[1, :] > full_bbox[1, :]).all():
+            if (bbox[1, :] >= full_bbox[1, :]).all():
                 full_bbox[1, :] = bbox[1, :]
 
         # Create regular mesh edges
         x = np.linspace(full_bbox[0, 0], full_bbox[1, 0], shape[0] + 1)
         y = np.linspace(full_bbox[0, 1], full_bbox[1, 1], shape[1] + 1)
-        points = np.zeros((2, *shape, *N))
+        points = np.zeros((*shape, *N, 2))
         for i in range(shape[0]):
             # Get cell bounds
             xl = x[i]
@@ -991,16 +531,22 @@ class IGAMesh(object):
 
                 # Get mesh that needs to be evaluated
                 X, Y = np.meshgrid(np.linspace(xl, xr, N[0]), np.linspace(yl, yr, N[1]))
-                points[:, i, j, ...] = np.concatenate([X[np.newaxis,], Y[np.newaxis,]])
+                points[i, j, ...] = np.concatenate(
+                    [
+                        X[..., np.newaxis],
+                        Y[..., np.newaxis],
+                    ],
+                    axis=-1,
+                )
 
         # Apply inverse map
         pids, coords = self.inverse_map(
-            points.reshape((2, -1)), max_iter=max_iter, tol=tol
+            points.reshape((-1, 2)), max_iter=max_iter, tol=tol
         )
 
         # Reshape solution
         pids = pids.reshape((*shape, *N))
-        coords = coords.reshape((2, *shape, *N))
+        coords = coords.reshape((*shape, *N, 2))
 
         return pids, coords
 
@@ -1008,6 +554,8 @@ class IGAMesh(object):
         self,
         pids: np.ndarray,
         coords: np.ndarray,
+        dx=1,
+        dy=1,
     ):
         """
         Calculate volume averaged scalar flux conforming to a regular mesh.
@@ -1029,37 +577,73 @@ class IGAMesh(object):
             The volume averaged scalar flux for a regular mesh calculated
             with trapezoidal integration.
         """
-        assert (2, *pids.shape) == coords.shape
+        assert (*pids.shape, 2) == coords.shape
 
         # Evaluate functions
-        evals = np.array(
-            [
-                self.patches[pids.flatten()[k]].evaluate_single(
-                    coords.reshape((2, -1))[:, k]
-                )
-                for k in range(np.prod(pids.shape))
-            ]
-        )[:, -1].reshape(pids.shape)
+        patch_points_list = self(
+            {pid: coords[pids == pid, :] for pid in self._patches.keys()}
+        )
+
+        points = np.zeros(pids.shape)
+        for pid, patch_points in zip(self.patch_ids, patch_points_list):
+            points[pids == pid] = patch_points[..., -1]
 
         # Compute new averaged solution using trap rule
         return (
             1
             / 4
             * (
-                evals[..., 0, 0]
-                + evals[..., -1, 0]
-                + evals[..., 0, -1]
-                + evals[..., -1, -1]
+                points[..., 0, 0]
+                + points[..., -1, 0]
+                + points[..., 0, -1]
+                + points[..., -1, -1]
             )
-            + 2
+            + 1
+            / 2
             * (
-                np.sum(evals[..., 1:-1, 0], axis=-1)
-                + np.sum(evals[..., 1:-1, -1], axis=-1)
-                + np.sum(evals[..., 0, 1:-1], axis=-1)
-                + np.sum(evals[..., 1, 1:-1], axis=-1)
+                np.sum(points[..., 1:-1, 0], axis=-1)
+                + np.sum(points[..., 1:-1, -1], axis=-1)
+                + np.sum(points[..., 0, 1:-1], axis=-1)
+                + np.sum(points[..., 1, 1:-1], axis=-1)
             )
-            + 4 * np.sum(np.sum(evals[..., 1:-1, 1:-1], axis=-1), axis=-1)
+            + np.sum(np.sum(points[..., 1:-1, 1:-1], axis=-1), axis=-1)
+        ) / ((coords.shape[-2] - 1) ** 2)
+
+    # ========================================================================
+    # Parallel methods
+
+    def _run_across_patches(self, method: Callable, args):
+        # Fill in coords
+        with mp.Pool(min(self._max_processes, mp.cpu_count() - 1)) as pool:
+            result = pool.starmap(method, args)
+            pool.close()
+            return result
+
+    def _get_arguments(self, coords: Union[np.ndarray, Dict[int, np.ndarray]]):
+        return (
+            [(self._patches[pid], coords[pid]) for pid in coords.keys()]
+            if isinstance(coords, dict)
+            else zip(self._patches.values(), itertools.repeat(coords))
         )
+
+    def __call__(self, coords: Union[np.ndarray, Dict[int, np.ndarray]]):
+        """
+        Evaluate the mesh.
+
+        Parameters
+        ----------
+        coords: numpy.ndarray or a dict of int and numpy.array
+            The parametric coordinates to evaluate the mesh. If a ``numpy.ndarray``
+            is given then assume that all patches get the same coordiantes. If
+            it is a dictionary then the keys are the patch IDs and the
+            arrays are the coordinates to evaluate each patch.
+
+        Returns
+        -------
+        physical_coords: numpy.ndarray or a dict of int and numpy.array
+            The solution after evaluation.
+        """
+        return self._run_across_patches(Patch.evaluate, self._get_arguments(coords))
 
     # ========================================================================
     # Plotters
@@ -1068,11 +652,13 @@ class IGAMesh(object):
         self,
         num_nodes: int = 256,
         plot_ctrlpts: bool = True,
-        use_2d: bool = True,
+        plot_boundaries: bool = False,
+        use_3d: bool = False,
+        color_by: Literal["material", "patch"] = "material",
+        colors: Optional[Dict] = None,
         cmap: str = "plasma",
-        meshlines: bool = True,
-        figsize: Optional[Tuple[int]] = None,
         backend: Literal["matplotlib", "plotly"] = "matplotlib",
+        **kwargs,
     ):
         """
         Create 2-D or 3-D plot of mesh.
@@ -1082,8 +668,16 @@ class IGAMesh(object):
             Number of positions to sample the mesh for each patch.
         plot_ctrlpts: bool, default=True
             Whether to plot the control points.
-        use_2d: bool, default=True
+        plot_boundaries: bool, default=False
+        use_3d: bool, default=False
             Plot mesh in 2-D or 3-D.
+        color_by: "material" or "patch"
+            What to color the patches by for a categorical plot.
+        colors: dict of string and color
+            By default the categorical colors will be from ``tableau-colorblind10``
+            but using ``colors`` you can change that. Each color has a name
+            corresponding to a material or patch. The color is than anything
+            that can be passed to ``matplotlib.pyplot``.
         cmap: str, default="plasma"
             Matplotlib colormap.
         meshlines: bool, default=True
@@ -1091,176 +685,249 @@ class IGAMesh(object):
         figsize: None or tuple of int, default=None
             Figure size. Passed to ``matplotlib.pyplot.subplots()``.
         backend: "matplotlib" or "plotly", default="matplotlib"
-            Which plotting backend to use.
+            Which plotting backend to use. The plotly implementation
+            will only plot in 3-D.
 
         Returns
         -------
-        fig: matplotlib.axes.Axes or plotly.graph_objects.Figure
+        ax: matplotlib.axes.Axes or plotly.graph_objects.Figure
             Matplotlib axis or Plotly figure depending on the backend.
         """
         # Get parametric sample locations
         X, Y = np.meshgrid(np.linspace(0, 1, num_nodes), np.linspace(0, 1, num_nodes))
-        X = X[..., np.newaxis]
-        Y = Y[..., np.newaxis]
+
+        # Calculate points for all surfaces
+        points = np.array(
+            self(np.concatenate([X.reshape((-1, 1)), Y.reshape((-1, 1))], axis=1))
+        ).reshape((self.num_patches, num_nodes, num_nodes, 3))
+        del X, Y
+
+        # Minimum and maximum value
+        vmin, vmax = np.min(points[..., -1]), np.max(points[..., -1])
+
+        # Check if z components have been set for control points
+        categorical = (
+            np.array(list(self._patches.values())[0].ctrlpts)[..., -1] == 0
+        ).all()
+
+        # Handle figure size if not given
+        figsize = kwargs.pop("figsize", None)
+        edgecolors = kwargs.pop("edgecolors", "none")
+        linewidth = kwargs.pop("linewidth", None)
+
+        # Legend updates
+        legend_args = {"loc": "upper right", "fancybox": True}
+        legend_args.update(kwargs)
 
         if backend == "matplotlib":
-            if use_2d and (np.array(self.patches[0].ctrlpts)[:, -1] != 0).any():
-                # Plot 2D contour plot with flux as color gradient
-                # Create figure
-                fig, ax = plt.subplots(figsize=figsize)
+            # Get setttings
+            kwargs = {}
+            if categorical:
+                use_3d = False
+                pltcolors = (
+                    [
+                        "#007ACC",
+                        "#FF800E",
+                        "#ABABAB",
+                        "#595959",
+                        "#5F9ED1",
+                        "#FFBC79",
+                        "#C85200",
+                        "#898989",
+                        "#A2C8EC",
+                        "#FFB979",
+                    ]
+                    if colors is None
+                    else list(colors.values())
+                )
+                color_idxs = (
+                    {}
+                    if colors is None
+                    else {key: i for i, key in enumerate(colors.keys())}
+                )
+                legend_handles = (
+                    []
+                    if colors is None
+                    else [
+                        mpatches.Patch(
+                            color=pltcolors[color_idxs[label]],
+                            label=label,
+                        )
+                        for label in color_idxs.keys()
+                    ]
+                )
 
                 # Iterate through patches
-                points = np.zeros((self.num_patches, np.prod(X.shape[:-1]), 3))
-                for pid, patch in enumerate(self.patches):
-                    # Sample points
-                    points[pid, ...] = np.array(
-                        patch.evaluate_list(
-                            np.concatenate([X, Y], axis=2).reshape((-1, 2)).tolist()
+                for i, patch in enumerate(self._patches.values()):
+                    # Get label specified by user
+                    label = (
+                        patch.material
+                        if color_by == "material"
+                        else (
+                            patch.name
+                            if patch.name is not None
+                            else f"Patch {patch.id}"
                         )
-                    ).reshape((-1, 3))
+                    )
 
-                # Plot
-                contour = ax.tricontourf(
-                    points[..., 0].flatten(),
-                    points[..., 1].flatten(),
-                    points[..., 2].flatten(),
-                    levels=num_nodes,
-                    cmap=cmap,
-                )
-                cbar = plt.colorbar(contour)
+                    # Check if label exists already
+                    if label not in color_idxs:
+                        # Add color
+                        if len(pltcolors) < len(color_idxs) + 1:
+                            raise RuntimeError(
+                                "Not enough colors given, define all colors in the 'colors' argument"
+                            )
+                        color_idxs[label] = len(color_idxs)
 
-                # Plot control points
-                if plot_ctrlpts:
-                    for patch in self.patches:
-                        ctrlpts = np.array(patch.ctrlpts)
-                        ax.scatter(
+                        # Add to legend
+                        legend_handles.append(
+                            mpatches.Patch(
+                                color=pltcolors[color_idxs[label]],
+                                label=label,
+                            )
+                        )
+
+                    # Set points
+                    points[i, :, :, 2] = color_idxs[label]
+
+                # Set settings
+                vmin, vmax = 0, len(list(color_idxs.keys()))
+                kwargs["cmap"] = mcolors.ListedColormap(pltcolors[:vmax])
+
+            else:
+                # Set settings
+                kwargs["cmap"] = cmap
+
+            # Add normalizer
+            kwargs["norm"] = mcolors.Normalize(vmin=vmin, vmax=vmax)
+
+            # 2D plot
+            if not use_3d:
+                # Create axis
+                _, ax = plt.subplots(figsize=figsize)
+
+                # 2D settings
+                kwargs["shading"] = "gouraud" if edgecolors == "none" else "nearest"
+
+                for i, patch in enumerate(self._patches.values()):
+                    # Plot 2D surface
+                    cmesh = ax.pcolormesh(
+                        points[i, ..., 0],
+                        points[i, ..., 1],
+                        points[i, ..., 2],
+                        edgecolors=edgecolors,
+                        linewidth=linewidth,
+                        **kwargs,
+                    )
+
+                    # Plot control points
+                    if plot_ctrlpts:
+                        ctrlpts = np.array(patch.ctrlpts).reshape((-1, 3))
+                        sc = ax.scatter(
                             ctrlpts[:, 0],
                             ctrlpts[:, 1],
                             color="k",
+                            label="Control Variables" if i == 0 else None,
+                        )
+
+                        # Save for legend
+                        if i == 0 and categorical:
+                            legend_handles.append(sc)
+
+                    if plot_boundaries:
+                        outline = np.array(
+                            [
+                                points[i, 0, :, :-1],
+                                points[i, :, -1, :-1],
+                                points[i, -1, ::-1, :-1],
+                                points[i, ::-1, 0, :-1],
+                            ]
+                        ).reshape((-1, 2))
+                        ax.add_patch(
+                            Polygon(
+                                outline,
+                                closed=True,
+                                edgecolor="black",
+                                facecolor="none",
+                                linewidth=1.5,
+                            )
                         )
 
                 ax.set_xlabel("$x(\\hat{x}, \\hat{y})~(cm)$")
                 ax.set_ylabel("$y(\\hat{x}, \\hat{y})~(cm)$")
                 ax.spines[["right", "top"]].set_visible(False)
-
-                return ax, cbar
+                ax.set_aspect("equal")
+                if plot_ctrlpts:
+                    # Extend box outward
+                    xlim, ylim = ax.get_xlim(), ax.get_ylim()
+                    diffx = (abs(xlim[0]) + abs(xlim[1])) * 0.05 / 2
+                    diffy = (abs(ylim[0]) + abs(ylim[1])) * 0.05 / 2
+                    ax.set_xlim((xlim[0] - diffx, xlim[1] + diffx))
+                    ax.set_ylim((ylim[0] - diffy, ylim[1] + diffy))
+                if not categorical:
+                    divider = make_axes_locatable(ax)
+                    cax = divider.append_axes("right", size="5%", pad=0.05)
+                    return ax, plt.colorbar(cmesh, cax=cax)
 
             else:
                 # Create axis
                 fig, ax = plt.subplots(subplot_kw={"projection": "3d"}, figsize=figsize)
 
-                # Set of colors for unique materials
-                mats = {}
-                defaults = {}
-                if use_2d:
-                    colors = list(mcolors.TABLEAU_COLORS.values())
-                    defaults["shade"] = False
+                # 3D settings
+                if categorical:
+                    kwargs["shade"] = False
 
-                if not meshlines:
-                    defaults["linewidth"] = 0
-                    defaults["edgecolor"] = "none"
+                for i, patch in enumerate(self._patches.values()):
+                    # Plot 3D surface
+                    ax.plot_surface(
+                        points[i, ..., 0],
+                        points[i, ..., 1],
+                        points[i, ..., 2],
+                        **kwargs,
+                    )
 
-                cbar = False
-                if (np.array(self.patches[0].ctrlpts)[:, -1] != 0).any():
-                    cbar = True
-                    vmin = np.inf
-                    vmax = 0
-                    for patch in self.patches:
-                        # Sample points
-                        points = np.array(
-                            patch.evaluate_list(
-                                np.concatenate([X, Y], axis=2).reshape((-1, 2)).tolist()
-                            )
-                        ).reshape((*X.shape[:-1], 3))[..., -1]
-
-                        # Find new minimum and maximum
-                        vmin = np.min(points) if np.min(points) < vmin else vmin
-                        vmax = np.max(points) if np.max(points) > vmax else vmax
-
-                    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
-
-                # Iterate through patches
-                for pid, patch in enumerate(self.patches):
-                    # Sample points
-                    points = np.array(
-                        patch.evaluate_list(
-                            np.concatenate([X, Y], axis=2).reshape((-1, 2)).tolist()
-                        )
-                    ).reshape((*X.shape[:-1], 3))
-
-                    # Plot patch geometry
-                    if patch.name in mats or not use_2d:
-                        ax.plot_surface(
-                            points[..., 0],
-                            points[..., 1],
-                            points[..., 2],
-                            color=None if cbar else mats[patch.name],
-                            cmap=cmap if cbar else None,
-                            norm=norm if cbar else None,
-                            **defaults,
-                        )
-
-                    else:
-                        mats[patch.name] = colors.pop(0)
-                        ax.plot_surface(
-                            points[..., 0],
-                            points[..., 1],
-                            points[..., 2],
-                            label=None if cbar else patch.name,
-                            color=None if cbar else mats[patch.name],
-                            cmap=cmap if cbar else None,
-                            norm=norm if cbar else None,
-                            **defaults,
-                        )
-
+                    # Plot control points
                     if plot_ctrlpts:
-                        ctrlpts = np.array(patch.ctrlpts)
-                        ax.scatter(
+                        ctrlpts = np.array(patch.ctrlpts).reshape((-1, 3))
+                        sc = ax.scatter(
                             ctrlpts[:, 0],
                             ctrlpts[:, 1],
                             ctrlpts[:, 2],
                             color="k",
-                            label=(
-                                "Control Variables"
-                                if (pid == self.num_patches - 1 and not cbar)
-                                else None
-                            ),
+                            label="Control Variables" if i == 0 else None,
                         )
 
-                # Label axes
+                        # Save for legend
+                        if i == 0 and categorical:
+                            legend_handles.append(sc)
+
                 ax.set_xlabel("$x(\\hat{x}, \\hat{y})~(cm)$")
                 ax.set_ylabel("$y(\\hat{x}, \\hat{y})~(cm)$")
                 ax.xaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
                 ax.yaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
                 ax.zaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
-                if use_2d:
-                    ax.view_init(90, -90, 0)
-                    ax.grid(False)
-                    ax.zaxis.set_label_position("none")
-                    ax.zaxis.set_ticks_position("none")
+                if not categorical:
+                    return ax
 
-                return ax
+            if categorical and (self.num_patches > 1 or plot_ctrlpts):
+                ax.legend(handles=legend_handles, **legend_args)
+            return ax
 
         elif backend == "plotly":
             # Iterate through patches
             surfaces = []
             scatter = []
-            for p, patch in enumerate(self.patches):
-                # Sample points
-                points = np.array(
-                    patch.evaluate_list(
-                        np.concatenate([X, Y], axis=2).reshape((-1, 2)).tolist()
-                    )
-                ).reshape((*X.shape[:-1], 3))
-
+            for i, patch in enumerate(self._patches.values()):
                 # Plot patch geometry
                 surfaces.append(
                     go.Surface(
-                        x=points[..., 0],
-                        y=points[..., 1],
-                        z=points[..., 2],
+                        x=points[i, ..., 0],
+                        y=points[i, ..., 1],
+                        z=points[i, ..., 2],
                         coloraxis="coloraxis",
-                        name="Surface (Patch: {}, Material: {})".format(p, patch.name),
+                        name="Surface (Patch: {}, Material: {})".format(
+                            patch.id, patch.material
+                        ),
                     )
                 )
 
@@ -1275,7 +942,7 @@ class IGAMesh(object):
                             mode="markers",
                             marker={"color": "black", "size": 5},
                             name="Control Points (Patch: {}, Material: {})".format(
-                                p, patch.name
+                                patch.id, patch.material
                             ),
                         )
                     )
@@ -1293,81 +960,177 @@ class IGAMesh(object):
             )
             return fig
 
-    def plot_normals(self, p, num_nodes=256):
+    # ========================================================================
+    # Overloads
+
+    def __str__(self):
+        # Print for terminal
+        mstr = (
+            f"IGAMesh(id={self._id}, name={self._name}, num_patches={self.num_patches}, "
+            + f"reflective_boundaries={self._has_reflective_boundary})\n"
+        )
+        pstr = "\n".join(f"  -> {patch}" for patch in self._patches.values())
+
+        # Print for terminal
+        return mstr + pstr
+
+    def __repr__(self):
+        return self.__str__()
+
+    def _repr_html_(self):
+        # Print for terminal
+        mstr = (
+            f"IGAMesh(id={self._id}, name={self._name}, num_patches={self.num_patches}, "
+            + f"reflective_boundaries={self._has_reflective_boundary})"
+        )
+        pstr = "\n".join(
+            [f"&nbsp;&nbsp;&nbsp;&nbsp;→ {p}" for p in self._patches.values()]
+        )
+
+        # Fancy print for collapsible content
+        return (
+            f"<details open><summary><code>{mstr}</code>"
+            + f"</summary><pre>{pstr}</pre></details>"
+        )
+
+    # ========================================================================
+    # I / O
+
+    def save(
+        self,
+        path="mesh.hdf5",
+        solution: Optional[np.ndarray] = None,
+        k: Optional[float] = None,
+    ):
         """
-        Plot normals at all boundaries of a given patch.
+        Save IGA mesh to hdf5 file.
+
+        .. note::
+            ``solution`` should be either the angular or scalar flux. For
+            the angular flux it should be shape ``(N, P, A, B)`` where
+            ``N`` is the number of ordinates, ``P`` is the number of patches,
+            ``A`` is the number of control points along ``u``, and ``B``
+            is the number of control points along ``v``. The shape of the
+            scalar flux should be ``(P, A, B)``.
 
         Parameters
         ----------
-        p: int
-            Patch index.
-        num_nodes: int
-            Number of positions to sample the mesh for each patch.
+        path: str or PathLike
+            Location to save the h5 mesh file.
+        """
+        # Check the shape of the solution vector
+        if solution is not None:
+            assert (
+                solution.shape[-3] == self.num_patches
+                and solution.shape[-2:] == list(self._patches.values())[0].shape
+            )
+            solution = solution.numpy() if isinstance(solution, tn.Tensor) else solution
+
+        with h5.File(path, "w") as f:
+            # Create patch and solution group
+            mg = f.create_group("Mesh")
+
+            for patch in self._patches.values():
+                # Append patch info to mesh
+                mg = patch.save(mg)
+
+            # Save mesh information
+            mg.attrs["ID"] = self._id
+            mg.attrs["Max Processes"] = self._max_processes
+            mg.attrs["Decimals"] = self._decimals
+            mg.create_dataset("Bounding Boxes", data=self._bboxes)
+            if self._name is not None:
+                mg.attrs["Name"] = self._name
+
+            # Boundary connection information
+            i = 0
+            bcs = mg.create_group("Boundary Connections")
+            for key, value in self._boundary_hash.items():
+                bc = bcs.create_group(f"Boundary {i}")
+                bc.create_dataset("Point", data=key)
+
+                # Patch ids
+                pids = [pid for pid in value if pid is not None]
+                if pids != []:
+                    bc.create_dataset("Patch IDs", data=pids)
+                i += 1
+
+            if solution is not None:
+                f.create_dataset("Solution", data=solution)
+
+            if k is not None:
+                f.attrs["k"] = k
+
+    @classmethod
+    def load(cls, path="mesh.hdf5"):
+        """
+        Load IGA mesh from hdf5 file.
+
+        Parameters
+        ----------
+        path: str or PathLike
+            Location to save the h5 mesh file.
 
         Returns
         -------
-        ax: matplotlib.axes.Axes
-            Resulting matplotlib axis object.
+        mesh: ttnte.iga.IGAMesh
+            IGA mesh.
+        k: float
+            The eigenvalue if it was saved.
+        solution: numpy.ndarray
+            The solution, either angular or scalar flux, if it was saved.
         """
-        # Get patch
-        patch = self.patches[p]
+        returns = []
+        with h5.File(path, "r") as f:
+            mg = f["Mesh"]
 
-        # Create axis
-        _, ax = plt.subplots(subplot_kw={"projection": "3d"})
+            # Create boundary hash
+            boundary_hash = {}
+            has_reflective_boundary = False
+            for bg in mg["Boundary Connections"].values():
+                point = tuple(bg["Point"][()])
+                boundary_hash[point] = (
+                    list(bg["Patch IDs"][()]) if "Patch IDs" in bg else [None, None]
+                )
 
-        # Get parametric sample locations
-        X, Y = np.meshgrid(np.linspace(0, 1, num_nodes), np.linspace(0, 1, num_nodes))
-        X = X[..., np.newaxis]
-        Y = Y[..., np.newaxis]
+                # Fix vacuum boundaries
+                if len(boundary_hash[point]) == 1:
+                    boundary_hash[point] = [*boundary_hash[point], None]
+                assert len(boundary_hash[point]) == 2
 
-        # Sample points
-        points = np.array(
-            patch.evaluate_list(
-                np.concatenate([X, Y], axis=2).reshape((-1, 2)).tolist()
-            )
-        ).reshape((*X.shape[:-1], 3))
+                if boundary_hash[point][0] == boundary_hash[point][1]:
+                    has_reflective_boundary = True
 
-        # Plot surface
-        ax.plot_surface(
-            points[..., 0],
-            points[..., 1],
-            points[..., 2],
-        )
+            # Create patches
+            patches = {}
+            for name, pg in mg.items():
+                if name.split(" ")[0] == "Patch":
+                    patch = Patch.load(pg)
+                    patches[patch.id] = patch
 
-        # Calculate parametric coordinates
-        coords = np.zeros((2, 40))
-        coords[0, 0:10] = np.linspace(0, 1, 12)[1:-1]
-        coords[0, 10:20] = np.linspace(0, 1, 12)[1:-1]
-        coords[1, 10:20] = 1
-        coords[1, 20:30] = np.linspace(0, 1, 12)[1:-1]
-        coords[1, 30:40] = np.linspace(0, 1, 12)[1:-1]
-        coords[0, 30:40] = 1
+            # Create mesh
+            mesh = IGAMesh()
+            mesh._patches = patches
+            mesh._boundary_hash = boundary_hash
+            mesh._id = mg.attrs["ID"]
+            mesh._name = mg.attrs["Name"] if "Name" in mg.attrs else None
+            mesh._max_processes = mg.attrs["Max Processes"]
+            mesh._bcs_set = True
+            mesh._finalized = True
+            mesh._connected = True
+            mesh._has_reflective_boundary = has_reflective_boundary
+            mesh._decimals = mg.attrs["Decimals"]
+            mesh._bboxes = mg["Bounding Boxes"][()]
+            returns.append(mesh)
 
-        # Set of colors
-        colors = list(mcolors.TABLEAU_COLORS.values())
+            # Get solution if it exists
+            if "Solution" in f:
+                returns.append(np.array(f["Solution"][()]))
 
-        # Evaluate normals
-        points, normals = self.normal(p, coords)
+            if "k" in f.attrs:
+                returns.append(f.attrs["k"])
 
-        labels = ["$\\hat y = 0$", "$\\hat y = 1$", "$\\hat x = 0$", "$\\hat x = 1$"]
-        for i, label in enumerate(labels):
-            ax.quiver(
-                points[0, i * 10 : i * 10 + 10],
-                points[1, i * 10 : i * 10 + 10],
-                np.zeros(10),
-                normals[0, i * 10 : i * 10 + 10],
-                normals[1, i * 10 : i * 10 + 10],
-                np.zeros(10),
-                label=label,
-                color=colors[i],
-                length=0.1,
-            )
-
-        # Label axes
-        ax.set_xlabel("$x~(cm)$")
-        ax.set_ylabel("$y~(cm)$")
-        ax.set_aspect("equal")
-        return ax
+        return returns
 
     # ========================================================================
     # Getters/Setters
@@ -1387,22 +1150,44 @@ class IGAMesh(object):
         assert phi.shape[0] == self.num_patches
 
         # Set control points for scalar field
-        for p in range(self.num_patches):
-            patch = self.patches[p]
-            new_ctrlpts = patch.ctrlpts
-            for i in range(phi.shape[-1]):
-                new_ctrlpts[i] = [*new_ctrlpts[i][:-1], phi[p, i]]
-            patch.ctrlpts = new_ctrlpts
-            self.patches[p] = patch
+        for i, patch in enumerate(self._patches.values()):
+            patch.set_phi(phi[i,])
+
+    def pid2pidx(self, pid):
+        return np.argwhere(pid == np.array(list(self._patches.keys()))).flatten()[0]
 
     @property
     def num_patches(self):
-        return len(self.patches)
+        return len(self._patches)
 
     @property
-    def degree(self):
-        return [self.patches[0].degree_u, self.patches[0].degree_v]
+    def patches(self):
+        return self._patches
 
     @property
-    def ndim(self):
-        return 2
+    def patch_ids(self):
+        return np.array(list(self._patches.keys()))
+
+    @property
+    def max_processes(self):
+        return self._max_processes
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def id(self):
+        return id
+
+    @property
+    def has_reflective_boundary(self):
+        return self._has_reflective_boundary
+
+    @max_processes.setter
+    def max_processes(self, max_processes):
+        self._max_processes = max_processes
+
+    @name.setter
+    def name(self, name):
+        self._name = name

@@ -28,44 +28,61 @@ class Server:
             Dictionary with ``"chi"`` spectrum and material XSs. The material XSs
             include the name of the material as the key and a dictionary as the
             value. The dictionary has ``"total"``, ``"nu_fission"``, and
-            ``"scattering_gtg"`` arrays.
+            ``"scatter_gtg"`` arrays.
         """
         self._xs = xs
-        self._chi = np.array(self._xs.pop("chi"))
-
-        # Assert chi is 1D and get number of groups
-        assert self._chi.ndim == 1
-        self._num_groups = self._chi.size
+        self._chi = None
+        if "chi" in self._xs:
+            self._chi = np.array(self._xs.pop("chi")).astype(float)
+            assert self._chi.ndim == 1
 
         # Check shapes of groups and determine number of scattering moments
+        self._num_groups = None
         self._num_moments = None
         for mat in self._xs.keys():
             # Check all arrays are numpy arrays
-            self._xs[mat]["total"] = np.array(self.total(mat))
-            self._xs[mat]["nu_fission"] = np.array(self.nu_fission(mat))
-            self._xs[mat]["scatter_gtg"] = np.array(self.scatter_gtg(mat))
+            self._xs[mat]["total"] = np.array(self.total(mat)).astype(float)
+            if self._num_groups is None:
+                self._num_groups = self._xs[mat]["total"].shape[0]
 
             assert self.total(mat).shape == (self._num_groups,)
-            assert self.nu_fission(mat).shape == (self._num_groups,)
-            assert self.scatter_gtg(mat).ndim == 3
-            assert self.scatter_gtg(mat).shape[1:] == (
-                self._num_groups,
-                self._num_groups,
-            )
+
             if "absorption" in self._xs[mat]:
-                self._xs[mat]["absorption"] = np.array(self.absorption(mat))
+                self._xs[mat]["absorption"] = np.array(self.absorption(mat)).astype(
+                    float
+                )
                 assert self.absorption(mat).shape == (self._num_groups,)
             if "kappa_fission" in self._xs[mat]:
-                self._xs[mat]["kappa_fission"] = np.array(self.kappa_fission(mat))
+                self._xs[mat]["kappa_fission"] = np.array(
+                    self.kappa_fission(mat)
+                ).astype(float)
                 assert self.kappa_fission(mat).shape == (self._num_groups,)
             if "fission" in self._xs[mat]:
-                self._xs[mat]["fission"] = np.array(self.fission(mat))
+                self._xs[mat]["fission"] = np.array(self.fission(mat)).astype(float)
                 assert self.fission(mat).shape == (self._num_groups,)
+            if "nu_fission" in self._xs[mat]:
+                self._xs[mat]["nu_fission"] = np.array(self.nu_fission(mat)).astype(
+                    float
+                )
+                assert self.nu_fission(mat).shape == (self._num_groups,)
+            if "scatter_gtg" in self._xs[mat]:
+                self._xs[mat]["scatter_gtg"] = np.array(self.scatter_gtg(mat)).astype(
+                    float
+                )
+                assert self.scatter_gtg(mat).ndim == 3
+                assert self.scatter_gtg(mat).shape[1:] == (
+                    self._num_groups,
+                    self._num_groups,
+                )
 
-            if self._num_moments is None:
-                self._num_moments = self.scatter_gtg(mat).shape[0]
-            else:
-                assert self._num_moments == self.scatter_gtg(mat).shape[0]
+                if self._num_moments is None:
+                    self._num_moments = self.scatter_gtg(mat).shape[0]
+                else:
+                    assert self._num_moments == self.scatter_gtg(mat).shape[0]
+
+            for xs_name in ["nu_fission", "scatter_gtg"]:
+                if xs_name in self._xs[mat] and (self._xs[mat][xs_name] == 0).all():
+                    del self._xs[mat][xs_name]
 
     # ========================================================================
     # XS accessors
@@ -116,10 +133,13 @@ class Server:
 
         Returns
         -------
-        nu_fission: numpy.ndarray
+        nu_fission: numpy.ndarray or None
             :math:`\\nu\\Sigma_f` XS array of shape ``(Server.num_groups,)``.
         """
-        return self._xs[mat]["nu_fission"]
+        if "nu_fission" in self._xs[mat]:
+            return self._xs[mat]["nu_fission"]
+        else:
+            return None
 
     def fission(self, mat=None):
         """
@@ -136,7 +156,7 @@ class Server:
             :math:`\\nu\\Sigma_f` XS array of shape ``(Server.num_groups,)``.
         """
         if "fission" in self._xs[mat]:
-            return self._xs[mat]["nu_fission"]
+            return self._xs[mat]["fission"]
         else:
             raise RuntimeError("fission XSs not provided")
 
@@ -159,7 +179,7 @@ class Server:
         else:
             raise RuntimeError("kappa_fission XSs not provided")
 
-    def scatter_gtg(self, mat=None):
+    def scatter_gtg(self, mat):
         """
         Get group-to-group scattering XSs.
 
@@ -170,11 +190,14 @@ class Server:
 
         Returns
         -------
-        total: numpy.ndarray
+        total: numpy.ndarray of None
             Group-to-group scattering XS array of shape
             ``(Server.num_moments, Server.num_groups, Server.num_groups)``.
         """
-        return self._xs[mat]["scatter_gtg"]
+        if "scatter_gtg" in self._xs[mat]:
+            return self._xs[mat]["scatter_gtg"]
+        else:
+            return None
 
     # ========================================================================
     # Properties

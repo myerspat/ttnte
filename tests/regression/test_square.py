@@ -1,9 +1,13 @@
 import numpy as np
 import torch as tn
 from igakit import cad
-from run_problem import run_problem
+import pytest
+from run_problem import run_eig, run_fixed_source
 
+from ttnte.cad import Patch
 from ttnte.iga import IGAMesh
+from ttnte.sources import IsotropicInternalSource
+from ttnte.xs import Server
 from ttnte.xs.benchmarks import pu239, research_reactor
 
 tn.set_default_dtype(tn.float64)
@@ -23,13 +27,13 @@ def test_square_vac():
             [length / 2, length / 2, 0],
         ]
     ).reshape((2, 2, -1))
-    patches = {cad.bilinear(points): "Pu-239"}
 
     # Create mesh
-    mesh = IGAMesh(patches)
+    mesh = IGAMesh(max_processes=16)
+    mesh.add_patch(Patch(cad.bilinear(points), "Pu-239"))
 
     # Refine mesh resolution
-    mesh.refine(0, factor=7, degree=3)
+    mesh.refine(factor=7, degree=3)
 
     # Connect patches
     mesh.connect()
@@ -38,7 +42,7 @@ def test_square_vac():
     mesh.finalize()
 
     # Run checks
-    run_problem(mesh, xs_server, 0.997951, 256)
+    run_eig(mesh, xs_server, 0.997951, 256)
 
 
 def test_square_anisotropic():
@@ -55,25 +59,25 @@ def test_square_anisotropic():
             [length / 2, length / 2, 0],
         ]
     ).reshape((2, 2, -1))
-    patches = {cad.bilinear(points): "Research Reactor"}
 
     # Create mesh
-    mesh = IGAMesh(patches)
+    mesh = IGAMesh(max_processes=16)
+    mesh.add_patch(Patch(cad.bilinear(points), "Research Reactor"))
 
     # Refine mesh resolution
-    mesh.refine(0, factor=[5, 7], degree=3)
+    mesh.refine(factor=[5, 7], degree=3)
 
     # Connect patches
     mesh.connect()
 
     # Define boundary conditions
-    mesh.set_reflective_condition(("left", "top", "bottom"))
+    mesh.set_reflective_conditions(("left", "top", "bottom"))
 
     # Finalize mesh
     mesh.finalize()
 
     # Run checks
-    run_problem(mesh, xs_server, 1.0, 256)
+    run_eig(mesh, xs_server, 1.0, 256)
 
 
 def test_square_multiregion():
@@ -84,30 +88,74 @@ def test_square_multiregion():
     fuel_length = 6.696802  # cm
     mod_length = 1.126151  # cm
 
+    # Initilize IGA mesh
+    mesh = IGAMesh(max_processes=16)
+
     # Fuel patch
     points = np.array([[-0.5, 0], [0.5, 0], [-0.5, fuel_length], [0.5, fuel_length]])
-    patches = {cad.bilinear(points.reshape((2, 2, -1))): "Research Reactor"}
+    mesh.add_patch(Patch(cad.bilinear(points.reshape((2, 2, -1))), "Research Reactor"))
 
     # Moderator patch
     points[:2, 1] += fuel_length
     points[2:, 1] += mod_length
-    patches[cad.bilinear(points.reshape((2, 2, -1)))] = "Water"
-
-    # Create mesh
-    mesh = IGAMesh(patches)
+    mesh.add_patch(Patch(cad.bilinear(points.reshape((2, 2, -1))), "Water"))
 
     # Refine mesh resolution
-    for p in range(mesh.num_patches):
-        mesh.refine(p, factor=[5, 7], degree=3)
+    mesh.refine(factor=[5, 7], degree=3)
 
     # Connect patches
     mesh.connect()
 
     # Define boundary conditions
-    mesh.set_reflective_condition(("left", "bottom", "right"))
+    mesh.set_reflective_conditions(("left", "bottom", "right"))
 
     # Finalize mesh
     mesh.finalize()
 
     # Run checks
-    run_problem(mesh, xs_server, 1.0, 256)
+    run_eig(mesh, xs_server, 1.0, 256)
+
+
+def test_square_fixed_source():
+    # Get XS data
+    total = 1  # 1/cm
+    scattering_ratio = 0.9
+    xs_server = Server(
+        {
+            "Material": {
+                "total": np.array([total]),
+                "scatter_gtg": np.array([[[total * scattering_ratio]]]),
+            }
+        }
+    )
+
+    # Create NURBS geometry
+    length = 10  # cm
+    points = np.array(
+        [
+            [-length / 2, -length / 2, 0],
+            [length / 2, -length / 2, 0],
+            [-length / 2, length / 2, 0],
+            [length / 2, length / 2, 0],
+        ]
+    ).reshape((2, 2, -1))
+    patch = Patch(cad.bilinear(points), "Material")
+
+    # Add uniform source of 1/cm to patch
+    source = IsotropicInternalSource(np.ones((1, *patch.shape)))
+    patch.set_source(source)
+
+    # Create mesh
+    mesh = IGAMesh(max_processes=4)
+    mesh.add_patch(patch)
+
+    # Refine mesh resolution
+    mesh.refine(factor=13, degree=3)
+
+    # Connect patches
+    mesh.connect()
+
+    # Finalize mesh
+    mesh.finalize()
+
+    run_fixed_source(mesh, xs_server, 0.420974, 256)

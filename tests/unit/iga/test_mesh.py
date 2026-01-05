@@ -4,8 +4,9 @@ from pathlib import Path
 import numpy as np
 from igakit import cad
 
-from ttnte.iga import IGAMesh
+from ttnte.cad import Patch
 from ttnte.cad.curves import qtrlobe
+from ttnte.iga import IGAMesh
 
 
 def test_inverse_map():
@@ -25,18 +26,17 @@ def test_inverse_map():
     mod1 = cad.ruled(c1, l1)
     mod2 = cad.ruled(c2, l2)
 
-    # NURBS surfaces
-    patches = {}
-    patches[fuel1] = "UO2"
-    patches[fuel2] = "UO2"
-    patches[mod1] = "Water"
-    patches[mod2] = "Water"
+    # Create mesh
+    mesh = IGAMesh(max_processes=4)
 
-    # Create IGA mesh object
-    mesh = IGAMesh(patches)
+    # Add NURBS patches
+    mesh.add_patch(Patch(fuel1, "UO2"))
+    mesh.add_patch(Patch(fuel2, "UO2"))
+    mesh.add_patch(Patch(mod1, "Water"))
+    mesh.add_patch(Patch(mod2, "Water"))
 
     # Refine mesh resolution
-    mesh.refine(0, 2, degree=2)
+    mesh.refine(3, degree=2)
 
     # Finalize mesh
     mesh.connect()
@@ -52,7 +52,7 @@ def test_inverse_map():
 
         # Evaluate physical coordinates and inverse map to get parametric coords
         pids, coords = mesh.inverse_map(
-            np.array(mesh.patches[p].evaluate_list(rand_coords.tolist()))[:, :-1].T,
+            np.array(mesh.patches[p](rand_coords))[:, :-1],
             tol=tol,
         )
 
@@ -62,12 +62,8 @@ def test_inverse_map():
             np.sqrt(
                 np.sum(
                     (
-                        np.array(mesh.patches[p].evaluate_list(rand_coords.tolist()))[
-                            :, :-1
-                        ].T
-                        - np.array(mesh.patches[p].evaluate_list(coords.T.tolist()))[
-                            :, :-1
-                        ].T
+                        np.array(mesh.patches[p](rand_coords))[:, :-1]
+                        - np.array(mesh.patches[p](coords))[:, :-1]
                     )
                     ** 2,
                     axis=-1,
@@ -101,8 +97,10 @@ def test_inverse_map():
     corner = cad.line(p1=(X / 2, X / 2), p0=(X / 2, X / 2))
     rightedge = cad.line(p1=(X / 2, 0), p0=(X / 2, X / 2))
 
+    # Create IGA mesh
+    mesh = IGAMesh()
+
     # NURBS patches
-    patches = {}
     sections = [0, 1 / 3, 2 / 3, 1]
     edges = [topedge, corner, rightedge]
 
@@ -114,55 +112,46 @@ def test_inverse_map():
         csec = clad.slice(0, sections[i], sections[i + 1])
 
         # Create patches
-        patches[cad.ruled(osec, bsec)] = "BA (UO2 FA)"
-        patches[cad.ruled(bsec, fsec)] = "UO2 3%"
-        patches[cad.ruled(fsec, csec)] = "Guide Tube"
-        patches[cad.ruled(csec, edges[i])] = "Water"
-
-    # Create IGA mesh object
-    mesh = IGAMesh(patches)
+        mesh.add_patch(Patch(cad.ruled(osec, bsec), "BA (UO2 FA)"))
+        mesh.add_patch(Patch(cad.ruled(bsec, fsec), "UO2 3%"))
+        mesh.add_patch(Patch(cad.ruled(fsec, csec), "Guide Tube"))
+        mesh.add_patch(Patch(cad.ruled(csec, edges[i]), "Water"))
 
     # Refine mesh
-    for p in range(mesh.num_patches):
-        mesh.refine(p, 3, 2)
+    mesh.refine(3, 2)
 
     # Finalize mesh
     mesh.connect()
 
     # Set reflective boundary conditions
-    mesh.set_reflective_condition(("left", "bottom", "top", "right"))
+    mesh.set_reflective_conditions(("left", "bottom", "top", "right"))
 
     # Finalize mesh
     mesh.finalize()
 
     # Test points
     pids, _ = mesh.inverse_map(
-        np.array([[0, 0.53125], [0, 0.5525], [0.57375, 0]]).T,
+        np.array([[0, 0.53125], [0, 0.5525], [0.57375, 0]]),
         tol=tol,
     )
-    assert (pids[:-1] == 2).all()
-    assert pids[-1] == 10
+    assert (pids[:-1] == mesh.patch_ids[2]).all()
+    assert pids[-1] == mesh.patch_ids[10]
 
 
 def test_normals():
     # Read in problematic patch
     with open(Path(__file__).parent / "supporting/patch.pkl", "rb") as f:
-        patches = {pickle.load(f): "None"}
+        patch = Patch(pickle.load(f), "None")
 
-    # Create IGA mesh object
-    mesh = IGAMesh(patches)
-
-    # Finalize mesh
-    mesh.connect()
-
-    # Finalize mesh
-    mesh.finalize()
+    # Initialize boundaries and convert
+    patch.igakit2geomdl()
+    patch.initialize_boundaries()
 
     # Test vector
     i = np.array([1, 0])
 
     # Check the normal for the NURBS(xhat, 0)
-    vec = mesh.normal(0, np.array([[0.5], [0]]))[1].flatten()
+    vec = patch.normal((0.5, 0), np.array([0.5]))[1].flatten()
 
     # Check the vectors point in -i
     assert 1 == np.dot(-i, vec)

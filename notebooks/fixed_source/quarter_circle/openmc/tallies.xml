@@ -1,0 +1,25 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<tallies>
+  <mesh id="0">
+    <dimension>128 128</dimension>
+    <lower_left>0 0</lower_left>
+    <upper_right>6 6</upper_right>
+  </mesh>
+  <filter id="2" type="mesh">
+    <bins>0</bins>
+  </filter>
+  <filter id="1" type="energy">
+    <bins>9.999999999999999e-06 10000000.0</bins>
+  </filter>
+  <filter id="3" type="cell">
+    <bins>1</bins>
+  </filter>
+  <tally id="1" name="Regular Mesh">
+    <filters>2 1</filters>
+    <scores>flux</scores>
+  </tally>
+  <tally id="2" name="Cell">
+    <filters>3 1</filters>
+    <scores>flux</scores>
+  </tally>
+</tallies>
