@@ -8,7 +8,7 @@
 #include "ttnte/cad/basis_functions.hpp"
 
 namespace ttnte::cad {
-class BSpline final : public Basis_Functions{
+class BSpline final : public BasisFunctions{
 public:
     // Constructors
     BSpline();
