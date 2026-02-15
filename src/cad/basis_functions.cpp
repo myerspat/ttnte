@@ -12,6 +12,7 @@ BasisFunctions::BasisFunctions( std::vector<torch::Tensor> knots,
 {
 }
 
+
 torch::Tensor find_spans(int64_t param_idx, torch::Tensor coords)
 {
 }

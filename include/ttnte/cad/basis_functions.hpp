@@ -15,6 +15,9 @@ public:
     BasisFunctions( std::vector<torch::Tensor> knots,
           std::vector<int64_t> degree);
 
+    // Destructors
+    virtual ~BsisFunctions();
+
     // Basic B-Spline data (in k-dimension physical space)
     std::vector<torch::Tensor> knots;  ///< vector of knots 
     std::vector<int64_t> degree;  ///< degrees in each parametric dimension
@@ -23,6 +26,7 @@ public:
 
     // Evaluation Methods
     torch::Tensor find_spans(int64_t param_idx, torch::Tensor coords);
+    
 private:
     // Private Helper Methods
     
