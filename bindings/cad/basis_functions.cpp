@@ -11,8 +11,7 @@ void register_BasisFunctions(py::module_& m)
 {
   using BasisFunctions = ttnte::cad::BasisFunctions;
 
-  py::class_<BasisFunctions, std::shared_ptr<BasisFunctions>>(
-    m, "BasisFunctions")
+  py::class_<BasisFunctions>(m, "BasisFunctions")
     .def(py::init<const std::vector<torch::Tensor>&,
            const std::vector<int64_t>&>(),
       py::arg("knots"), py::arg("degree"))
