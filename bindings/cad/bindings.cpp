@@ -6,12 +6,13 @@
 namespace py = pybind11;
 
 // Forward declarations
-void register_Patch(py::module_& m);
+void register_BasisFunctions(py::module_& m);
 
-PYBIND11_MODULE(cad, m) {
-    m.doc() = "CAD module with B-Splines, NURBS, and TH-NURBS";
+PYBIND11_MODULE(cad, m)
+{
+  m.doc() = "CAD module with B-Splines, NURBS, and TH-NURBS";
 
-    // Register classes in order (NURBS before Patch, since Patch depends on it)
+  // Register classes in order (basis_functions first, since rest depends on it)
 
-    register_patch(m);
+  register_BasisFunctions(m);
 }

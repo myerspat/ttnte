@@ -2,26 +2,29 @@
 
 namespace ttnte::cad {
 // Constructors
-BasisFunctions::BasisFunctions() : degree(0) {}
+BasisFunctions::BasisFunctions() : degree(0) {};
 
 BasisFunctions::BasisFunctions(
   std::vector<torch::Tensor> knots, std::vector<int64_t> degree)
   : knots(knots), degree(degree)
 {}
+/*
+torch::Tensor BasisFunctions::find_spans(int64_t param_idx, torch::Tensor
+coords) {
 
-torch::Tensor find_spans(int64_t param_idx, torch::Tensor coords) {}
+}*/
 
 // Single Dimension Evaluation
-torch::Tensor basis_functions_bspline(
+torch::Tensor BasisFunctions::basis_functions_bspline(
   int64_t param_idx, torch::Tensor spans, torch::Tensor coords)
 {
-  auto knots = knots[param_idx];
   int64_t p = degree[param_idx];
+  auto knots_p = knots[param_idx];
 
   int64_t num_coords = coords.size(0);
   auto basis = torch::zeros({num_coords, p + 1}, torch::kFloat64);
 
-  auto knots_a = knots.accessor<double, 1>();
+  auto knots_a = knots_p.accessor<double, 1>();
   auto spans_a = spans.accessor<int64_t, 1>();
   auto coords_a = coords.accessor<double, 1>();
   auto basis_a = basis.accessor<double, 2>();
@@ -54,9 +57,11 @@ torch::Tensor basis_functions_bspline(
 
   return basis;
 }
-
-torch::Tensor basis_functions_ders_bspline(
+/*
+torch::Tensor BasisFunctions::basis_functions_ders_bspline(
   int64_t param_idx, torch::Tensor spans, torch::Tensor coords, int64_t order)
-{}
+{
+
+}*/
 
 } // namespace ttnte::cad
