@@ -63,6 +63,7 @@ message(STATUS "Compiling ttnte C++ backend")
 message(STATUS "Project source directory: ${PROJECT_SOURCE_DIR}")
 message(STATUS "ttnte C++ flags: ${flags}")
 message(STATUS "TORCH_INSTALL_PREFIX: ${TORCH_INSTALL_PREFIX}")
+message(STATUS "CUDA path: $ENV{CUDA_INCLUDE_DIRS}")
 
 # Set compile flags as global for now add_compile_definitions(${flags})
 string(JOIN " " flags_str ${flags})
@@ -96,6 +97,8 @@ endif()
 find_library(TORCH_PYTHON_LIBRARY torch_python PATH
              "${TORCH_INSTALL_PREFIX}/lib")
 
+message(STATUS "Torch Python Library: ${TORCH_PYTHON_LIBRARY}")
+
 message(STATUS "Torch Libraries: ${TORCH_LIBRARIES}")
 message(STATUS "Torch Include: ${TORCH_INCLUDE_DIRS}")
 
@@ -105,3 +108,4 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # ================================================================================
 # Create modules
 add_subdirectory(bindings/linalg)
+add_subdirectory(bindings/cad)

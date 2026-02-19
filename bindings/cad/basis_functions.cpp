@@ -13,10 +13,10 @@ void register_BasisFunctions(py::module_& m)
 
   py::class_<BasisFunctions, std::shared_ptr<BasisFunctions>>(
     m, "BasisFunctions")
-    .def(
-      py::init<const std::vector<torch::Tensor>&, const std::vector<int64>&>(),
+    .def(py::init<const std::vector<torch::Tensor>&,
+           const std::vector<int64_t>&>(),
       py::arg("knots"), py::arg("degree"))
     .def("find_spans", &BasisFunctions::find_spans)
     .def_readwrite("knots", &BasisFunctions::knots)
-    .def_readwrite("degree", &BasisFunctions::degree)
+    .def_readwrite("degree", &BasisFunctions::degree);
 }

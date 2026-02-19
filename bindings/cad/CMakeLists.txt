@@ -2,13 +2,13 @@
 set(CAD_BINDINGS
     bindings.cpp
     utils.cpp
-    patch.cpp
+    basis_functions.cpp
     )
 
 
 # Relevant files from src
 set(CAD_SRC
-    ${PROJECT_SOURCE_DIR}/src/cad/patch.cpp
+    ${PROJECT_SOURCE_DIR}/src/cad/basis_functions.cpp
     )
 
 

@@ -1,46 +1,48 @@
 #pragma once
 
+#include <optional>
 #include <pybind11/pybind11.h>
 #include <torch/extension.h>
-#include <vector>
 #include <tuple>
-#include <optional>
+#include <vector>
 
 namespace ttnte::cad {
-class BasisFunctions : public std::enable_shared_from_this<BasisFunctions>{
+class BasisFunctions : public std::enable_shared_from_this<BasisFunctions> {
 public:
-    // Constructors
-    BasisFunctions();
+  // Constructors
+  BasisFunctions();
 
-    BasisFunctions( std::vector<torch::Tensor> knots,
-          std::vector<int64_t> degree);
+  BasisFunctions(std::vector<torch::Tensor> knots, std::vector<int64_t> degree);
 
-    // Destructors
-    virtual ~BsisFunctions();
+  // Destructors
+  virtual ~BasisFunctions();
 
-    // Basic B-Spline data (in k-dimension physical space)
-    std::vector<torch::Tensor> knots;  ///< vector of knots 
-    std::vector<int64_t> degree;  ///< degrees in each parametric dimension
+  // Basic B-Spline data (in k-dimension physical space)
+  std::vector<torch::Tensor> knots; ///< vector of knots
+  std::vector<int64_t> degree;      ///< degrees in each parametric dimension
 
-    // Getters / Setters
+  // Getters / Setters
 
-    // Evaluation Methods
-    torch::Tensor find_spans(int64_t param_idx, torch::Tensor coords);
-    
+  // Evaluation Methods
+  torch::Tensor find_spans(int64_t param_idx, torch::Tensor coords);
+
+  // Evaluate B-spline basis functions in k-dimensional space
+  torch::Tensor basis_functions(torch::Tensor spans, torch::Tensor coords);
+
+  // Evaluate B-spline basis function derivatives in k-dimensional space
+  torch::Tensor basis_functions_ders(
+    torch::Tensor spans, torch::Tensor coords, int64_t order);
+
 private:
-    // Private Helper Methods
-    
-    //Evaluate B-spline basis functions along a single parametric dimension
-    torch::Tensor basis_functions_bspline(
-        int64_t param_idx,
-        torch::Tensor spans,
-        torch::Tensor coords);
+  // Private Helper Methods
 
-    //Evaluate B-spline basis function derivatives along a single parametric dimension
-    torch::Tensor basis_functions_ders_bspline(
-        int64_t param_idx,
-        torch::Tensor spans,
-        torch::Tensor coords,
-        int64_t order); 
-}
+  // Evaluate B-spline basis functions along a single parametric dimension
+  torch::Tensor basis_functions_bspline(
+    int64_t param_idx, torch::Tensor spans, torch::Tensor coords);
+
+  // Evaluate B-spline basis function derivatives along a single parametric
+  // dimension
+  torch::Tensor basis_functions_ders_bspline(int64_t param_idx,
+    torch::Tensor spans, torch::Tensor coords, int64_t order);
+};
 } // namespace ttnte::cad
