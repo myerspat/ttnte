@@ -7,7 +7,7 @@
 #include <vector>
 
 namespace ttnte::cad {
-class BasisFunctions : public std::enable_shared_from_this<BasisFunctions> {
+class BasisFunctions {
 public:
   // Constructors
   BasisFunctions();
