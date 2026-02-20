@@ -1,13 +1,19 @@
+#include <stdexcept>
+
 #include "ttnte/cad/basis_functions.hpp"
 
 namespace ttnte::cad {
 // Constructors
-BasisFunctions::BasisFunctions() : degree(0) {};
+BasisFunctions::BasisFunctions() : knots_{}, degrees_{} {}
 
 BasisFunctions::BasisFunctions(
-  std::vector<torch::Tensor> knots, std::vector<int64_t> degree)
-  : knots(knots), degree(degree)
-{}
+  std::vector<torch::Tensor> knots, std::vector<int64_t> degrees)
+  : knots_(std::move(knots)), degrees_(std::move(degrees))
+{
+  if (knots_.size() != degrees_.size()) {
+    throw std::invalid_argument("knots and degrees must have same size");
+  }
+}
 /*
 torch::Tensor BasisFunctions::find_spans(int64_t param_idx, torch::Tensor
 coords) {
@@ -16,17 +22,17 @@ coords) {
 
 // Single Dimension Evaluation
 torch::Tensor BasisFunctions::basis_functions_bspline(
-  int64_t param_idx, torch::Tensor spans, torch::Tensor coords)
+  int64_t param_idx, const torch::Tensor & spans, const torch::Tensor & coords)
 {
-  int64_t p = degree[param_idx];
-  auto knots_p = knots[param_idx];
+  const int64_t p = degrees_[param_idx];
+  const auto & knots_p = knots_[param_idx];
 
-  int64_t num_coords = coords.size(0);
+  const int64_t num_coords = coords.size(0);
   auto basis = torch::zeros({num_coords, p + 1}, torch::kFloat64);
 
-  auto knots_a = knots_p.accessor<double, 1>();
-  auto spans_a = spans.accessor<int64_t, 1>();
-  auto coords_a = coords.accessor<double, 1>();
+  const auto knots_a = knots_p.accessor<double, 1>();
+  const auto spans_a = spans.accessor<int64_t, 1>();
+  const auto coords_a = coords.accessor<double, 1>();
   auto basis_a = basis.accessor<double, 2>();
 
   // Temporary arrays for Cox-de Boor recursion
@@ -63,5 +69,17 @@ torch::Tensor BasisFunctions::basis_functions_ders_bspline(
 {
 
 }*/
+
+// Batch Evaluation
+torch::Tensor find_spans(int64_t param_idx, const torch::Tensor & coords) {
+  const auto & knots_p = knots_[param_idx];
+  const auto & coord = coords[idx]; // Evaluation param
+  const int64_t deg_p = degrees_[param_idx]; 
+  const int64_t n = (knots_p.size() - 1) - p - 1;
+
+  if (coord == coords[n + 1]) { return coord; }
+
+  
+}
 
 } // namespace ttnte::cad

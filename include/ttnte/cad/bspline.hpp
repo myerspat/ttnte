@@ -18,11 +18,14 @@ public:
           torch::Tensor knots_v,
           int64_t degree_u,
           int64_t degree_v);
-
-    // Basic B-Spline data
-    torch::Tensor control_points;  ///< Control points (n_u1, ... n_uk, k)
+    
+    const torch::Tensor & control_points() const noexcept {
+        return control_points_;
+    }
 
 private:
+    // Basic B-Spline data
+    torch::Tensor control_points_;  ///< Control points (n_u1, ... n_uk, k)
 
 }
 } // namespace ttnte::cad

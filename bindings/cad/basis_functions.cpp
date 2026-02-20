@@ -14,8 +14,8 @@ void register_BasisFunctions(py::module_& m)
   py::class_<BasisFunctions>(m, "BasisFunctions")
     .def(py::init<const std::vector<torch::Tensor>&,
            const std::vector<int64_t>&>(),
-      py::arg("knots"), py::arg("degree"))
+      py::arg("knots"), py::arg("degrees"))
     .def("find_spans", &BasisFunctions::find_spans)
-    .def_readwrite("knots", &BasisFunctions::knots)
-    .def_readwrite("degree", &BasisFunctions::degree);
+    .def_property_readonly("knots", &BasisFunctions::knots)
+    .def_property_readonly("degrees", &BasisFunctions::degrees);
 }
