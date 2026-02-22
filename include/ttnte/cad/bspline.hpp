@@ -1,31 +1,41 @@
 #pragma once
-
-#include <pybind11/pybind11.h>
-#include <torch/extension.h>
-#include <vector>
-#include <tuple>
-#include <optional>
 #include "ttnte/cad/basis_functions.hpp"
 
-namespace ttnte::cad {
-class BSpline final : public BasisFunctions{
-public:
-    // Constructors
-    BSpline();
+#include <optional>
+#include <pybind11/pybind11.h>
+#include <torch/extension.h>
+#include <tuple>
+#include <vector>
 
-    BSpline(torch::Tensor control_points,
-          torch::Tensor knots_u,
-          torch::Tensor knots_v,
-          int64_t degree_u,
-          int64_t degree_v);
-    
-    const torch::Tensor & control_points() const noexcept {
-        return control_points_;
-    }
+namespace ttnte::cad {
+class Bspline : public BasisFunctions {
+public:
+  // Constructors
+  Bspline();
+
+  Bspline(std::vector<torch::Tensor> knots,
+    std::vector<torch::Tensor> ctrl_pts_, std::vector<int64_t> degrees);
+
+  // Destructors
+  virtual ~Bspline();
+
+  // Getters / Setters
+  const std::vector<int64_t>& ctrl_pts() const noexcept { return ctrl_pts_; }
+
+  // Evaluation Methods
+  // Knot Refinement
+  void knot_refine(int64_t param_idx, const torch::Tensor& ctrl_pts,
+    const torch::Tensor& knots);
+
+protected:
+  // For access by derived classes
+  // May potentially move private fields here at a later point
 
 private:
-    // Basic B-Spline data
-    torch::Tensor control_points_;  ///< Control points (n_u1, ... n_uk, k)
+  // Basic B-Spline data (in k-dimension physical space)
+  const std::vector<torch::Tensor>
+    ctrl_pts_; ///< vector of ctrl pts in each dimension
 
-}
+  // Private Helper Methods
+};
 } // namespace ttnte::cad

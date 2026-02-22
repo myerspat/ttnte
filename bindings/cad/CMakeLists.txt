@@ -3,12 +3,14 @@ set(CAD_BINDINGS
     bindings.cpp
     utils.cpp
     basis_functions.cpp
+    bspline.cpp
     )
 
 
 # Relevant files from src
 set(CAD_SRC
-    ${PROJECT_SOURCE_DIR}/src/cad/basis_functions.cpp
+    ${PROJECT_SOURCE_DIR}/src/cad/basis_functions.cpp,
+    ${PROJECT_SOURCE_DIR}/src/cad/bspline.cpp
     )
 
 
