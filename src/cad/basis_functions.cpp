@@ -4,23 +4,27 @@
 
 namespace ttnte::cad {
 // Constructors
-BasisFunctions::BasisFunctions() : knots_{}, degrees_{} {}
+BasisFunctions::BasisFunctions() : knots_ {}, degrees_ {} {}
 
 BasisFunctions::BasisFunctions(
   std::vector<torch::Tensor> knots, std::vector<int64_t> degrees)
   : knots_(std::move(knots)), degrees_(std::move(degrees))
 {
   if (knots_.size() != degrees_.size()) {
-    throw std::invalid_argument("BasisFunctions ctor: knots and degrees must have same size");
+    throw std::invalid_argument(
+      "BasisFunctions ctor: knots and degrees must have same size");
   }
 }
 
+// Destructors
+BasisFunctions::~BasisFunctions() = default;
+
 // Single Dimension Evaluation
 torch::Tensor BasisFunctions::basis_functions_bspline(
-  int64_t param_idx, const torch::Tensor & spans, const torch::Tensor & coords)
+  int64_t param_idx, const torch::Tensor& spans, const torch::Tensor& coords)
 {
   const int64_t p = degrees_[param_idx];
-  const auto & knots_p = knots_[param_idx];
+  const auto& knots_p = knots_[param_idx];
 
   const int64_t num_coords = coords.size(0);
   auto basis = torch::zeros({num_coords, p + 1}, torch::kFloat64);
@@ -66,13 +70,15 @@ torch::Tensor BasisFunctions::basis_functions_ders_bspline(
 }*/
 
 // Batch Evaluation
-torch::Tensor find_spans(int64_t param_idx, const torch::Tensor & coords) {
+torch::Tensor BasisFunctions::find_spans(
+  int64_t param_idx, const torch::Tensor& coords)
+{
 
   if (param_idx < 0 || param_idx >= degrees_.size()) {
     throw std::out_of_range("find_spans: param_idx out of range");
   }
 
-  const auto & knots_p = knots_[param_idx];
+  const auto& knots_p = knots_[param_idx];
   const int64_t deg_p = degrees_[param_idx];
   const int64_t n = (knots_p.size() - 1) - deg_p - 1;
 
@@ -85,22 +91,41 @@ torch::Tensor find_spans(int64_t param_idx, const torch::Tensor & coords) {
   auto s_a = spans.accessor<int64_t, 1>();
 
   for (int64_t idx = 0; idx < num_coords; idx++) {
-    const auto & u_idx = u[idx]; // Evaluation param
+    const auto& u_idx = u[idx]; // Evaluation param
     if (u_idx >= U[n + 1]) {
       s_a[idx] = n;
       continue;
     }
     int64_t low = deg_p;
     int64_t high = n + 1;
-    int64_t mid = (low + high)/2;
+    int64_t mid = (low + high) / 2;
 
     while (u_idx < U[mid] || u >= U[mid + 1]) {
-      if (u < U[mid]) { high = mid; }
-      else { low = mid; }
-      mid = (low + high)/2;
+      if (u < U[mid]) {
+        high = mid;
+      } else {
+        low = mid;
+      }
+      mid = (low + high) / 2;
     }
 
     s_a[idx] = mid;
+  }
+}
+
+void Bspline::validate_knots(torch::Tensor& new_knots)
+{
+  // check shape
+  TORCH_CHECK(
+    knots.dim() == 1, "Knot vector must be 1D. Got rank: ", knots.dim());
+
+  // check if new_knots is sorted
+  bool is_sorted =
+    torch::all(new_knots.slice(0, 0, -1) <= new_knots.slice(0, 1)).item<bool>();
+
+  if (!is_sorted) {
+    // Sort
+    new_knots = std::get<0>(new_knots.sort(0));
   }
 }
 
