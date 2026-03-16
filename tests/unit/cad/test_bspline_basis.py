@@ -113,23 +113,3 @@ def test_evaluate_all(device, dtype):
 
     # Compare first derivative
     torch.testing.assert_close(values[:, 1, :], values_expected)
-
-
-@pytest.mark.parametrize("device, dtype", test_params)
-def test_product(device, dtype):
-    knotvector = torch.tensor(
-        [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-        device=device,
-        dtype=dtype,
-    )
-    degree = 2
-
-    u = torch.linspace(0, 1, 5)
-    u = torch.concatenate([u, u, u, u, u], 0)
-    u = torch.sort(u)[0]
-    print(u)
-    basis = BSplineBasis(knotvector, degree)
-    values = basis.evaluate_all(u)
-
-    print(values)
-    assert 0 == 1

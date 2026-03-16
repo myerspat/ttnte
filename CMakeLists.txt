@@ -14,10 +14,19 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-  set(CMAKE_CUDA_ARCHITECTURES all-major) # or 'native' if you're only on one
-                                          # machine
-endif()
+enable_language(CUDA)
+
+# Suppress Kineto warning
+set(KINETO_LIBRARY "")
+
+# Prevent RPATH confusion
+set(CMAKE_SKIP_RPATH FALSE)
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+
+unset(CMAKE_CUDA_ARCHITECTURES CACHE)
+set(CMAKE_CUDA_ARCHITECTURES
+    ""
+    CACHE STRING "" FORCE)
 
 # ==============================================================================
 # Requirements
