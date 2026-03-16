@@ -1,0 +1,44 @@
+[build-system]
+requires = ["scikit-build-core", "torch>=2.0.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "ttnte"
+version = "0.0.0"
+dependencies = [
+    "torch", "torchtt", "numpy<2.0", "igakit", "geomdl", "pandas",
+    "matplotlib", "plotly", "h5py", "tqdm", "pybind11", "cotengra",
+    "optuna", "cmaes", "cotengrust", "cytools", "kahypar", "loky",
+    "networkx", "opt_einsum"
+]
+
+[project.optional-dependencies]
+archive = [
+    "quimb", "cupy", "scikit_tt",
+]
+dev = [
+    "pytest",
+    "pytest-mpi",
+    "pytest-cov",
+    "pre-commit",
+    "flake8",
+    "black",
+    "docformatter",
+    "sphinx",
+    "sphinx_rtd_theme",
+    "jupyter",
+    "sphinxcontrib.bibtex",
+    "chardet",
+    "nbsphinx",
+    "papermill",
+]
+
+[tool.scikit-build]
+# This forces the build directory to be inside your repo
+build-dir = "build"
+
+[tool.scikit-build.cmake]
+define = { CMAKE_EXPORT_COMPILE_COMMANDS = "ON", TTNTE_OPTIMIZED = "OFF", USE_CUDA = "ON" }
+
+[tool.scikit-build.wheel]
+packages = ["ttnte"]
