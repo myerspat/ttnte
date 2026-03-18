@@ -1,12 +1,12 @@
 #include "ttnte/cad/patch.hpp"
 #include "../utils/label.hpp"
+#include "ttnte/xs/material.hpp"
 #include <c10/util/SmallVector.h>
 #include <pybind11/pytypes.h>
-#include <torch/extension.h>
 
 namespace py = pybind11;
 
-void register_Patch(py::module& m)
+void register_Patch(py::module_& m)
 {
   using Basis = std::vector<ttnte::cad::BSplineBasis>;
   using Patch = ttnte::cad::Patch;
@@ -57,6 +57,19 @@ void register_Patch(py::module& m)
     .def("get_boundary", &Patch::get_boundary, py::arg("dim"),
       py::arg("is_upper"), py::arg("clone") = true)
 
+    .def("set_ctrlptsw", &Patch::set_ctrlptsw, py::arg("ctrlptsw"),
+      py::arg("clone") = true)
+    .def(
+      "set_basis",
+      [](Patch& self, const Basis& basis, bool clone = true) {
+        self.set_basis(Patch::Basis(basis.begin(), basis.end()), clone);
+      },
+      py::arg("basis"), py::arg("clone") = true)
+    .def("set_ctrlpts", &Patch::set_ctrlpts, py::arg("ctrlpts"),
+      py::arg("clone") = true)
+    .def("set_weights", &Patch::set_weights, py::arg("weights"),
+      py::arg("clone") = true)
+
     // =================================================================
     // Public overloads
     .def("__call__",
@@ -80,7 +93,10 @@ void register_Patch(py::module& m)
     // Properties (Getters/Setters)
     .def_property("label", &Patch::get_label,
       py::overload_cast<const std::string&>(&Patch::set_label))
-    .def_property("ctrlptsw", &Patch::get_ctrlptsw, &Patch::set_ctrlptsw)
+    .def_property("ctrlptsw", &Patch::get_ctrlptsw,
+      [](Patch& self, const torch::Tensor& ctrlptsw) {
+        self.set_ctrlptsw(ctrlptsw, true);
+      })
     .def_property(
       "basis",
       [](const Patch& self) {
@@ -88,12 +104,21 @@ void register_Patch(py::module& m)
         return Basis(basis.begin(), basis.end());
       },
       [](Patch& self, const Basis& basis) {
-        self.set_basis(Patch::Basis(basis.begin(), basis.end()));
+        self.set_basis(Patch::Basis(basis.begin(), basis.end()), true);
       })
 
     // Tensor and Geometry helpers
-    .def_property("ctrlpts", &Patch::get_ctrlpts, &Patch::set_ctrlpts)
-    .def_property("weights", &Patch::get_weights, &Patch::set_weights)
+    .def_property("ctrlpts", &Patch::get_ctrlpts,
+      [](Patch& self, const torch::Tensor& ctrlpts) {
+        self.set_ctrlpts(ctrlpts, true);
+      })
+    .def_property("weights", &Patch::get_weights,
+      [](Patch& self, const torch::Tensor& weights) {
+        self.set_weights(weights, true);
+      })
+    .def_property("fill_id", &Patch::get_fill_id, &Patch::set_fill_id)
+    .def_property("fill", &Patch::get_fill<ttnte::xs::Material>,
+      &Patch::set_fill<ttnte::xs::Material>)
     .def_property_readonly("orders", &Patch::get_orders)
     .def_property_readonly("degrees", &Patch::get_degrees)
     .def_property_readonly("ctrlpts_sizes", &Patch::get_ctrlpts_sizes)

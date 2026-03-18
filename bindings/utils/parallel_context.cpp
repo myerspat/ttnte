@@ -1,7 +1,6 @@
 #include "ttnte/utils/parallel_context.hpp"
 #include <pybind11/cast.h>
 #include <pybind11/pybind11.h>
-#include <torch/extension.h>
 
 namespace py = pybind11;
 
@@ -14,6 +13,7 @@ void register_ParallelContext(py::module_& m)
       py::return_value_policy::reference)
     .def("init", &ParallelContext::init)
     .def("finalize", &ParallelContext::finalize)
+    .def("barrier", &ParallelContext::barrier)
     .def_property_readonly("rank", &ParallelContext::rank)
     .def_property_readonly("world_size", &ParallelContext::world_size)
     .def_property_readonly("local_rank", &ParallelContext::local_rank)

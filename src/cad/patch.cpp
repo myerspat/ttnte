@@ -16,12 +16,12 @@ Patch::Patch(std::optional<std::string> label)
 
 Patch::Patch(const torch::Tensor& ctrlpts, const Basis& basis, bool is_rational,
   std::optional<std::string> label)
-  : is_rational_(is_rational),
-    label_(
+  : label_(
       label.has_value() ? Label::from_string(*label) : Label::create_internal())
 {
   set_basis(basis, true);
   set_ctrlptsw(ctrlpts, true);
+  is_rational_ = is_rational;
 
   // Check this is a valid patch
   validate();
@@ -240,6 +240,26 @@ torch::Tensor Patch::evaluate(
                       : phys_coords;
 }
 
+void Patch::pack(std::vector<int64_t>& meta_buffer,
+  std::vector<torch::Tensor>& payload_buffer) const
+{
+  // Fill the meta data buffer first
+  meta_buffer.push_back(label_.to_int());                 // Patch label
+  meta_buffer.push_back(static_cast<int64_t>(is_valid_)); // Is valid Boolean
+  meta_buffer.push_back(
+    static_cast<int64_t>(is_rational_)); // Is rational Boolean
+  meta_buffer.push_back(basis_.size());  // Number of parametric dimensions
+
+  // Iterate through the basis
+  for (const auto& b : basis_) {
+    b.pack(meta_buffer, payload_buffer);
+  }
+
+  // Add the control point information
+  meta_buffer.push_back(ctrlptsw_.numel()); // Number of control points
+  payload_buffer.push_back(ctrlptsw_.flatten().contiguous());
+}
+
 // =================================================================
 // Public Getters / Setters
 torch::Tensor Patch::get_ctrlpts() const
@@ -371,6 +391,7 @@ torch::ScalarType Patch::get_dtype()
 void Patch::set_ctrlptsw(const torch::Tensor& ctrlptsw, bool clone)
 {
   ctrlptsw_ = clone ? ctrlptsw.clone().contiguous() : ctrlptsw.contiguous();
+  is_rational_ = true;
   invalidate();
 }
 

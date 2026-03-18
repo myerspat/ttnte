@@ -1,7 +1,4 @@
-// bindings/cad/bindings.cpp
-
 #include <pybind11/pybind11.h>
-#include <torch/extension.h>
 
 namespace py = pybind11;
 
@@ -9,7 +6,8 @@ namespace py = pybind11;
 void register_BSplineBasis(py::module_& m);
 void register_Patch(py::module_& m);
 
-PYBIND11_MODULE(cad, m)
+// Initialize CAD module
+void init_cad(py::module_& m)
 {
   m.doc() = "CAD module for B-Spline objects";
 

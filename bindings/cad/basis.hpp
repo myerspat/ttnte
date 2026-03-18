@@ -2,7 +2,6 @@
 
 #include "../utils/label.hpp"
 #include "ttnte/cad/basis.hpp"
-#include <torch/extension.h>
 
 namespace py = pybind11;
 

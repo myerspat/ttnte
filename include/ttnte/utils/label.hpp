@@ -10,8 +10,12 @@ namespace ttnte::utils {
 
 template<typename T>
 class Label {
+public:
+  using ID = uint64_t;
+  using Name = std::string;
+
 private:
-  uint64_t id_;
+  ID id_;
 
   // --- Bit Layout (64-bit) ---
   // [63]    User Flag (1=String, 0=Auto)
@@ -121,7 +125,7 @@ public:
   // =================================================
   bool is_valid() const { return id_ != 0; }
   bool is_user_defined() const { return (id_ & USER_BIT) != 0; }
-  uint64_t raw() const { return id_; }
+  uint64_t to_int() const { return id_; }
 
   std::string to_string() const
   {
@@ -162,7 +166,7 @@ struct hash<ttnte::utils::Label<T>> {
   size_t operator()(const ttnte::utils::Label<T>& l) const
   {
     // Use the built-in hash for the underlying unique integer
-    return std::hash<uint64_t> {}(l.raw());
+    return std::hash<uint64_t> {}(l.to_int());
   }
 };
 } // namespace std

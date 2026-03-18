@@ -28,6 +28,9 @@ set(CMAKE_CUDA_ARCHITECTURES
     ""
     CACHE STRING "" FORCE)
 
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+
 # ==============================================================================
 # Requirements
 # ==============================================================================
@@ -140,9 +143,59 @@ message(STATUS "  ABI Version: ${_GLIBCXX_USE_CXX11_ABI}")
 message(STATUS "------------------------------------------------")
 
 # ==============================================================================
-# 1. SUBDIRECTORIES
+# SUBDIRECTORIES
 # ==============================================================================
 add_subdirectory(bindings/utils)
+add_subdirectory(bindings/xs)
 add_subdirectory(bindings/cad)
 
-install(TARGETS utils_python cad_python DESTINATION ttnte/cpp)
+# ==============================================================================
+# C++ side
+# ==============================================================================
+# Create single static binary and link to dependencies
+add_library(ttnte_static OBJECT ${XS_SRC} ${CAD_SRC})
+set_target_properties(ttnte_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+target_include_directories(
+  ttnte_static
+  PUBLIC ${TORCH_INCLUDE_DIRS} ${PROJECT_SOURCE_DIR}/include
+         ${PROJECT_SOURCE_DIR}/src ${Python3_INCLUDE_DIRS}
+         ${MPI_CXX_INCLUDE_DIRS})
+
+# ==============================================================================
+# Python side
+# ==============================================================================
+# Create python bindings library
+add_library(
+  ttnte_python MODULE ${PROJECT_SOURCE_DIR}/bindings/bindings.cpp
+                      ${UTILS_BINDINGS} ${XS_BINDINGS} ${CAD_BINDINGS})
+
+# Link python bindings to the static
+target_link_libraries(
+  ttnte_python PRIVATE $<TARGET_OBJECTS:ttnte_static> ${TORCH_LIBRARIES}
+                       ${TORCH_PYTHON_LIBRARY} MPI::MPI_CXX)
+
+target_include_directories(
+  ttnte_python
+  PRIVATE ${TORCH_INCLUDE_DIRS}
+          ${PROJECT_SOURCE_DIR}/include
+          ${PROJECT_SOURCE_DIR}/src
+          ${Python3_INCLUDE_DIRS}
+          ${UTILS_BINDINGS_DIR}
+          ${XS_BINDINGS_DIR}
+          ${CAD_BINDINGS_DIR})
+
+set_target_properties(
+  ttnte_python
+  PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/ttnte/cpp"
+             OUTPUT_NAME "ttnte_python"
+             PREFIX "")
+
+set_target_properties(
+  ttnte_python PROPERTIES INSTALL_RPATH "${TORCH_INSTALL_PREFIX}/lib"
+                          BUILD_WITH_INSTALL_RPATH TRUE)
+
+# ==============================================================================
+# Install
+# ==============================================================================
+install(TARGETS ttnte_python DESTINATION ttnte/cpp)

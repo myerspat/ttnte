@@ -1,6 +1,6 @@
 #include "ttnte/cad/bspline_basis.hpp"
 #include "basis.hpp"
-#include <torch/extension.h>
+#include <pybind11/pybind11.h>
 
 namespace py = pybind11;
 

@@ -1,35 +1,22 @@
+# # Relevant files from src set(UTILS_SRC_REL label.cpp)
+
 # Relevant files from bindings/utils
-set(UTILS_BINDINGS bindings.cpp parallel_context.cpp)
+set(UTILS_BINDINGS_REL bindings.cpp parallel_context.cpp)
 
-# # Relevant files from src set(UTILS_SRC
-# ${PROJECT_SOURCE_DIR}/src/utils/bspline_basis.cpp)
-#
-# # Internal C++ Logic (Logic) add_library(utils_static STATIC ${UTILS_SRC})
-#
-# # We need PIC even for the static lib because it gets swallowed by a shared #
-# module (.so) set_target_properties(utils_static PROPERTIES
-# POSITION_INDEPENDENT_CODE ON)
-#
-# target_include_directories( utils_static PUBLIC ${TORCH_INCLUDE_DIRS}
-# ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
-# ${Python3_INCLUDE_DIRS})
-#
-# target_link_libraries(utils_static PUBLIC ${TORCH_LIBRARIES} MPI::MPI_CXX)
+# Define the directory paths (Use local variables here, then push if needed)
+# set(UTILS_SRC_DIR      "${PROJECT_SOURCE_DIR}/src/utils")
+set(UTILS_BINDINGS_DIR "${PROJECT_SOURCE_DIR}/bindings/utils")
 
-# Python Binding (Interface)
-add_library(utils_python MODULE ${UTILS_BINDINGS})
+# Transform the lists (Prepend the path to the relative files) list(TRANSFORM
+# UTILS_SRC_REL      PREPEND "${UTILS_SRC_DIR}/")
+list(TRANSFORM UTILS_BINDINGS_REL PREPEND "${UTILS_BINDINGS_DIR}/")
 
-target_link_libraries(utils_python PRIVATE Python3::Module ${TORCH_LIBRARIES}
-                                           ${TORCH_PYTHON_LIBRARY} MPI::MPI_CXX)
-
-target_include_directories(
-  utils_python
-  PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/bindings/utils
-          ${Python3_INCLUDE_DIRS} ${TORCH_INCLUDE_DIRS})
-
-# Set the final .so properties
-set_target_properties(
-  utils_python
-  PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/ttnte/cpp"
-             OUTPUT_NAME "utils"
-             PREFIX "")
+# Push the finalized lists and paths to the Parent Scope set(UTILS_SRC
+# ${UTILS_SRC_REL}      PARENT_SCOPE)
+set(UTILS_BINDINGS
+    ${UTILS_BINDINGS_REL}
+    PARENT_SCOPE)
+# set(UTILS_SRC_DIR      ${UTILS_SRC_DIR}      PARENT_SCOPE)
+set(UTILS_BINDINGS_DIR
+    ${UTILS_BINDINGS_DIR}
+    PARENT_SCOPE)

@@ -5,5 +5,8 @@ import pytest
 def test_parallel_context():
     from ttnte import mpi_context
 
+    # Initialize MPI
+    mpi_context.init()
+
     # Check context world size
     assert mpi_context.world_size >= 2

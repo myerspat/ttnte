@@ -23,7 +23,7 @@ void register_Label(py::module& m, const std::string& typestr)
     // Inspectors
     .def("is_valid", &Class::is_valid)
     .def("is_user_defined", &Class::is_user_defined)
-    .def("raw", &Class::raw)
+    .def("to_int", &Class::to_int)
     .def("to_string", &Class::to_string)
     // Operators
     .def("__eq__", &Class::operator==, py::is_operator())

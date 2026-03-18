@@ -1,10 +1,10 @@
 #pragma once
 
 #include "ttnte/cad/basis.hpp"
-#include <ATen/ops/searchsorted.h>
+#include "ttnte/utils/mpi_helpers.hpp"
 #include <cstdint>
 #include <ostream>
-#include <torch/torch.h>
+#include <torch/extension.h>
 
 namespace ttnte::cad {
 
@@ -70,6 +70,46 @@ public:
 
   torch::Tensor evaluate_all(const torch::Tensor& u, const torch::Tensor& spans,
     const int64_t& derivative_order = 0) const;
+
+  // MPI communication
+  template<typename T>
+  void inline pack(
+    std::vector<int64_t>& meta_buffer, std::vector<T>& payload_buffer) const
+  {
+    // Fill the meta data buffer first
+    meta_buffer.push_back(label_.to_int());     // BSplineBasis label
+    meta_buffer.push_back(knotvector_.size(0)); // Size of the knot vector
+    meta_buffer.push_back(degree_);             // Polynomial degree
+
+    // Add knot vector to the payload
+    auto knotvector_c = knotvector_.contiguous();
+    payload_buffer.insert(payload_buffer.end(), knotvector_c.data_ptr<T>(),
+      knotvector_c.data_ptr<T>() + knotvector_c.numel());
+  }
+
+  void pack(std::vector<int64_t>& meta_buffer,
+    std::vector<torch::Tensor>& payload_buffer) const;
+
+  template<typename T>
+  static inline BSplineBasis unpack(const int64_t* meta_buffer,
+    const T* payload_buffer, int& meta_idx, int& payload_idx)
+  {
+    // BSplineBasis metadata
+    Label label = Label(static_cast<uint64_t>(meta_buffer[meta_idx++]));
+    int64_t kv_size = meta_buffer[meta_idx++];
+    int64_t degree = meta_buffer[meta_idx++];
+
+    // Get knot vector
+    torch::Tensor knotvector = utils::unpack_tensor(
+      &payload_buffer[payload_idx], torch::IntArrayRef {kv_size},
+      torch::TensorOptions()
+        .device(torch::kCPU)
+        .dtype(torch::CppTypeToScalarType<T>::value));
+    payload_idx += kv_size;
+
+    return BSplineBasis(
+      std::move(knotvector), std::move(degree), std::move(label));
+  }
 
   // =================================================================
   // Public getters

@@ -1,7 +1,6 @@
 #include "ttnte/cad/bspline_basis.hpp"
 #include "ttnte/cad/bspline_kernels.hpp"
 #include "ttnte/utils/exception.hpp"
-#include <ATen/Dispatch.h>
 
 namespace ttnte::cad {
 
@@ -9,14 +8,16 @@ namespace ttnte::cad {
 // Public constructors
 BSplineBasis::BSplineBasis(const torch::Tensor& knotvector, int64_t degree,
   std::optional<std::string> label)
-  : Basis<BSplineBasis>(label), knotvector_(knotvector), degree_(degree)
+  : Basis<BSplineBasis>(label), knotvector_(knotvector.contiguous()),
+    degree_(degree)
 {
   assert(is_valid());
   normalize_knotvector();
 }
 BSplineBasis::BSplineBasis(
   const torch::Tensor& knotvector, int64_t degree, const Label& label)
-  : Basis<BSplineBasis>(label), knotvector_(knotvector), degree_(degree)
+  : Basis<BSplineBasis>(label), knotvector_(knotvector.contiguous()),
+    degree_(degree)
 {
   assert(is_valid());
   normalize_knotvector();
@@ -150,6 +151,18 @@ torch::Tensor BSplineBasis::evaluate_all(const torch::Tensor& u,
 
     return result;
   }
+}
+
+void BSplineBasis::pack(std::vector<int64_t>& meta_buffer,
+  std::vector<torch::Tensor>& payload_buffer) const
+{
+  // Fill the meta data buffer first
+  meta_buffer.push_back(label_.to_int());     // BSplineBasis label
+  meta_buffer.push_back(knotvector_.size(0)); // Size of the knot vector
+  meta_buffer.push_back(degree_);             // Polynomial degree
+
+  // Add knot vector to the payload
+  payload_buffer.push_back(knotvector_.contiguous());
 }
 
 std::ostream& operator<<(std::ostream& os, const BSplineBasis& p)

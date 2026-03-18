@@ -26,9 +26,6 @@ import atexit
 
 from ttnte.utils import mpi_context
 
-# Initialize MPI
-mpi_context.init()
-
 # Register finalize method to run on Python exit
 atexit.register(mpi_context.finalize)
 
