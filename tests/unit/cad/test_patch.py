@@ -4,7 +4,8 @@ import numpy as np
 from igakit.cad import refine
 
 from ttnte.cad.surfaces import circle
-from ttnte.cad import Patch, BSplineBasis
+from ttnte.cad import Patch
+from ttnte.physics import BoundaryType
 
 test_params = [
     ("cpu", torch.float32),
@@ -22,16 +23,6 @@ def test_patch(device, dtype):
 
     # Create test circle
     c_exact = refine(circle(2), factor=[3, 1], degree=[2, 3])
-    c_exact = c_exact.insert(0, c_exact.knots[0][4], 1)
-
-    # Create basis
-    basis = [
-        BSplineBasis(
-            torch.tensor(c_exact.knots[i], device=device, dtype=dtype),
-            c_exact.degree[i],
-        )
-        for i in range(c_exact.dim)
-    ]
 
     # Control points and weights
     ctrlpts = torch.tensor(
@@ -44,10 +35,10 @@ def test_patch(device, dtype):
     dtype = ctrlpts.dtype
 
     # Create NURBS
-    c = Patch(ctrlpts, weights, basis, "patch")
+    c = Patch.from_igakit(c_exact, device=device, dtype=dtype)
 
     # Checks
-    assert c.is_valid() == True
+    assert c.is_finalized() == True
     assert c.is_rational() == True
     assert c.device == device
     assert c.dtype == dtype
@@ -62,6 +53,12 @@ def test_patch(device, dtype):
         torch.testing.assert_close(
             b.knotvector, torch.tensor(c_exact.knots[i], device=device, dtype=dtype)
         )
+
+    for i, dim, is_upper in zip([0, 1, 2, 3], [0, 0, 1, 1], [False, True, False, True]):
+        binfo = c.get_boundary_info(dim, is_upper)
+        assert binfo.fid == i
+        assert binfo.type == BoundaryType.UNKNOWN
+        assert binfo.connections == []
 
     # Test evaluate
     u = np.linspace(0, 1, 5)

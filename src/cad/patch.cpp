@@ -2,106 +2,106 @@
 #include "ttnte/cad/bspline_basis.hpp"
 #include "ttnte/utils/exception.hpp"
 #include "ttnte/utils/io_formatting.hpp"
+#include <sstream>
 
 namespace ttnte::cad {
 
 // =================================================================
-// Public constructors
-Patch::Patch(std::optional<std::string> label)
-  : label_(
-      label.has_value() ? Label::from_string(*label) : Label::create_internal())
-{
-  invalidate();
-}
+// Private constructors
+Patch::Patch(std::optional<std::string> label) : Base(label) {}
 
 Patch::Patch(const torch::Tensor& ctrlpts, const Basis& basis, bool is_rational,
   std::optional<std::string> label)
-  : label_(
-      label.has_value() ? Label::from_string(*label) : Label::create_internal())
+  : Base(label)
 {
-  set_basis(basis, true);
-  set_ctrlptsw(ctrlpts, true);
+  set_basis(basis);
+  set_ctrlptsw(ctrlpts);
   is_rational_ = is_rational;
-
-  // Check this is a valid patch
-  validate();
 }
 
 Patch::Patch(const torch::Tensor& ctrlpts, const torch::Tensor& weights,
   const Basis& basis, std::optional<std::string> label)
-  : label_(
-      label.has_value() ? Label::from_string(*label) : Label::create_internal())
+  : Base(label)
 {
-  set_basis(basis, true);
-  set_ctrlpts(ctrlpts, true);
-  set_weights(weights, true);
-
-  // Check this is a valid patch
-  validate();
+  set_basis(basis);
+  set_ctrlpts(ctrlpts);
+  set_weights(weights);
 }
 
 // =================================================================
 // Public methods
-void Patch::validate()
+void Patch::finalize_impl()
 {
-  if (!is_valid_) {
-    if (basis_.empty() || !ctrlptsw_.defined()) {
-      throw utils::runtime_error(*this, error_context("validate"),
-        "Both the basis and control points must be set before validation");
-    }
-
-    // Check the dimensionality
-    if (basis_.size() != ctrlptsw_.ndimension() - 1) {
-      std::stringstream ss;
-      ss << basis_.size() << "-dimensional basis expects a "
-         << basis_.size() + 1 << "-dimensional control point tensor\n"
-         << "A " << ctrlptsw_.ndimension()
-         << "-dimensional control point tensor was given";
-
-      throw utils::runtime_error(*this, error_context("validate"), ss.str());
-    }
-
-    // Check the control point tensor shape matches the basis
-    for (size_t i = 0; i < basis_.size(); i++) {
-      if (basis_[i].get_size() != ctrlptsw_.size(i)) {
-        throw utils::runtime_error(*this, error_context("validate"),
-          "There must be an equal number of basis functions and control points"
-          "along each dimension");
-      }
-    }
-
-    // Check device and data type
-    auto device = ctrlptsw_.device();
-    auto dtype = ctrlptsw_.dtype();
-    for (const auto& b : basis_) {
-      if (b.get_device() != device || b.get_dtype() != dtype) {
-        throw utils::runtime_error(*this, error_context("validate"),
-          "The basis and control points should be on the same device with the "
-          "same data type");
-      }
-    }
-
-    is_valid_ = true;
+  if (basis_.empty() || !ctrlptsw_.defined()) {
+    throw utils::runtime_error(*this, error_context("validate"),
+      "Both the basis and control points must be set before validation");
   }
-}
 
-Patch Patch::clone() const
-{
-  c10::SmallVector<BSplineBasis> basis;
-  basis.reserve(basis_.size());
+  // Check the dimensionality
+  if (basis_.size() != ctrlptsw_.ndimension() - 1) {
+    std::stringstream ss;
+    ss << basis_.size() << "-dimensional basis expects a " << basis_.size() + 1
+       << "-dimensional control point tensor\n"
+       << "A " << ctrlptsw_.ndimension()
+       << "-dimensional control point tensor was given";
+
+    throw utils::runtime_error(*this, error_context("validate"), ss.str());
+  }
+
+  // Check the control point tensor shape matches the basis
+  for (size_t i = 0; i < basis_.size(); i++) {
+    if (basis_[i].get_size() != ctrlptsw_.size(i)) {
+      throw utils::runtime_error(*this, error_context("validate"),
+        "There must be an equal number of basis functions and control points"
+        "along each dimension");
+    }
+  }
+
+  // Check device and data type
+  auto device = ctrlptsw_.device();
+  auto dtype = ctrlptsw_.dtype();
+  for (const auto& b : basis_) {
+    if (b.get_device() != device || b.get_dtype() != dtype) {
+      throw utils::runtime_error(*this, error_context("validate"),
+        "The basis and control points should be on the same device with the "
+        "same data type");
+    }
+  }
+
+  // Combine all data into one tensors
+  c10::SmallVector<torch::Tensor, 4> tensors;
+  tensors.reserve(basis_.size());
 
   for (const auto& b : basis_) {
-    basis.push_back(b.clone());
+    tensors.push_back(b.get_knotvector());
+  }
+  tensors.push_back(ctrlptsw_.flatten());
+
+  // Make one large tensor for MPI
+  meshdata_ = torch::cat(tensors);
+
+  // Create views for the knot vector and control points
+  int64_t idx = 0;
+  for (auto& b : basis_) {
+    // Length of the knot vector
+    int64_t kv_size = b.get_knotvector().size(0);
+
+    // Finalize basis and increment index
+    b.finalize(meshdata_.narrow(0, idx, kv_size));
+    idx += kv_size;
   }
 
-  return Patch(ctrlptsw_.clone(), std::move(basis), is_rational_, is_valid_,
-    label_.clone());
+  // Set the control point view
+  int64_t cpw_size = ctrlptsw_.numel();
+  auto cpw_shape = ctrlptsw_.sizes();
+  ctrlptsw_ = meshdata_.narrow(0, idx, cpw_size).view(cpw_shape);
+
+  is_finalized_ = true;
 }
 
 torch::Tensor Patch::evaluate(const torch::Tensor& local_coords)
 {
-  // Check the patch is valid
-  validate();
+  is_finalized_or_error("evaluate");
 
   // Check input
   if (local_coords.ndimension() != 2) {
@@ -178,8 +178,7 @@ torch::Tensor Patch::evaluate(const torch::Tensor& local_coords)
 torch::Tensor Patch::evaluate(
   const c10::SmallVector<torch::Tensor, 3>& local_coords)
 {
-  // Check the patch is valid
-  validate();
+  is_finalized_or_error("evaluate");
 
   // Expected tensor options
   const auto& options = local_coords[0].options();
@@ -240,30 +239,66 @@ torch::Tensor Patch::evaluate(
                       : phys_coords;
 }
 
-void Patch::pack(std::vector<int64_t>& meta_buffer,
-  std::vector<torch::Tensor>& payload_buffer) const
-{
-  // Fill the meta data buffer first
-  meta_buffer.push_back(label_.to_int());                 // Patch label
-  meta_buffer.push_back(static_cast<int64_t>(is_valid_)); // Is valid Boolean
-  meta_buffer.push_back(
-    static_cast<int64_t>(is_rational_)); // Is rational Boolean
-  meta_buffer.push_back(basis_.size());  // Number of parametric dimensions
+// void Patch::pack(std::vector<int64_t>& meta_buffer,
+//   std::vector<torch::Tensor>& payload_buffer) const
+// {
+//   // Fill the meta data buffer first
+//   meta_buffer.push_back(label_.to_int());                 // Patch label
+//   meta_buffer.push_back(static_cast<int64_t>(is_valid_)); // Is valid Boolean
+//   meta_buffer.push_back(
+//     static_cast<int64_t>(is_rational_)); // Is rational Boolean
+//   meta_buffer.push_back(basis_.size());  // Number of parametric dimensions
+//
+//   // Iterate through the basis
+//   for (const auto& b : basis_) {
+//     b.pack(meta_buffer, payload_buffer);
+//   }
+//
+//   // Add the control point information
+//   meta_buffer.push_back(ctrlptsw_.numel()); // Number of control points
+//   payload_buffer.push_back(ctrlptsw_.flatten().contiguous());
+// }
 
-  // Iterate through the basis
-  for (const auto& b : basis_) {
-    b.pack(meta_buffer, payload_buffer);
+std::string Patch::to_string_impl() const
+{
+  std::stringstream ss;
+  ss << "Patch(ctrlpts_size=";
+
+  if (ctrlptsw_.defined()) {
+    std::string sep = "(";
+    for (const auto& n : ctrlptsw_.sizes()) {
+      ss << sep << n;
+      sep = ", ";
+    }
+    ss << "), is_rational=" << (is_rational_ ? "True" : "False")
+       << ", label=" << label_ << ")";
+
+  } else {
+    ss << "(), is_rational=False, label=" << label_ << ")";
   }
 
-  // Add the control point information
-  meta_buffer.push_back(ctrlptsw_.numel()); // Number of control points
-  payload_buffer.push_back(ctrlptsw_.flatten().contiguous());
+  return ss.str();
 }
 
 // =================================================================
 // Public Getters / Setters
+const torch::Tensor& Patch::get_ctrlptsw() const
+{
+  if (!ctrlptsw_.defined()) {
+    utils::runtime_error(
+      *this, error_context("get_ctrlpts"), "No control points were defined");
+  }
+
+  return ctrlptsw_;
+}
+
 torch::Tensor Patch::get_ctrlpts() const
 {
+  if (!ctrlptsw_.defined()) {
+    utils::runtime_error(
+      *this, error_context("get_ctrlpts"), "No control points were defined");
+  }
+
   if (!is_rational_) {
     return ctrlptsw_;
   }
@@ -276,6 +311,11 @@ torch::Tensor Patch::get_ctrlpts() const
 
 torch::Tensor Patch::get_weights() const
 {
+  if (!ctrlptsw_.defined()) {
+    utils::runtime_error(*this, error_context("get_ctrlpts"),
+      "No control points or weights were defined");
+  }
+
   // Return ones if B-Spline
   if (!is_rational_) {
     auto cshape = ctrlptsw_.sizes().vec();
@@ -376,26 +416,7 @@ std::vector<int64_t> Patch::get_ctrlpts_sizes() const
   return cshape;
 }
 
-torch::Device Patch::get_device()
-{
-  validate();
-  return ctrlptsw_.device();
-}
-
-torch::ScalarType Patch::get_dtype()
-{
-  validate();
-  return ctrlptsw_.scalar_type();
-}
-
-void Patch::set_ctrlptsw(const torch::Tensor& ctrlptsw, bool clone)
-{
-  ctrlptsw_ = clone ? ctrlptsw.clone().contiguous() : ctrlptsw.contiguous();
-  is_rational_ = true;
-  invalidate();
-}
-
-torch::Tensor Patch::get_bbox(double epsilon) const
+torch::Tensor Patch::get_bbox_impl(double epsilon) const
 {
   // Strong convex hull property
   const auto& ctrlpts = get_ctrlpts();
@@ -410,10 +431,9 @@ torch::Tensor Patch::get_bbox(double epsilon) const
   return torch::stack({min_point, max_point}, 0);
 }
 
-Patch Patch::get_boundary(size_t dim, bool is_upper, bool clone)
+Patch Patch::get_boundary_impl(size_t dim, bool is_upper)
 {
-  // Check we have a valid patch first
-  validate();
+  is_finalized_or_error("get_boundary");
 
   // Check the dim is valid
   if (dim >= ctrlptsw_.ndimension() - 1) {
@@ -422,63 +442,54 @@ Patch Patch::get_boundary(size_t dim, bool is_upper, bool clone)
         std::to_string(ctrlptsw_.ndimension() - 1));
   }
 
-  // Control points for the boundary
-  torch::Tensor boundary_ctrlpts =
+  // Create a new patch
+  Patch new_patch = *this;
+
+  // Control points for the boundary (this will produce a non-contiguous array
+  // so we will need to factor that into any methods)
+  new_patch.ctrlptsw_ =
     ctrlptsw_.select(dim, is_upper ? (ctrlptsw_.size(dim) - 1) : 0);
 
-  // Get the correct basis
-  Basis boundary_basis;
-  boundary_basis.reserve(basis_.size() - 1);
+  // Remove the basis
+  new_patch.basis_.erase(new_patch.basis_.begin() + dim);
 
-  for (size_t i = 0; i < basis_.size(); i++) {
-    if (i == dim)
-      continue;
-    boundary_basis.push_back(basis_[i]);
-  }
+  // We label this as a clone
+  new_patch.label_ = label_.clone();
 
-  // Clone if needed
-  if (clone) {
-    boundary_ctrlpts = boundary_ctrlpts.clone();
-
-    for (auto& b : boundary_basis) {
-      b = b.clone();
-    }
-
-    return Patch(boundary_ctrlpts, boundary_basis, is_rational_, is_valid_,
-      label_.clone());
-  }
-
-  return Patch(
-    boundary_ctrlpts, boundary_basis, is_rational_, is_valid_, label_);
+  return new_patch;
 }
 
-void Patch::set_basis(const Basis& basis, bool clone)
+int64_t Patch::get_numel_impl(size_t dim) const
 {
-  if (clone) {
-    Basis new_basis;
-    new_basis.reserve(basis.size());
-
-    for (const auto& b : basis) {
-      new_basis.push_back(b.clone());
-    }
-
-    basis_ = new_basis;
-
-  } else {
-    basis_ = basis;
+  // Check the dim is valid
+  if (dim >= basis_.size()) {
+    throw utils::runtime_error(*this, error_context("get_numel"),
+      "`dim` is outside the spline dimensionality of " +
+        std::to_string(basis_.size()));
   }
 
-  invalidate();
+  return basis_[dim].get_unique_knots().size(0) - 1;
 }
 
-void Patch::set_ctrlpts(torch::Tensor ctrlpts, bool clone)
+void Patch::set_ctrlptsw(const torch::Tensor& ctrlptsw)
 {
-  if (clone) {
-    ctrlpts = ctrlpts.clone();
-  }
+  is_not_finalized_or_error("set_ctrlptsw");
+  ctrlptsw_ = ctrlptsw.clone();
+  is_rational_ = true;
+}
+
+void Patch::set_basis(const Basis& basis)
+{
+  is_not_finalized_or_error("set_basis");
+  basis_ = basis;
+}
+
+void Patch::set_ctrlpts(torch::Tensor ctrlpts)
+{
+  is_not_finalized_or_error("set_ctrlpts");
 
   if (!ctrlptsw_.defined() || !is_rational_) {
-    ctrlptsw_ = clone ? ctrlpts : ctrlpts;
+    ctrlptsw_ = ctrlpts.clone();
 
   } else {
     auto cshape = ctrlptsw_.sizes().vec();
@@ -486,7 +497,7 @@ void Patch::set_ctrlpts(torch::Tensor ctrlpts, bool clone)
 
     if (cshape != ctrlpts.sizes().vec()) {
       // Control point shape is different, reset to B-Spline
-      ctrlptsw_ = ctrlpts;
+      ctrlptsw_ = ctrlpts.clone();
       is_rational_ = false;
 
     } else {
@@ -498,14 +509,11 @@ void Patch::set_ctrlpts(torch::Tensor ctrlpts, bool clone)
 
   // Ensure the array is contiguous
   ctrlptsw_ = ctrlptsw_.contiguous();
-  invalidate();
 }
 
-void Patch::set_weights(torch::Tensor weights, bool clone)
+void Patch::set_weights(torch::Tensor weights)
 {
-  if (clone) {
-    weights = weights.clone();
-  }
+  is_not_finalized_or_error("set_weights");
 
   // Check that the control points have been defined first
   if (!ctrlptsw_.defined()) {
@@ -515,7 +523,7 @@ void Patch::set_weights(torch::Tensor weights, bool clone)
 
   // Add dimension for broadcasting
   if (weights.ndimension() == ctrlptsw_.ndimension() - 1) {
-    weights.unsqueeze_(-1);
+    weights = weights.unsqueeze(-1);
   }
 
   // Check the shape of the weights tensor
@@ -534,8 +542,7 @@ void Patch::set_weights(torch::Tensor weights, bool clone)
 
   if (!is_rational_) {
     // Convert to NURBS
-    ctrlptsw_.mul_(weights);
-    ctrlptsw_ = torch::cat({ctrlptsw_, weights}, -1);
+    ctrlptsw_ = torch::cat({ctrlptsw_ * weights, weights}, -1);
     is_rational_ = true;
 
   } else {
@@ -547,14 +554,11 @@ void Patch::set_weights(torch::Tensor weights, bool clone)
 
   // Ensure the array is contiguous
   ctrlptsw_ = ctrlptsw_.contiguous();
-  invalidate();
 }
 
 std::ostream& operator<<(std::ostream& os, const Patch& p)
 {
   os << "Patch(\n  ctrlpts_size=";
-
-  auto boolean = [](const bool& b) { return b ? "True" : "False"; };
 
   if (p.get_ctrlptsw().defined()) {
     std::string sep = "(";
@@ -562,14 +566,16 @@ std::ostream& operator<<(std::ostream& os, const Patch& p)
       os << sep << n;
       sep = ", ";
     }
+
+    auto boolean = [](const bool& b) { return b ? "True" : "False"; };
     os << "),\n  is_rational=" << boolean(p.is_rational())
-       << ",\n  is_valid=" << boolean(p.is_valid())
+       << ",\n  is_finalized=" << boolean(p.is_finalized())
        << ",\n  device=" << p.get_ctrlptsw().device()
        << ",\n  dtype=" << p.get_ctrlptsw().scalar_type()
        << ",\n  label=" << p.get_label() << ",\n  basis=";
 
   } else {
-    os << "None,\n  is_rational=False,\n  is_valid=False,\n  device=None,\n  "
+    os << "None,\n  is_rational=False,\n  is_valid=False,\n  device=None,\n "
           "dtype=None,\n  basis=";
   }
 

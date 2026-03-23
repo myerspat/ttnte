@@ -49,16 +49,14 @@ def from_igakit(
         )
         for i in range(kitpatch.dim)
     ]
-    patch.set_basis(basis, False)
+    patch.set_basis(basis)
 
     # If not all weights are one then we make a NURBS else B-Spline
     if (kitpatch.control[..., -1] != 1.0).any():
-        patch.set_ctrlptsw(
-            torch.tensor(kitpatch.control, device=device, dtype=dtype), False
-        )
+        patch.set_ctrlptsw(torch.tensor(kitpatch.control, device=device, dtype=dtype))
     else:
         patch.set_ctrlpts(
-            torch.tensor(kitpatch.control[..., :-1], device=device, dtype=dtype), False
+            torch.tensor(kitpatch.control[..., :-1], device=device, dtype=dtype)
         )
 
     # Add fill
@@ -66,7 +64,7 @@ def from_igakit(
         patch.fill = fill
 
     # Validate the patch
-    patch.validate()
+    patch.finalize()
 
     return patch
 

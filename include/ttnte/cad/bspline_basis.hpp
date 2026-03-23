@@ -17,8 +17,13 @@ public:
 private:
   // =================================================================
   // Private data
+  /// 1-D tensor of increasing, possibly repeating values in the range of [0,
+  /// 1].
   torch::Tensor knotvector_;
+  /// The polynomial degree of the B-Splines.
   int64_t degree_;
+  /// Is this BSplineBasis immutable?
+  bool is_finalized_ = false;
 
 public:
   // =================================================================
@@ -30,7 +35,13 @@ public:
 
   // =================================================================
   // Public methods
-  bool is_valid() const;
+  /// @return Is this BSplineBasis immutable?
+  bool is_finalized() const noexcept { return is_finalized_; }
+  /// @brief Check this BSplineBasis is valid and mark it as immutable.
+  /// @param knotvector_view The view into the full data tensor for the
+  /// knot vector.
+  void finalize(const torch::Tensor& knotvector_view);
+  /// @brief Normalize the knot vector between [0, 1].
   void normalize_knotvector();
   BSplineBasis& to_(std::optional<torch::Device> device,
     std::optional<torch::ScalarType> dtype);
@@ -47,6 +58,11 @@ public:
   //     *this, error_context("find_span"), "Not implemented yet");
   // }
 
+  /// @brief Find the knot spans (indices into the knot vector where the knot
+  /// changes from one index to the next) for a tensor of parametric
+  /// coordinates.
+  /// @param u A 1-D tensor of parametric coordinates between [0, 1].
+  /// @return A 1-D tensor of the first index into the knot vector.
   torch::Tensor find_spans(const torch::Tensor& u) const;
 
   // // TODO: Function that takes in a single double between [0, 1]
@@ -59,15 +75,41 @@ public:
   //     *this, error_context("evaluate"), "Not implemented yet");
   // }
 
+  /// @brief Evaluate all the non-zero basis functions and their derivatives (if
+  /// ``derivative_order > 0``) at a set of parametric coordinates.
+  /// @param u A 1-D tensor of parametric coordinates between [0, 1].
+  /// @param derivative_order The number of derivatives to return.
+  /// @return A 2-D tensor of shape (n, m) where n is the number of values in
+  /// ``u`` and m is the number of non-zero basis functions.
   torch::Tensor evaluate(
     const torch::Tensor& u, const int64_t& derivative_order = 0) const;
 
+  /// @brief Evaluate all the non-zero basis functions and their derivatives (if
+  /// ``derivative_order > 0``) at a set of parametric coordinates.
+  /// @param u A 1-D tensor of parametric coordinates between [0, 1].
+  /// @param spans A 1-D tensor of span indices.
+  /// @param derivative_order The number of derivatives to return.
+  /// @return A 2-D tensor of shape (n, m) where n is the number of values in
+  /// ``u`` and m is the number of non-zero basis functions.
   torch::Tensor evaluate(const torch::Tensor& u, const torch::Tensor& spans,
     const int64_t& derivative_order = 0) const;
 
+  /// @brief Evaluate all basis functions (zero included) to build a (n, m)
+  /// tensor where n is the number of points in u and m is the number of basis
+  /// functions in the BSplineBasis.
+  /// @param u A 1-D tensor of parametric coordinates between [0, 1].
+  /// @param derivative_order The number of derivatives to return.
+  /// @return The result evaluations.
   torch::Tensor evaluate_all(
     const torch::Tensor& u, const int64_t& derivative_order = 0) const;
 
+  /// @brief Evaluate all basis functions (zero included) to build a (n, m)
+  /// tensor where n is the number of points in u and m is the number of basis
+  /// functions in the BSplineBasis.
+  /// @param u A 1-D tensor of parametric coordinates between [0, 1].
+  /// @param spans A 1-D tensor of span indices.
+  /// @param derivative_order The number of derivatives to return.
+  /// @return The result evaluations.
   torch::Tensor evaluate_all(const torch::Tensor& u, const torch::Tensor& spans,
     const int64_t& derivative_order = 0) const;
 
@@ -113,34 +155,44 @@ public:
 
   // =================================================================
   // Public getters
+  /// @return The polynomial degree of the basis.
   const inline int64_t& get_degree() const noexcept { return degree_; }
+  /// @return The knot vector of the basis.
   const inline torch::Tensor& get_knotvector() const noexcept
   {
     return knotvector_;
   }
+  /// @return The order of the basis.
   inline int64_t get_order() const noexcept { return degree_ + 1; }
+  /// @return A tuple of unique knots in the knot vector and the multiplicity of
+  /// each.
   inline std::tuple<torch::Tensor, torch::Tensor>
   get_unique_knots_and_multiplicity() const noexcept
   {
     auto result = torch::unique_consecutive(knotvector_, false, true);
     return std::make_tuple(std::get<0>(result), std::get<2>(result));
   }
+  /// @return The unique knots in the knot vector.
   inline torch::Tensor get_unique_knots() const noexcept
   {
     return std::get<0>(get_unique_knots_and_multiplicity());
   }
+  /// @return The multiplicity of the unique knots in the knot vector.
   inline torch::Tensor get_multiplicity() const noexcept
   {
     return std::get<1>(get_unique_knots_and_multiplicity());
   }
+  /// @return The number of basis functions in this basis.
   inline int64_t get_size() const noexcept
   {
     return knotvector_.size(0) - degree_ - 1;
   }
+  /// @return The device used by this object.
   inline torch::Device get_device() const noexcept
   {
     return knotvector_.device();
   }
+  /// @return The data type of the knot vector.
   inline torch::ScalarType get_dtype() const noexcept
   {
     return knotvector_.scalar_type();

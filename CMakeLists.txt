@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.26)
 project(
   ttnte
   VERSION 0.0.0
-  LANGUAGES CXX CUDA)
+  LANGUAGES C CXX CUDA)
 
 # Standard C++20/CUDA20
 set(CMAKE_CXX_STANDARD 20)
@@ -111,6 +111,11 @@ execute_process(
 add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=${_GLIBCXX_USE_CXX11_ABI})
 
 # ==============================================================================
+# Other external libraries in external
+# ==============================================================================
+add_subdirectory(external)
+
+# ==============================================================================
 # FLAGS AND OPTIONS
 # ==============================================================================
 option(TTNTE_OPTIMIZED "Compile with optimization" OFF)
@@ -147,7 +152,9 @@ message(STATUS "------------------------------------------------")
 # ==============================================================================
 add_subdirectory(bindings/utils)
 add_subdirectory(bindings/xs)
+add_subdirectory(bindings/mesh)
 add_subdirectory(bindings/cad)
+add_subdirectory(bindings/physics)
 
 # ==============================================================================
 # C++ side
@@ -160,20 +167,21 @@ target_include_directories(
   ttnte_static
   PUBLIC ${TORCH_INCLUDE_DIRS} ${PROJECT_SOURCE_DIR}/include
          ${PROJECT_SOURCE_DIR}/src ${Python3_INCLUDE_DIRS}
-         ${MPI_CXX_INCLUDE_DIRS})
+         ${MPI_CXX_INCLUDE_DIRS} partitioning_suite)
 
 # ==============================================================================
 # Python side
 # ==============================================================================
 # Create python bindings library
 add_library(
-  ttnte_python MODULE ${PROJECT_SOURCE_DIR}/bindings/bindings.cpp
-                      ${UTILS_BINDINGS} ${XS_BINDINGS} ${CAD_BINDINGS})
+  ttnte_python MODULE
+  ${PROJECT_SOURCE_DIR}/bindings/bindings.cpp ${UTILS_BINDINGS} ${XS_BINDINGS}
+  ${CAD_BINDINGS} ${MESH_BINDINGS} ${PHYSICS_BINDINGS})
 
 # Link python bindings to the static
 target_link_libraries(
   ttnte_python PRIVATE $<TARGET_OBJECTS:ttnte_static> ${TORCH_LIBRARIES}
-                       ${TORCH_PYTHON_LIBRARY} MPI::MPI_CXX)
+                       ${TORCH_PYTHON_LIBRARY} MPI::MPI_CXX partitioning_suite)
 
 target_include_directories(
   ttnte_python
@@ -183,7 +191,9 @@ target_include_directories(
           ${Python3_INCLUDE_DIRS}
           ${UTILS_BINDINGS_DIR}
           ${XS_BINDINGS_DIR}
-          ${CAD_BINDINGS_DIR})
+          ${CAD_BINDINGS_DIR}
+          ${MESH_BINDINGS_DIR}
+          ${PHYSICS_BINDINGS_DIR})
 
 set_target_properties(
   ttnte_python

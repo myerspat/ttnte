@@ -8,25 +8,29 @@ namespace ttnte::cad {
 // Public constructors
 BSplineBasis::BSplineBasis(const torch::Tensor& knotvector, int64_t degree,
   std::optional<std::string> label)
-  : Basis<BSplineBasis>(label), knotvector_(knotvector.contiguous()),
-    degree_(degree)
+  : Basis<BSplineBasis>(label), knotvector_(knotvector.clone()), degree_(degree)
 {
-  assert(is_valid());
   normalize_knotvector();
 }
 BSplineBasis::BSplineBasis(
   const torch::Tensor& knotvector, int64_t degree, const Label& label)
-  : Basis<BSplineBasis>(label), knotvector_(knotvector.contiguous()),
-    degree_(degree)
+  : Basis<BSplineBasis>(label), knotvector_(knotvector.clone()), degree_(degree)
 {
-  assert(is_valid());
   normalize_knotvector();
 }
 
 // =================================================================
 // Public methods
-bool BSplineBasis::is_valid() const
+void BSplineBasis::finalize(const torch::Tensor& knotvector_view)
 {
+  if (is_finalized_) {
+    throw utils::runtime_error(*this, error_context("finalize"),
+      "This basis has already been finalized");
+  }
+
+  // Copy view
+  knotvector_ = knotvector_view;
+
   if (knotvector_.ndimension() != 1) {
     throw utils::runtime_error(*this, error_context("is_valid"),
       "The knot vector must be 1-dimensional");
@@ -46,7 +50,7 @@ bool BSplineBasis::is_valid() const
       "Knots in the knot vector must be in ascending order");
   }
 
-  return true;
+  is_finalized_ = true;
 }
 
 void BSplineBasis::normalize_knotvector()

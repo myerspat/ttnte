@@ -20,7 +20,8 @@ void register_BSplineBasis(py::module_& m)
 
     // =================================================================
     // Public methods
-    .def("is_valid", &BSplineBasis::is_valid)
+    .def("is_finalized", &BSplineBasis::is_finalized)
+    .def("finalize", &BSplineBasis::finalize)
     .def("normalize_knotvector", &BSplineBasis::normalize_knotvector)
     .def("find_spans", &BSplineBasis::find_spans, py::arg("u"))
     .def("evaluate",
