@@ -511,6 +511,13 @@ void Patch::set_ctrlpts(torch::Tensor ctrlpts)
   ctrlptsw_ = ctrlptsw_.contiguous();
 }
 
+int64_t Patch::get_num_dofs_impl() const
+{
+  return is_finalized_ ? (is_rational_ ? ctrlptsw_.slice(-1, 0, -1).numel()
+                                       : ctrlptsw_.numel())
+                       : 0;
+}
+
 void Patch::set_weights(torch::Tensor weights)
 {
   is_not_finalized_or_error("set_weights");

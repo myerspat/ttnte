@@ -41,3 +41,7 @@ target_include_directories(
   INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/ParMETIS/include
             ${CMAKE_CURRENT_SOURCE_DIR}/METIS/include
             ${CMAKE_CURRENT_SOURCE_DIR}/GKlib)
+
+# Force the definitions globally so ParMETIS definitely gets them
+target_compile_definitions(partitioning_suite INTERFACE IDXTYPEWIDTH=64
+                                                        REALTYPEWIDTH=64)

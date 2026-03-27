@@ -39,6 +39,8 @@ protected:
   Boundaries boundaries_;
   /// The material or whatever that fills this region
   uint64_t fill_id_ = 0;
+  /// Global ID
+  int64_t gid_;
 
   /// Is this block immutable?
   bool is_finalized_ = false;
@@ -191,6 +193,10 @@ public:
   int64_t get_ndim() const { return derived().get_ndim_impl(); }
   /// @return Get mesh coordinates
   torch::Tensor get_coords() const { return derived().get_coords_impl(); }
+  /// @return The number of degrees of freedom (DOFs)
+  int64_t get_num_dofs() const { return derived().get_num_dofs_impl(); }
+  /// @return The global ID of the mesh block
+  int64_t get_gid() const noexcept { return gid_; }
 
   /// @brief Get the boundary information at the top or bottom of a specific
   /// dimension.
@@ -235,6 +241,9 @@ public:
     boundaries_[dim * static_cast<size_t>(2) + static_cast<size_t>(is_upper)]
       .set_type(type);
   }
+
+  /// @param new_gid The new global ID for this MeshBlock.
+  void set_gid(int64_t new_gid) { gid_ = new_gid; }
 };
 
 } // namespace ttnte::mesh

@@ -1,7 +1,9 @@
 #pragma once
 
+#include "ttnte/mesh/connectivity_graph.hpp"
 #include "ttnte/mesh/mesh_block.hpp"
 #include "ttnte/mesh/mesh_block_boundary.hpp"
+#include <ATen/Parallel.h>
 #include <algorithm>
 #include <mutex>
 #include <numeric>
@@ -20,6 +22,7 @@ public:
   using BlockTypeGID = uint64_t;
   using BlockTypePtr = MeshBlock<BlockType>::Ptr;
   using MeshBlocks = std::vector<BlockTypePtr>;
+  using GIDtoIdx = std::unordered_map<BlockTypeGID, size_t>;
 
   static constexpr const char* class_name = "Mesh";
 
@@ -31,9 +34,13 @@ private:
   /// The vector of MeshBlocks.
   MeshBlocks blocks_;
   /// The number of blocks globally (between all ranks).
-  size_t num_blocks_ = 0;
+  size_t global_num_blocks_ = 0;
   /// The global bounding box of the mesh.
   torch::Tensor bbox_;
+  /// Global ID to vector index map.
+  GIDtoIdx index_map_;
+  /// MPI rank of this mesh.
+  int my_rank_;
 
   // States
   bool is_connected_ = false;
@@ -48,28 +55,28 @@ private:
   {
     return "ttnte::mesh::" + std::string(class_name) + "::" + func_name;
   }
-  void is_finalized_or_error(const std::string& func_name)
+  void is_finalized_or_error(const std::string& func_name) const
   {
     if (!is_finalized_) {
       throw utils::runtime_error(*this, func_name,
         "This class must be finalized before running this method");
     }
   }
-  void is_connected_or_error(const std::string& func_name)
+  void is_connected_or_error(const std::string& func_name) const
   {
     if (!is_connected_) {
       throw utils::runtime_error(*this, func_name,
         "This class must be connected before running this method");
     }
   }
-  void is_not_finalized_or_error(const std::string& func_name)
+  void is_not_finalized_or_error(const std::string& func_name) const
   {
     if (is_finalized_) {
       throw utils::runtime_error(
         *this, func_name, "This class has already been finalized");
     }
   }
-  void is_not_connected_or_error(const std::string& func_name)
+  void is_not_connected_or_error(const std::string& func_name) const
   {
     if (is_connected_) {
       throw utils::runtime_error(
@@ -112,9 +119,15 @@ private:
 public:
   // =================================================================
   // Public constructors
-  Mesh(std::optional<std::string> label = std::nullopt)
-    : label_(label.has_value() ? Label::from_string(*label)
+  Mesh(const parallel::ParallelContext& mpi_context,
+    std::optional<std::string> label = std::nullopt)
+    : my_rank_(mpi_context.rank()),
+      label_(label.has_value() ? Label::from_string(*label)
                                : Label::create_internal())
+  {}
+  Mesh(int my_rank, std::optional<std::string> label = std::nullopt)
+    : my_rank_(my_rank), label_(label.has_value() ? Label::from_string(*label)
+                                                  : Label::create_internal())
   {}
 
   // =================================================================
@@ -136,7 +149,13 @@ public:
 
     // Iterate through the remaining unknown boundary types and set them as
     // vacuum
-    for (const auto& bptr : blocks_) {
+    for (size_t i = 0; i < blocks_.size(); i++) {
+      const auto& bptr = blocks_[i];
+
+      // Add a global ID
+      bptr->set_gid(i);
+      index_map_[i] = i;
+
       for (size_t dim = 0; dim < blocks_[0]->get_ndim(); dim++) {
         for (bool is_upper : {false, true}) {
           if (bptr->get_boundary_info(dim, is_upper).get_type() ==
@@ -179,7 +198,7 @@ public:
     blocks_.push_back(new_block);
 
     // Set the number of blocks
-    num_blocks_ = blocks_.size();
+    global_num_blocks_ = blocks_.size();
   }
 
   /// @brief Connect the mesh blocks to each other. We build an undirected graph
@@ -253,9 +272,6 @@ public:
       }
     }
 
-    // MPI rank
-    const auto& mpi_rank = utils::ParallelContext::instance().rank();
-
     // Find the neighbors for each boundary (if internal)
     for (auto it = spatial_hash.begin(); it != spatial_hash.end(); it++) {
       // The faces for this point
@@ -303,10 +319,10 @@ public:
 
             // Set the mapping and neighbor information for each boundary
             block_a->add_connection(dim_a, is_upper_a,
-              {static_cast<int64_t>(block_b_idx), face_b_id, mpi_rank,
+              {static_cast<int64_t>(block_b_idx), face_b_id, my_rank_,
                 mapping_a});
             block_b->add_connection(dim_b, is_upper_b,
-              {static_cast<int64_t>(block_a_idx), face_a_id, mpi_rank,
+              {static_cast<int64_t>(block_a_idx), face_a_id, my_rank_,
                 mapping_b});
 
             // We found a match
@@ -491,12 +507,111 @@ public:
     }
   }
 
+  /// @return The local connectivity graph (which MeshBlocks talk
+  /// to who) using global indices.
+  ConnectivityGraph build_connectivity_graph() const
+  {
+    is_connected_or_error("build_connectivity_graph");
+    const auto& options = torch::TensorOptions().dtype(torch::kInt64);
+    int64_t num_blocks = blocks_.size();
+
+    // Create connectivity graph
+    ConnectivityGraph graph;
+    graph.local_gids = torch::empty({num_blocks}, options);
+    graph.xadj = torch::zeros({num_blocks + 1}, options);
+
+    // Accessors
+    auto local_gids_acc = graph.local_gids.accessor<int64_t, 1>();
+    auto xadj_acc = graph.xadj.accessor<int64_t, 1>();
+
+    // First pass over all connections
+    for (size_t i = 0; i < num_blocks; i++) {
+      const auto& bptr = blocks_[i];
+      xadj_acc[i + 1] = xadj_acc[i];
+
+      // Save the global ID and continue partial sum
+      local_gids_acc[i] = bptr->get_gid();
+
+      for (const auto& boundary : bptr->get_boundary_info()) {
+        if (boundary.get_type() == physics::BoundaryType::INTERNAL) {
+          // Get and add connections
+          xadj_acc[i + 1] += boundary.get_connections().size();
+        }
+      }
+    }
+
+    // Allocate adjacency vector
+    graph.adjncy =
+      torch::empty({graph.xadj[num_blocks].item<int64_t>()}, options);
+    graph.mpi_ranks = torch::empty({graph.xadj[num_blocks].item<int64_t>()},
+      torch::TensorOptions().dtype(torch::kInt32));
+
+    // Accessors
+    auto adjncy_acc = graph.adjncy.accessor<int64_t, 1>();
+    auto mpi_ranks_acc = graph.mpi_ranks.accessor<int32_t, 1>();
+
+    // Iterate through all the boundaries again to collect the adjacency list
+    // and rank to ID mappings
+    for (size_t i = 0; i < num_blocks; i++) {
+      const auto& bptr = blocks_[i];
+
+      // xadj_acc[i] gives the starting point in adjncy
+      int64_t offset = xadj_acc[i];
+
+      for (const auto& boundary : bptr->get_boundary_info()) {
+        if (boundary.get_type() == physics::BoundaryType::INTERNAL) {
+          for (const auto& connection : boundary.get_connections()) {
+            // Add adjacent GID and MPI rank
+            adjncy_acc[offset] = connection.gid;
+            mpi_ranks_acc[offset] = connection.mpi_rank;
+            offset++;
+          }
+        }
+      }
+    }
+
+    return graph;
+  }
+
+  /// @brief Remove any blocks who's global ID (GID) does not exist in
+  /// keep_gids.
+  /// @param keep_gids GIDs of the blocks we plan to keep.
+  void cull_blocks(const torch::Tensor& keep_gids)
+  {
+    TORCH_CHECK(
+      keep_gids.ndimension() == 1 && keep_gids.size(0) <= blocks_.size(),
+      "`keep_gids` must be 1-D and not longer than then number of blocks in\n"
+      "the mesh");
+    MeshBlocks new_blocks_;
+    GIDtoIdx new_index_map_;
+    new_blocks_.reserve(keep_gids.size(0));
+    new_index_map_.reserve(keep_gids.size(0));
+
+    // Accessor
+    auto keep_gids_acc = keep_gids.accessor<int64_t, 1>();
+
+    for (size_t i = 0; i < keep_gids.size(0); i++) {
+      BlockTypeGID gid = keep_gids_acc[i];
+      new_blocks_.push_back(std::move(blocks_[index_map_[gid]]));
+      new_index_map_[gid] = i;
+    }
+
+    // Save the restricted versions
+    blocks_ = std::move(new_blocks_);
+    index_map_ = std::move(new_index_map_);
+  }
+
   // =================================================================
   // Public Getters / Setters
   /// @return The label of the mesh.
   const inline Label& get_label() const noexcept { return label_; }
   /// @return The number of MeshBlocks.
-  const inline size_t& get_num_blocks() const noexcept { return num_blocks_; }
+  inline size_t get_num_blocks() const noexcept { return blocks_.size(); }
+  /// @return The number of MeshBlocks globally (across all MPI ranks).
+  const inline size_t& get_global_num_blocks() const noexcept
+  {
+    return global_num_blocks_;
+  }
   /// @return The vector of blocks.
   const inline MeshBlocks& get_blocks() const noexcept { return blocks_; }
   /// @return The global bounding box represented as a tensor with the first

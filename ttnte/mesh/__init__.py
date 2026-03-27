@@ -3,4 +3,5 @@ from ttnte.cpp.ttnte_python.mesh import (
     BoundaryInfo,
     BoundaryMapping,
     NeighborInfo,
+    ConnectivityGraph,
 )

@@ -24,7 +24,7 @@ tn.set_default_dtype(tn.float64)
 # Start MPI context
 import atexit
 
-from ttnte.utils import mpi_context
+from ttnte.parallel import mpi_context
 
 # Register finalize method to run on Python exit
 atexit.register(mpi_context.finalize)

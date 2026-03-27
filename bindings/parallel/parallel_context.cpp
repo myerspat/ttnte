@@ -1,4 +1,4 @@
-#include "ttnte/utils/parallel_context.hpp"
+#include "ttnte/parallel/parallel_context.hpp"
 #include <pybind11/cast.h>
 #include <pybind11/pybind11.h>
 
@@ -6,7 +6,7 @@ namespace py = pybind11;
 
 void register_ParallelContext(py::module_& m)
 {
-  using ParallelContext = ttnte::utils::ParallelContext;
+  using ParallelContext = ttnte::parallel::ParallelContext;
 
   py::class_<ParallelContext>(m, "ParallelContext")
     .def_static("instance", &ParallelContext::instance,

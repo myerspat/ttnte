@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ttnte/utils/parallel_context.hpp"
+#include "ttnte/parallel/parallel_context.hpp"
 #include "ttnte/utils/symbol_table.hpp"
 #include <atomic>
 #include <cstdint>
@@ -42,7 +42,8 @@ public:
   {
     // 1. Get MPI Rank
     uint64_t rank =
-      static_cast<uint64_t>(utils::ParallelContext::instance().rank()) & 0x7FFF;
+      static_cast<uint64_t>(parallel::ParallelContext::instance().rank()) &
+      0x7FFF;
 
     // 2. Increment Type-Specific Counter
     uint64_t count = s_counter.fetch_add(1);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ttnte/mesh/mesh.hpp"
+#include <memory>
 #include <sstream>
 #include <torch/extension.h>
 
@@ -11,11 +12,16 @@ void register_Mesh(py::module_& m, const std::string& typestr)
 {
   using namespace ttnte::mesh;
   using Mesh = Mesh<BlockType>;
+  using MeshPtr = std::shared_ptr<Mesh>;
 
-  py::class_<Mesh>(m, (typestr + "Mesh").c_str())
+  py::class_<Mesh, MeshPtr>(m, (typestr + "Mesh").c_str())
     // =================================================================
     // Public constructors
-    .def(py::init<std::optional<std::string>>(), py::arg("label") = py::none())
+    .def(py::init<const ttnte::parallel::ParallelContext&,
+           std::optional<std::string>>(),
+      py::arg("mpi_context"), py::arg("label") = py::none())
+    .def(py::init<int, std::optional<std::string>>(), py::arg("my_rank"),
+      py::arg("label") = py::none())
 
     // =================================================================
     // Public methods
@@ -28,6 +34,7 @@ void register_Mesh(py::module_& m, const std::string& typestr)
       py::arg("face_a"), py::arg("face_b"), py::arg("tol") = 1e-8)
     .def("set_axis_aligned_conditions", &Mesh::set_axis_aligned_conditions,
       py::arg("bcplanes"), py::arg("type"), py::arg("tol") = 1e-8)
+    .def("build_connectivity_graph", &Mesh::build_connectivity_graph)
 
     // =================================================================
     // Public overloads

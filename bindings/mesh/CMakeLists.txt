@@ -1,5 +1,6 @@
 # Define the relative filenames
-set(MESH_BINDINGS_REL bindings.cpp mesh_block_boundary.cpp)
+set(MESH_BINDINGS_REL bindings.cpp mesh_block_boundary.cpp
+                      connectivity_graph.cpp)
 # set(MESH_SRC_REL mesh.cpp)
 
 # Define the directory paths (Use local variables here, then push if needed)

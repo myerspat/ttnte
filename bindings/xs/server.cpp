@@ -1,5 +1,6 @@
 #include "ttnte/xs/server.hpp"
 #include "../utils/label.hpp"
+#include <memory>
 #include <pybind11/pytypes.h>
 #include <pybind11/stl.h>
 
@@ -9,9 +10,10 @@ void register_Server(py::module_& m)
 {
   using Server = ttnte::xs::Server;
   using Material = ttnte::xs::Material;
+  using ServerPtr = std::shared_ptr<Server>;
   register_Label<Server>(m, "Server");
 
-  py::class_<Server>(m, "Server")
+  py::class_<Server, ServerPtr>(m, "Server")
     // =================================================================
     // Public constructors
     .def(

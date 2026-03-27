@@ -213,6 +213,8 @@ public:
 
   /// @return Get the coordinates for this mesh (control points)
   torch::Tensor get_coords_impl() const noexcept { return get_ctrlptsw(); }
+  /// @return Get the number of degrees of freedom implementation
+  int64_t get_num_dofs_impl() const;
 
   /// @param ctrlptsw The new weighted control points.
   void set_ctrlptsw(const torch::Tensor& ctrlptsw);

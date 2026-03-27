@@ -1,5 +1,4 @@
 import os
-import time
 from itertools import product
 
 import pytest
@@ -87,8 +86,6 @@ def test_mesh(device, dtype):
     torch.autograd.set_grad_enabled(False)
     torch.set_num_threads(int(os.cpu_count() / mpi_context.world_size))
 
-    start = time.time()
-
     # Get XS info and patches
     (slabel, vlabel), _ = create_xs_server(device, dtype)
     spatches, vpatches = create_coarse_patches(device, dtype)
@@ -99,7 +96,7 @@ def test_mesh(device, dtype):
         v.fill = vlabel
 
     # Create a mesh and add these to the mesh
-    mesh = IGAMesh()
+    mesh = IGAMesh(0)
     mesh.reserve(4)
     for p in spatches + vpatches:
         mesh.add_block(p)
@@ -214,3 +211,22 @@ def test_mesh(device, dtype):
     assert expected_unknowns == unknowns
     assert expected_vacuums == vacuums
     assert expected_reflectives == reflectives
+
+    # Check the connectivity graph
+    conn_graph = mesh.build_connectivity_graph()
+    torch.testing.assert_close(
+        conn_graph.local_gids,
+        torch.tensor([0, 1, 2, 3], dtype=torch.int64, device="cpu"),
+    )
+    torch.testing.assert_close(
+        conn_graph.xadj,
+        torch.tensor([0, 2, 4, 6, 8], dtype=torch.int64, device="cpu"),
+    )
+    torch.testing.assert_close(
+        conn_graph.adjncy,
+        torch.tensor([1, 2, 0, 3, 3, 0, 2, 1], dtype=torch.int64, device="cpu"),
+    )
+    torch.testing.assert_close(
+        conn_graph.mpi_ranks,
+        torch.tensor([0, 0, 0, 0, 0, 0, 0, 0], dtype=torch.int32, device="cpu"),
+    )
