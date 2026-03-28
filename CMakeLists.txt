@@ -4,17 +4,32 @@ cmake_minimum_required(VERSION 3.26)
 project(
   ttnte
   VERSION 0.0.0
-  LANGUAGES C CXX CUDA)
+  LANGUAGES C CXX)
 
 # Standard C++20/CUDA20
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_EXTENSIONS OFF)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-enable_language(CUDA)
+# Conditionally enable CUDA
+option(USE_CUDA "Use CUDA configuration" ON)
+if(USE_CUDA)
+  enable_language(CUDA)
+  set(CMAKE_CUDA_STANDARD 20)
+  set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+  set(CMAKE_CUDA_EXTENSIONS OFF)
+
+  unset(CMAKE_CUDA_ARCHITECTURES CACHE)
+  set(CMAKE_CUDA_ARCHITECTURES
+      ""
+      CACHE STRING "" FORCE)
+else()
+  set(TORCH_USE_CUDA OFF)
+  message(STATUS "Compiling without CUDA")
+endif()
 
 # Suppress Kineto warning
 set(KINETO_LIBRARY "")
@@ -22,11 +37,6 @@ set(KINETO_LIBRARY "")
 # Prevent RPATH confusion
 set(CMAKE_SKIP_RPATH FALSE)
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
-
-unset(CMAKE_CUDA_ARCHITECTURES CACHE)
-set(CMAKE_CUDA_ARCHITECTURES
-    ""
-    CACHE STRING "" FORCE)
 
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
@@ -119,17 +129,11 @@ add_subdirectory(external)
 # FLAGS AND OPTIONS
 # ==============================================================================
 option(TTNTE_OPTIMIZED "Compile with optimization" OFF)
-option(USE_CUDA "Use CUDA configuration" ON)
 
 if(TTNTE_OPTIMIZED)
   add_compile_options(-O3 -march=native)
 else()
   add_compile_options(-g -fno-omit-frame-pointer)
-endif()
-
-if(NOT USE_CUDA)
-  set(TORCH_USE_CUDA OFF)
-  message(STATUS "Compiling without CUDA")
 endif()
 
 # ==============================================================================

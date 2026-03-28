@@ -21,6 +21,8 @@ add_definitions(-DIDXTYPEWIDTH=64 -DREALTYPEWIDTH=64)
 if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wno-error)
 endif()
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
 
 # Ensure ParMETIS finds the METIS headers BEFORE it compiles
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/METIS/include)
