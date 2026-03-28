@@ -43,7 +43,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         # Added pytest-mpi to the install list
-        python -m pip install flake8 pytest pytest-mpi
+        python -m pip install flake8 pytest pytest-mpi scikit-build-core
 
         # Install igakit and geomdl
         pip install https://github.com/dalcinl/igakit/archive/refs/heads/master.zip --no-cache-dir
@@ -63,7 +63,7 @@ jobs:
         export _GLIBCXX_USE_CXX11_ABI=$(python3 -c "import torch; print(int(torch._C._GLIBCXX_USE_CXX11_ABI))")
 
         # Override pyproject.toml using -C cmake.define.USE_CUDA=OFF
-        TTNTE_CPP_BACKEND=1 pip install . -v -C cmake.define.USE_CUDA=OFF
+        TTNTE_CPP_BACKEND=1 pip install . --no-build-isolation -v -C cmake.define.USE_CUDA=OFF
 
     - name: Lint with flake8
       run: |
