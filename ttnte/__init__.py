@@ -9,7 +9,6 @@ except (NameError, ImportError):
 
 # Make sure double precision is used everywhere
 import torch as tn
-import numpy as np
 
 import warnings
 
@@ -21,18 +20,6 @@ warnings.filterwarnings(
 )
 
 tn.set_default_dtype(tn.float64)
-
-# =====================================================================
-# NumPy 2.0 Compatibility Patch for upstream `igakit` dependency.
-# igakit looks for np.in1d and np.setmember1d, which were removed in 2.0.
-# We inject them back into the numpy namespace before igakit loads.
-# =====================================================================
-if not hasattr(np, "in1d"):
-    np.in1d = lambda ar1, ar2, assume_unique=False, invert=False: np.isin(
-        ar1, ar2, assume_unique=assume_unique, invert=invert
-    )
-if not hasattr(np, "setmember1d"):
-    np.setmember1d = np.in1d
 
 # Start MPI context
 import atexit

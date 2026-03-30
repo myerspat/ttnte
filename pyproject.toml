@@ -6,7 +6,7 @@ build-backend = "scikit_build_core.build"
 name = "ttnte"
 version = "0.0.0"
 dependencies = [
-    "torch>=2.9.0", "torchtt", "numpy>=1.26.0", "igakit", "geomdl", "pandas",
+    "torch>=2.9.0", "torchtt", "numpy<2.0.0", "igakit", "geomdl", "pandas",
     "matplotlib", "plotly", "h5py", "tqdm", "pybind11", "cotengra",
     "optuna", "cmaes", "cotengrust", "cytools", "kahypar", "loky",
     "networkx", "opt_einsum"
@@ -38,7 +38,7 @@ dev = [
 build-dir = "build"
 
 [tool.scikit-build.cmake]
-define = { CMAKE_EXPORT_COMPILE_COMMANDS = "ON", TTNTE_OPTIMIZED = "OFF", USE_CUDA = "ON" }
+define = { CMAKE_EXPORT_COMPILE_COMMANDS = "ON", TTNTE_OPTIMIZED = "ON", USE_CUDA = "ON" }
 
 [tool.scikit-build.wheel]
 packages = ["ttnte"]
