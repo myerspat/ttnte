@@ -24,15 +24,33 @@ endif()
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
 
-# Ensure ParMETIS finds the METIS headers BEFORE it compiles
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/METIS/include)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/GKlib)
-link_libraries(MPI::MPI_C)
+set(METIS_LIBRARY_TYPE
+    STATIC
+    CACHE STRING "" FORCE)
 
-# Add them in order. ParMETIS expects METIS to be configured first.
+# include(${CMAKE_CURRENT_SOURCE_DIR}/GKlib/GKlibSystem.cmake)
+
+include_directories(
+  ${CMAKE_CURRENT_SOURCE_DIR}/GKlib
+  ${CMAKE_CURRENT_SOURCE_DIR}/GKlib/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/GKlib/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/METIS/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/ParMETIS/include)
+
+# Build exactly what we need: The raw libraries, nothing else.
 add_subdirectory(GKlib)
-add_subdirectory(METIS)
-add_subdirectory(ParMETIS)
+add_subdirectory(METIS/libmetis ${CMAKE_CURRENT_BINARY_DIR}/metis)
+add_subdirectory(ParMETIS/libparmetis ${CMAKE_CURRENT_BINARY_DIR}/parmetis)
+
+target_link_libraries(parmetis PRIVATE MPI::MPI_C)
+
+# # Ensure ParMETIS finds the METIS headers BEFORE it compiles
+# include_directories(${CMAKE_CURRENT_SOURCE_DIR}/METIS/include)
+# include_directories(${CMAKE_CURRENT_SOURCE_DIR}/GKlib)
+# link_libraries(MPI::MPI_C)
+#
+# # Add them in order. ParMETIS expects METIS to be configured first.
+# add_subdirectory(GKlib) add_subdirectory(METIS) add_subdirectory(ParMETIS)
 
 # EXPORT a single interface target to make your life easier in /src
 add_library(partitioning_suite INTERFACE)
