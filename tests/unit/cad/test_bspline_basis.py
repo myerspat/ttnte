@@ -106,7 +106,7 @@ def test_evaluate_all(device, dtype):
         derivs.append(basis_func.derivative())
 
     values_expected = torch.tensor(
-        [derivs[i](u.numpy()) for i in range(num_basis_functions)],
+        np.array([derivs[i](u.numpy()) for i in range(num_basis_functions)]),
         device=device,
         dtype=dtype,
     ).T
