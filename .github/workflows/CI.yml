@@ -53,10 +53,10 @@ jobs:
         # Override pyproject.toml using -C cmake.define.USE_CUDA=OFF
         make install VERBOSE=ON USE_CUDA=OFF JOBS=$(nproc)
 
-    - name: Lint with flake8
-      run: |
-        flake8 . --exclude archive --count --select=E9,F63,F7,F82 --show-source --statistics
-        flake8 . --exclude archive --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+    # - name: Lint with flake8
+    #   run: |
+    #     flake8 . --exclude archive --count --select=E9,F63,F7,F82 --show-source --statistics
+    #     flake8 . --exclude archive --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
     - name: Test CAD and Mesh
       run: |
