@@ -36,7 +36,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         # Added pytest-mpi to the install list
-        python -m pip install flake8 pytest pytest-mpi scikit-build-core
+        python -m pip install flake8 pytest pytest-mpi mpi4py scikit-build-core
 
         # Install igakit and geomdl
         pip install https://github.com/dalcinl/igakit/archive/refs/heads/master.zip --no-cache-dir
