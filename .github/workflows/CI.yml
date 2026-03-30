@@ -51,7 +51,7 @@ jobs:
     - name: Build and install ttnte
       run: |
         # Override pyproject.toml using -C cmake.define.USE_CUDA=OFF
-        pip install . --no-build-isolation -v -C cmake.define.USE_CUDA=OFF
+        make install VERBOSE=ON USE_CUDA=OFF JOBS=$(nproc)
 
     - name: Lint with flake8
       run: |
