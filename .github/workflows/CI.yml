@@ -43,7 +43,7 @@ jobs:
         SETUPTOOLS_USE_CYTHON=1 pip install git+https://github.com/orbingol/NURBS-Python.git --no-cache-dir
 
         # Install torch
-        pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu --no-cache-dir
+        pip install torch>=2.9.0 --index-url https://download.pytorch.org/whl/cpu --no-cache-dir
 
         # Install torchTT
         pip install git+https://github.com/ion-g-ion/torchTT
