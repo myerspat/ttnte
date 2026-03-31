@@ -1,12 +1,10 @@
 import pytest
 import torch
 
+import mpi4py.MPI
 from ttnte import mpi_context
 from ttnte.parallel import IGALoadBalancer, IGALoadHeuristic, Communicator
 from ttnte.mesh import ConnectivityGraph
-
-# Initialize MPI
-mpi_context.init()
 
 
 class LoadHeuristicTesting(IGALoadHeuristic):

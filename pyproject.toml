@@ -19,6 +19,7 @@ archive = [
 dev = [
     "pytest",
     "pytest-mpi",
+    "mpi4py",
     "pytest-cov",
     "pre-commit",
     "flake8",
