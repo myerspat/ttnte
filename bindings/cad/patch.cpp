@@ -37,35 +37,38 @@ void register_Patch(py::module_& m)
         py::arg("ctrlpts"), py::arg("weights"), py::arg("basis"),
         py::arg("label") = py::none())
 
-      // =================================================================
-      // Public methods
-      .def("is_rational", &Patch::is_rational)
-      .def("evaluate",
-        static_cast<torch::Tensor (Patch::*)(const torch::Tensor&)>(
-          &Patch::evaluate),
-        py::arg("local_coords"))
-      .def(
-        "evaluate",
-        [](Patch& self, const std::vector<torch::Tensor>& local_coords) {
-          return self.evaluate(c10::SmallVector<torch::Tensor, 3>(
-            local_coords.begin(), local_coords.end()));
-        },
-        py::arg("local_coords"))
+    // =================================================================
+    // Public methods
+    .def("validate", &Patch::validate)
+    .def("invalidate", &Patch::invalidate)
+    .def("is_valid", &Patch::is_valid)
+    .def("is_rational", &Patch::is_rational)
+    .def("clone", &Patch::clone)
+    .def("evaluate",
+      static_cast<torch::Tensor (Patch::*)(const torch::Tensor&)>(
+        &Patch::evaluate),
+      py::arg("local_coords"))
+    .def(
+      "evaluate",
+      [](Patch& self, const std::vector<torch::Tensor>& local_coords) {
+        return self.evaluate(c10::SmallVector<torch::Tensor, 3>(
+          local_coords.begin(), local_coords.end()));
+      },
+      py::arg("local_coords"))
+    .def(
+      "evaluate_basis",
+      [](Patch& self, const std::vector<torch::Tensor>& local_coords) {
+        return self.evaluate_basis(c10::SmallVector<torch::Tensor, 3>(
+          local_coords.begin(), local_coords.end()));
+      },
+      py::arg("local_coords"))
 
-      .def("get_order", &Patch::get_order, py::arg("dim"))
-      .def("get_degree", &Patch::get_degree, py::arg("dim"))
-      .def("get_ctrlpts_size", &Patch::get_ctrlpts_size, py::arg("dim"))
-      .def("get_bbox", &Patch::get_bbox, py::arg("epsilon") = 0.0)
-
-      .def("set_ctrlptsw", &Patch::set_ctrlptsw, py::arg("ctrlptsw"))
-      .def(
-        "set_basis",
-        [](Patch& self, const Basis& basis) {
-          self.set_basis(Patch::Basis(basis.begin(), basis.end()));
-        },
-        py::arg("basis"))
-      .def("set_ctrlpts", &Patch::set_ctrlpts, py::arg("ctrlpts"))
-      .def("set_weights", &Patch::set_weights, py::arg("weights"))
+    .def("get_order", &Patch::get_order, py::arg("dim"))
+    .def("get_degree", &Patch::get_degree, py::arg("dim"))
+    .def("get_ctrlpts_size", &Patch::get_ctrlpts_size, py::arg("dim"))
+    .def("get_bbox", &Patch::get_bbox, py::arg("epsilon") = 0.0)
+    .def("get_boundary", &Patch::get_boundary, py::arg("dim"),
+      py::arg("is_upper"), py::arg("clone") = true)
 
       // =================================================================
       // Public overloads

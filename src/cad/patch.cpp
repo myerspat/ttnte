@@ -280,6 +280,121 @@ std::string Patch::to_string_impl() const
   return ss.str();
 }
 
+torch::Tensor Patch::evaluate_basis(
+  const c10::SmallVector<torch::Tensor, 3>& local_coords)
+{
+  is_finalized_or_error("evaluate_basis");
+
+  if (local_coords.size() != get_ndim()) {
+    throw utils::runtime_error(*this, error_context("evaluate_basis"),
+      "The length of `local_coords` must equal the patch dimension");
+  }
+
+  const auto& options = local_coords[0].options();
+  const int64_t ndim = get_ndim();
+
+  c10::SmallVector<torch::Tensor, 3> basis_per_dim;
+  basis_per_dim.reserve(ndim);
+
+  std::vector<int64_t> interleaved_shape;
+  interleaved_shape.reserve(2 * ndim);
+
+  for (size_t d = 0; d < local_coords.size(); ++d) {
+    const auto& u = local_coords[d];
+
+    if (!u.defined() || u.ndimension() != 1) {
+      throw utils::runtime_error(*this, error_context("evaluate_basis"),
+        "Each coordinate tensor must be defined and 1D");
+    }
+
+    if (u.device() != options.device() || u.dtype() != options.dtype()) {
+      throw utils::runtime_error(*this, error_context("evaluate_basis"),
+        "All coordinate tensors must have the same dtype and device");
+    }
+    const auto& b = basis_[d];
+
+    if (u.numel() > 0) {
+      const auto& knotvector = b.get_knotvector();
+      const int64_t p = b.get_degree();
+      const double umin = knotvector[p].item<double>();
+      const double umax = knotvector[knotvector.size(0) - p - 1].item<double>();
+      const double umin_input = u.min().item<double>();
+      const double umax_input = u.max().item<double>();
+
+      if (umin_input < umin || umax_input > umax) {
+        throw utils::runtime_error(*this, error_context("evaluate_basis"),
+          "Coordinates are outside the valid parametric domain");
+      }
+    }
+
+    auto spans = b.find_spans(u);
+    basis_per_dim.push_back(b.evaluate(u, spans, 0));
+
+    interleaved_shape.push_back(u.size(0));
+    interleaved_shape.push_back(b.get_degree() + 1);
+  }
+
+  auto result = torch::ones(interleaved_shape, options);
+
+  for (int64_t d = 0; d < ndim; ++d) {
+    std::vector<int64_t> shape(2 * ndim, 1);
+    shape[2 * d] = local_coords[d].size(0);
+    shape[2 * d + 1] = basis_[d].get_degree() + 1;
+
+    result = result * basis_per_dim[d].reshape(shape);
+  }
+
+  if (is_rational_) {
+    auto local_weights = get_weights().to(options);
+
+    for (int64_t d = 0; d < ndim; ++d) {
+      const auto& b = basis_[d];
+      const auto& u = local_coords[d];
+      const int64_t p = b.get_degree();
+      const int64_t target_dim = 2 * d;
+
+      auto spans = b.find_spans(u);
+      auto j_range = torch::arange(p + 1, spans.options()).unsqueeze(0);
+      auto idx = spans.unsqueeze(1) - p + j_range;
+
+      local_weights = torch::movedim(local_weights, target_dim, 0);
+
+      auto shape = local_weights.sizes().vec();
+      shape[0] = u.size(0);
+      shape.insert(shape.begin() + 1, p + 1);
+
+      local_weights = torch::embedding(
+        local_weights.reshape({local_weights.size(0), -1}), idx)
+                        .reshape(shape);
+
+      local_weights = torch::movedim(
+        local_weights, std::vector<int64_t>{0, 1},
+        std::vector<int64_t>{2 * d, 2 * d + 1});
+    }
+
+    auto numerator = result * local_weights;
+
+    std::vector<int64_t> local_axes;
+    local_axes.reserve(ndim);
+    for (int64_t d = 0; d < ndim; ++d) {
+      local_axes.push_back(2 * d + 1);
+    }
+
+    result = numerator / numerator.sum(local_axes, true);
+  }
+
+  std::vector<int64_t> permute_order;
+  permute_order.reserve(2 * ndim);
+  for (int64_t d = 0; d < ndim; ++d) {
+    permute_order.push_back(2 * d);
+  }
+  for (int64_t d = 0; d < ndim; ++d) {
+    permute_order.push_back(2 * d + 1);
+  }
+
+  return result.permute(permute_order);
+}
+
 // =================================================================
 // Public Getters / Setters
 const torch::Tensor& Patch::get_ctrlptsw() const

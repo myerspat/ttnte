@@ -93,6 +93,16 @@ public:
   /// of each input tensor and d is the number of physical dimensions.
   torch::Tensor evaluate(
     const c10::SmallVector<torch::Tensor, 3>& local_coords);
+    
+  // Compute all non-vanishing B-spline/NURBS basis functions.
+  //
+  // local_coords:
+  //   Vector of 1D tensors, one per parametric dimension.
+  //
+  // Returns:
+  //   Tensor of shape (n1, ..., nk, p1+1, ..., pk+1)
+  torch::Tensor evaluate_basis(
+    const c10::SmallVector<torch::Tensor, 3>& local_coords);
 
   // // MPI communication
   // template<typename T>
