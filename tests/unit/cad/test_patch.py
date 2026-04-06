@@ -4,7 +4,7 @@ import numpy as np
 from igakit.cad import refine
 
 from ttnte.cad.surfaces import circle
-from ttnte.cad import Patch
+from ttnte.cad import Patch, BSplineBasis
 from ttnte.physics import BoundaryType
 
 test_params = [
@@ -134,30 +134,25 @@ def test_patch_evaluate_basis(device, dtype):
     c_exact = refine(circle(2), factor=[3, 1], degree=[2, 3])
     c_exact = c_exact.insert(0, c_exact.knots[0][4], 1)
 
-    basis = [
-        BSplineBasis(
-            torch.tensor(c_exact.knots[i], device=device, dtype=dtype),
-            c_exact.degree[i],
-        )
-        for i in range(c_exact.dim)
-    ]
-    ctrlpts = torch.tensor(
-        c_exact.control[..., :-1] / c_exact.control[..., [-1]],
-        device=device,
-        dtype=dtype,
-    )
-    weights = torch.tensor(c_exact.control[..., -1], device=device, dtype=dtype)
-    patch = Patch(ctrlpts, weights, basis, "patch")
+    # Create NURBS
+    c = Patch.from_igakit(c_exact, device=device, dtype=dtype)
 
     u = torch.linspace(0, 1, 4, device=device, dtype=dtype)
     v = torch.linspace(0, 1, 3, device=device, dtype=dtype)
 
-    actual = patch.evaluate_basis([u, v])
-    expected = _expected_local_basis(patch, [u, v])
+    actual = c.evaluate_basis([u, v])
+    expected = _expected_local_basis(c, [u, v])
 
-    assert actual.shape == (u.numel(), v.numel(), basis[0].degree + 1, basis[1].degree + 1)
+    assert actual.shape == (
+        u.numel(),
+        v.numel(),
+        c.basis[0].degree + 1,
+        c.basis[1].degree + 1,
+    )
     torch.testing.assert_close(actual, expected)
-    torch.testing.assert_close(actual.sum(dim=(-2, -1)), torch.ones_like(actual[..., 0, 0]))
+    torch.testing.assert_close(
+        actual.sum(dim=(-2, -1)), torch.ones_like(actual[..., 0, 0])
+    )
 
 
 @pytest.mark.parametrize("device, dtype", test_params)
@@ -171,6 +166,7 @@ def test_patch_evaluate_basis_checks(device, dtype):
     ]
     ctrlpts = torch.zeros((3, 2, 2), device=device, dtype=dtype)
     patch = Patch(ctrlpts, basis)
+    patch.finalize()
 
     with pytest.raises(RuntimeError, match="1D"):
         patch.evaluate_basis(
