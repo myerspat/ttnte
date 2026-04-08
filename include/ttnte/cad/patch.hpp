@@ -93,7 +93,7 @@ public:
   /// of each input tensor and d is the number of physical dimensions.
   torch::Tensor evaluate(
     const c10::SmallVector<torch::Tensor, 3>& local_coords);
-    
+
   // Compute all non-vanishing B-spline/NURBS basis functions.
   //
   // local_coords:
@@ -103,6 +103,18 @@ public:
   //   Tensor of shape (n1, ..., nk, p1+1, ..., pk+1)
   torch::Tensor evaluate_basis(
     const c10::SmallVector<torch::Tensor, 3>& local_coords);
+
+  // Insert new knots following generalized version of Algorithim 5.5
+  // from the NURBS book.
+  //
+  // new_knots:
+  //   Vector of 1D tensors, one per parametric dimension.
+  //   Amount of times to insert knots.
+  //
+  // Action:
+  //   Edits knotvector_ and ctrlptsw_.
+  void knot_insert(const c10::SmallVector<torch::Tensor, 3>& new_knots,
+    const int64_t& reps = 1);
 
   // // MPI communication
   // template<typename T>

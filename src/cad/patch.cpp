@@ -1,5 +1,6 @@
 #include "ttnte/cad/patch.hpp"
 #include "ttnte/cad/bspline_basis.hpp"
+#include "ttnte/cad/patch_kernels.hpp"
 #include "ttnte/utils/exception.hpp"
 #include "ttnte/utils/io_formatting.hpp"
 #include <sstream>
@@ -367,9 +368,8 @@ torch::Tensor Patch::evaluate_basis(
         local_weights.reshape({local_weights.size(0), -1}), idx)
                         .reshape(shape);
 
-      local_weights = torch::movedim(
-        local_weights, std::vector<int64_t>{0, 1},
-        std::vector<int64_t>{2 * d, 2 * d + 1});
+      local_weights = torch::movedim(local_weights, std::vector<int64_t> {0, 1},
+        std::vector<int64_t> {2 * d, 2 * d + 1});
     }
 
     auto numerator = result * local_weights;
@@ -393,6 +393,61 @@ torch::Tensor Patch::evaluate_basis(
   }
 
   return result.permute(permute_order);
+}
+
+void Patch::knot_insert(const torch::Tensor& new_knots, const int64_t& reps)
+{
+  is_finalized_or_error("knot_insertion");
+
+  if (new_knots.size() != get_ndim()) {
+    throw utils::runtime_error(*this, error_context("knot_insertion"),
+      "The length of `new_knots` must equal the patch dimension");
+  }
+
+  if (reps !> 0) {
+    throw utils::runtime_error(*this, error_context("knot_insertion"),
+      "Amount of times knots are inserted must be greater than 0");
+  }
+
+  for (const auto& u : new_knots) {
+    // Check these are each 1-D
+    if (u.ndimension() != 1 || !u.defined()) {
+      throw utils::runtime_error(*this, error_context("knot_insertion"),
+        "Each axis of points must be 1-dimensional and defined");
+    } else if (u.device() != options.device() || u.dtype() != options.dtype()) {
+      throw utils::runtime_error(*this, error_context("knot_insertion"),
+        "All tensors given in `local_coords` must data type and on the same "
+        "device");
+    }
+  }
+
+  // Index local variables
+  const auto& options = local_coords[0].options();
+  const int64_t ndim = get_ndim();
+  const auto& Pw = ctrlptsw_;
+
+  // Insert knots 'reps' number of times.
+  for (int64_t p = 0; p < ndim; ++p) {
+    const torch::Tensor& X = new_knots[p];
+
+    // If there are knots to insert on this dimension, insert them
+    if (X.numelem() != 0) {
+      const auto& U = basis_[p];
+      std::tie(X, std::ignore) = torch::sort(X);
+
+      // Calculate a and b
+      int64_t a = U.find_spans(X[0]).item<int64_t>();
+      int64_t b = U.find_spans(X[-1]).item<int64_t>();
+
+      if (X.device().is_cuda()) {
+        throw utils::runtime_error(
+          *this, error_context("knot_insertion"), "CUDA not implemented yet");
+      } else {
+        return patch::launch_knot_insert_cpu(
+          Pw.to(X.device()), U.to(X.device()), X, p, a, b, r);
+      }
+    }
+  }
 }
 
 // =================================================================
