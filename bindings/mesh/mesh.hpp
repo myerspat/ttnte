@@ -17,11 +17,16 @@ void register_Mesh(py::module_& m, const std::string& typestr)
   py::class_<Mesh, MeshPtr>(m, (typestr + "Mesh").c_str())
     // =================================================================
     // Public constructors
-    .def(py::init<const ttnte::parallel::ParallelContext&,
-           std::optional<std::string>>(),
+    .def(py::init([](const ttnte::parallel::ParallelContext& mpi_context,
+                    std::optional<std::string> label = std::nullopt) {
+      return Mesh::create(mpi_context, label);
+    }),
       py::arg("mpi_context"), py::arg("label") = py::none())
-    .def(py::init<int, std::optional<std::string>>(), py::arg("my_rank"),
-      py::arg("label") = py::none())
+    .def(py::init(
+           [](int my_rank, std::optional<std::string> label = std::nullopt) {
+             return Mesh::create(my_rank, label);
+           }),
+      py::arg("my_rank"), py::arg("label") = py::none())
 
     // =================================================================
     // Public methods

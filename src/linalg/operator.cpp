@@ -1,62 +1,28 @@
 #include "ttnte/linalg/operator.hpp"
-#include "ttnte/linalg/linear_operator.hpp"
-#include <memory>
 
 namespace ttnte::linalg {
 
-// =================================================
-// Public methods
-// =================================================
 Operator::~Operator() = default;
 
-std::shared_ptr<Operator> Operator::add(
-  const std::shared_ptr<Operator>& other) const
+// =================================================================
+// Public methods
+Operator::Ptr Operator::to(const torch::Device& device,
+  const at::ScalarType& dtype, bool non_blocking, bool copy,
+  std::optional<at::MemoryFormat> memory_format) const
 {
-  // Clone
-  auto op = this->clone();
-
-  // Add in place
-  return op->add_(other);
+  return to_impl(device, dtype, non_blocking, copy, memory_format);
 }
 
-std::shared_ptr<Operator> Operator::operator+(
-  const std::shared_ptr<Operator>& other)
+Operator::Ptr Operator::to(const at::ScalarType& dtype, bool non_blocking,
+  bool copy, std::optional<at::MemoryFormat> memory_format) const
 {
-  // Get pointer for self
-  auto self = ptr();
-
-  // Pointer is a LinearOperator
-  if (auto op = std::dynamic_pointer_cast<LinearOperator>(self)) {
-    if (auto other_op = std::dynamic_pointer_cast<LinearOperator>(other)) {
-      op->append(other_op->operators());
-    } else {
-      op->append(other);
-    }
-    return op;
-  }
-
-  // Pointer is an not a LinearOperator but other is
-  if (auto other_op = std::dynamic_pointer_cast<LinearOperator>(other)) {
-    other_op->prepend(self);
-    return other_op;
-  }
-
-  // Both are not LinearOperators
-  return std::make_shared<LinearOperator>(
-    std::vector<std::shared_ptr<Operator>> {self, other});
+  return to_impl(get_device(), dtype, non_blocking, copy, memory_format);
 }
 
-std::shared_ptr<Operator> Operator::operator-(
-  const std::shared_ptr<Operator>& other)
+Operator::Ptr Operator::to(const torch::Device& device, bool non_blocking,
+  bool copy, std::optional<at::MemoryFormat> memory_format) const
 {
-  return this->operator+(other->operator-());
-}
-
-std::shared_ptr<Operator> Operator::operator-()
-{
-  auto copy = this->clone();
-  copy->set_scale(-copy->scale());
-  return copy;
+  return to_impl(device, get_dtype(), non_blocking, copy, memory_format);
 }
 
 } // namespace ttnte::linalg

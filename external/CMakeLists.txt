@@ -4,6 +4,10 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 # MPI is non-negotiable for ParMETIS
 find_package(MPI REQUIRED)
 
+# ===========================================================================
+# GKlib, METIS, ParMETIS
+# ===========================================================================
+
 # These variables are EXACTLY what the internal METIS/ParMETIS files look for
 set(GKLIB_PATH
     "${CMAKE_CURRENT_SOURCE_DIR}/GKlib"
@@ -28,8 +32,6 @@ set(METIS_LIBRARY_TYPE
     STATIC
     CACHE STRING "" FORCE)
 
-# include(${CMAKE_CURRENT_SOURCE_DIR}/GKlib/GKlibSystem.cmake)
-
 include_directories(
   ${CMAKE_CURRENT_SOURCE_DIR}/GKlib
   ${CMAKE_CURRENT_SOURCE_DIR}/GKlib/include
@@ -44,14 +46,6 @@ add_subdirectory(ParMETIS/libparmetis ${CMAKE_CURRENT_BINARY_DIR}/parmetis)
 
 target_link_libraries(parmetis PRIVATE MPI::MPI_C)
 
-# # Ensure ParMETIS finds the METIS headers BEFORE it compiles
-# include_directories(${CMAKE_CURRENT_SOURCE_DIR}/METIS/include)
-# include_directories(${CMAKE_CURRENT_SOURCE_DIR}/GKlib)
-# link_libraries(MPI::MPI_C)
-#
-# # Add them in order. ParMETIS expects METIS to be configured first.
-# add_subdirectory(GKlib) add_subdirectory(METIS) add_subdirectory(ParMETIS)
-
 # EXPORT a single interface target to make your life easier in /src
 add_library(partitioning_suite INTERFACE)
 target_link_libraries(partitioning_suite INTERFACE parmetis metis GKlib
@@ -65,3 +59,11 @@ target_include_directories(
 # Force the definitions globally so ParMETIS definitely gets them
 target_compile_definitions(partitioning_suite INTERFACE IDXTYPEWIDTH=64
                                                         REALTYPEWIDTH=64)
+
+# ===========================================================================
+# torchTT
+# ===========================================================================
+add_library(torchtt_headers INTERFACE)
+target_include_directories(
+  torchtt_headers INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/torchTT/torchtt/cpp)
+target_compile_definitions(torchtt_headers INTERFACE USE_CUDA)

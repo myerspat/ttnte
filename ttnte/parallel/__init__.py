@@ -6,6 +6,10 @@ from ttnte.cpp.ttnte_python.parallel import (
     Request,
     Communicator,
     RoutingTable,
+    StreamHandle,
+    StreamGuard,
+    StreamPool,
+    ThreadPool,
 )
 
 mpi_context = ParallelContext.instance()

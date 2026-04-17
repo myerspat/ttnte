@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ttnte/mesh/mesh.hpp"
+#include "ttnte/parallel/boundary_communicator.hpp"
 #include "ttnte/parallel/communicator.hpp"
 #include "ttnte/parallel/heuristics.hpp"
 #include "ttnte/parallel/load_balancer.hpp"
@@ -24,11 +25,13 @@ public:
   // Public types
   // Core types
   using Label = utils::Label<TransportDriver>;
+  using Ptr = std::shared_ptr<TransportDriver>;
   using MeshPtr = std::shared_ptr<mesh::Mesh<BlockType>>;
   using XSServerPtr = std::shared_ptr<xs::Server>;
 
   // Communication and load balancing
   using Communicator = parallel::Communicator;
+  using BoundaryCommunicator = parallel::BoundaryCommunicator;
   using LoadHeuristicPtr =
     std::shared_ptr<parallel::heuristics::LoadHeuristic<BlockType>>;
   using LoadBalancer = parallel::LoadBalancer<BlockType>;
@@ -58,9 +61,8 @@ private:
   // States
   bool is_distributed_ = false;
 
-public:
   // =================================================================
-  // Public constructors
+  // Private constructors
   TransportDriver(MeshPtr mesh, XSServerPtr xs_server,
     const parallel::ParallelContext& mpi_context,
     std::optional<std::string> label = std::nullopt)
@@ -78,8 +80,16 @@ public:
     }
   }
 
+public:
   // =================================================================
   // Public methods
+  /// @brief Build a TransportDriver and get the shared pointer to it.
+  template<typename... Args>
+  static Ptr create(Args&&... args)
+  {
+    return Ptr(new TransportDriver<BlockType>(std::forward<Args>(args)...));
+  }
+
   /// @brief Partition the Mesh according to the load heuristics. Partitioning
   /// runs METIS_PartGraphKway on rank root_rank.
   /// @param load_heuristics These heuristics compute weights for each local

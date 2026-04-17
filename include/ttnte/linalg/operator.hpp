@@ -1,51 +1,72 @@
 #pragma once
 
+#include "ttnte/utils/label.hpp"
+#include <cstdint>
 #include <memory>
-#include <torch/extension.h>
+#include <optional>
+#include <string>
 
 namespace ttnte::linalg {
 
 class Operator : public std::enable_shared_from_this<Operator> {
-private:
-  // =================================================
-  // Private data
-  double scale_ = 1.0;
+public:
+  // =================================================================
+  // Public types
+  using Label = ttnte::utils::Label<Operator>;
+  using Ptr = std::shared_ptr<Operator>;
+  using CPtr = std::shared_ptr<const Operator>;
 
-  // =================================================
-  // Private methods
+protected:
+  // =================================================================
+  // Protected constructors
+  Operator(std::optional<std::string> label)
+    : label_(label.has_value() ? Label::from_string(label.value())
+                               : Label::create_internal())
+  {}
+  Operator(const Label& label) : label_(label) {}
+
+  // =================================================================
+  // Protected data
+  Label label_;
+
+  // =================================================================
+  // Protected methods
+  virtual Ptr to_impl(const torch::Device& device, const at::ScalarType& dtype,
+    bool non_blocking = false, bool copy = false,
+    std::optional<at::MemoryFormat> memory_format = std::nullopt) const = 0;
 
 public:
-  // =================================================
-  // Public methods
   virtual ~Operator();
 
-  virtual torch::Tensor apply(const torch::Tensor& x) const = 0;
-  virtual void cuda(const int64_t idx) = 0;
-  virtual void cpu() = 0;
-  virtual std::shared_ptr<Operator> clone() const = 0;
-  virtual std::shared_ptr<Operator> add_(
-    const std::shared_ptr<Operator>& other) = 0;
-  virtual std::shared_ptr<Operator> type(
-    const caffe2::TypeMeta& dtype) const = 0;
-  std::shared_ptr<Operator> add(const std::shared_ptr<Operator>& other) const;
+  // =================================================================
+  // Public methods
+  Ptr to(const torch::Device& device, const at::ScalarType& dtype,
+    bool non_blocking = false, bool copy = false,
+    std::optional<at::MemoryFormat> memory_format = std::nullopt) const;
+  Ptr to(const at::ScalarType& dtype, bool non_blocking = false,
+    bool copy = false,
+    std::optional<at::MemoryFormat> memory_format = std::nullopt) const;
+  Ptr to(const torch::Device& device, bool non_blocking = false,
+    bool copy = false,
+    std::optional<at::MemoryFormat> memory_format = std::nullopt) const;
 
-  // =================================================
-  // Overloads
-  std::shared_ptr<Operator> operator+(const std::shared_ptr<Operator>& other);
-  std::shared_ptr<Operator> operator-(const std::shared_ptr<Operator>& other);
-  std::shared_ptr<Operator> operator-();
+  virtual void to_(const torch::Device& device, const at::ScalarType& dtype,
+    bool non_blocking = false, bool copy = false,
+    std::optional<at::MemoryFormat> memory_format = std::nullopt) = 0;
+  virtual void to_(const at::ScalarType& dtype, bool non_blocking = false,
+    bool copy = false,
+    std::optional<at::MemoryFormat> memory_format = std::nullopt) = 0;
+  virtual void to_(const torch::Device& device, bool non_blocking = false,
+    bool copy = false,
+    std::optional<at::MemoryFormat> memory_format = std::nullopt) = 0;
 
-  // =================================================
-  // Getters / Setters
-  std::shared_ptr<Operator> ptr() { return shared_from_this(); }
-  double scale() const noexcept { return scale_; }
-  virtual void set_scale(const double& scale) { scale_ = scale; }
-  virtual std::vector<int64_t> input_shape() const noexcept = 0;
-  virtual std::vector<int64_t> output_shape() const noexcept = 0;
-  virtual int64_t nelements() const noexcept = 0;
-  virtual double compression() const noexcept = 0;
-  virtual torch::Device device() const noexcept = 0;
-  virtual caffe2::TypeMeta dtype() const noexcept = 0;
+  // =================================================================
+  // Public getters / setters
+  const Label& get_label() const noexcept { return label_; }
+  bool is_cuda() const { return get_device().is_cuda(); }
+  virtual torch::Device get_device() const = 0;
+  virtual at::ScalarType get_dtype() const = 0;
+  virtual int64_t get_numel() const = 0;
 };
 
 } // namespace ttnte::linalg

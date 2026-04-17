@@ -7,3 +7,6 @@
 [submodule "external/ParMETIS"]
 	path = external/ParMETIS
 	url = https://github.com/KarypisLab/ParMETIS.git
+[submodule "external/torchTT"]
+	path = external/torchTT
+	url = https://github.com/ion-g-ion/torchTT

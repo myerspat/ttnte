@@ -25,6 +25,15 @@ public:
   void wait();
   /// @brief Wait for a vector of MPI requests to finish.
   static void wait_all(std::vector<Request>& requests);
+  /// @brief Non-blocking check to see if the request is finished.
+  /// @return True if completed, false if still pending.
+  bool test();
+  /// @brief Non-blocking check for a vector of requests.
+  /// @param requests The list of requests to check.
+  /// @param completed_indices Output vector populated with the indices of
+  /// completed requests.
+  static void test_some(
+    std::vector<Request>& requests, std::vector<int>& completed_indices);
 
   // =================================================================
   // Public getters / setters

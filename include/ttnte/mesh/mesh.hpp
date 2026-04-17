@@ -5,6 +5,7 @@
 #include "ttnte/mesh/mesh_block_boundary.hpp"
 #include <ATen/Parallel.h>
 #include <algorithm>
+#include <memory>
 #include <mutex>
 #include <numeric>
 #include <optional>
@@ -19,6 +20,7 @@ public:
   // =================================================================
   // Public types
   using Label = utils::Label<Mesh>;
+  using Ptr = std::shared_ptr<Mesh>;
   using BlockTypeGID = uint64_t;
   using BlockTypePtr = MeshBlock<BlockType>::Ptr;
   using MeshBlocks = std::vector<BlockTypePtr>;
@@ -116,9 +118,8 @@ private:
     }
   }
 
-public:
   // =================================================================
-  // Public constructors
+  // Private constructors
   Mesh(const parallel::ParallelContext& mpi_context,
     std::optional<std::string> label = std::nullopt)
     : my_rank_(mpi_context.rank()),
@@ -130,8 +131,17 @@ public:
                                                   : Label::create_internal())
   {}
 
+public:
   // =================================================================
   // Public methods
+  /// @brief Create a new Mesh and return a shared pointer to it.
+  template<typename... Args>
+  static Ptr create(Args&&... args)
+  {
+    return std::shared_ptr<Mesh<BlockType>>(
+      new Mesh<BlockType>(std::forward<Args>(args)...));
+  }
+
   /// @return Is the Mesh immutable?
   bool is_finalized() const noexcept { return is_finalized_; }
   /// @return Has the MeshBlocks in the mesh been connected?
@@ -618,6 +628,12 @@ public:
   /// index of the first dimension being the minimum point in Euclidean space
   /// and the second being the maximum.
   const inline torch::Tensor& get_bbox() const noexcept { return bbox_; }
+  /// @return Get the dimensionality of the blocks in the mesh
+  int64_t inline get_ndim() const
+  {
+    is_connected_or_error("get_ndim");
+    return blocks_[0]->get_ndim();
+  }
 
   /// @param label The new label of the mesh.
   void inline set_label(const std::string& label)

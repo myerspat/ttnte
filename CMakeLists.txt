@@ -87,6 +87,15 @@ find_library(
   PATHS "${TORCH_INSTALL_PREFIX}/lib"
   NO_DEFAULT_PATH)
 
+# Find where PyTorch hides its LAPACK/MKL
+find_library(
+  TORCH_LAPACK_LIB
+  NAMES torch_cpu mkl_rt caffe2_lapack
+  PATHS "${TORCH_INSTALL_PREFIX}/lib"
+  NO_DEFAULT_PATH)
+
+message(STATUS "Found Torch LAPACK provider: ${TORCH_LAPACK_LIB}")
+
 # ==============================================================================
 # CONFIGURE CUTENSOR
 # ==============================================================================
@@ -124,6 +133,7 @@ add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=${_GLIBCXX_USE_CXX11_ABI})
 # Other external libraries in external
 # ==============================================================================
 add_subdirectory(external)
+add_compile_options(-Wno-narrowing)
 
 # ==============================================================================
 # FLAGS AND OPTIONS
@@ -154,28 +164,46 @@ message(STATUS "------------------------------------------------")
 # ==============================================================================
 # SUBDIRECTORIES
 # ==============================================================================
-# add_subdirectory(bindings/utils)
+add_subdirectory(bindings/utils)
 add_subdirectory(bindings/parallel)
 add_subdirectory(bindings/xs)
 add_subdirectory(bindings/mesh)
 add_subdirectory(bindings/cad)
 add_subdirectory(bindings/physics)
 add_subdirectory(bindings/driver)
-# add_subdirectory(bindings/task)
+add_subdirectory(bindings/linalg)
+add_subdirectory(bindings/task)
+add_subdirectory(bindings/solvers)
 
 # ==============================================================================
 # C++ side
 # ==============================================================================
 # Create single static binary and link to dependencies
-add_library(ttnte_static OBJECT ${PARALLEL_SRC} ${XS_SRC} ${CAD_SRC})
+add_library(
+  ttnte_static OBJECT
+  ${UTILS_SRC}
+  ${PARALLEL_SRC}
+  ${XS_SRC}
+  ${CAD_SRC}
+  ${TASK_SRC}
+  ${LINALG_SRC}
+  ${SOLVERS_SRC})
 set_target_properties(ttnte_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(ttnte_static PUBLIC partitioning_suite ${TORCH_LIBRARIES}
-                                          MPI::MPI_CXX)
+                                          MPI::MPI_CXX torchtt_headers)
 target_include_directories(
   ttnte_static
   PUBLIC ${TORCH_INCLUDE_DIRS} ${PROJECT_SOURCE_DIR}/include
          ${PROJECT_SOURCE_DIR}/src ${Python3_INCLUDE_DIRS}
          ${MPI_CXX_INCLUDE_DIRS} partitioning_suite)
+
+find_package(LAPACK)
+if(LAPACK_FOUND)
+  target_link_libraries(ttnte_static PUBLIC ${LAPACK_LIBRARIES})
+else()
+  # If not found, we attempt to use the one Conda usually ships
+  target_link_libraries(ttnte_static PUBLIC "-llapack -lblas")
+endif()
 
 # ==============================================================================
 # Python side
@@ -189,7 +217,10 @@ add_library(
   ${MESH_BINDINGS}
   ${PHYSICS_BINDINGS}
   ${PARALLEL_BINDINGS}
-  ${DRIVER_BINDINGS})
+  ${DRIVER_BINDINGS}
+  ${LINALG_BINDINGS}
+  ${TASK_BINDINGS}
+  ${SOLVERS_BINDINGS})
 
 # Link python bindings to the static
 target_link_libraries(ttnte_python PRIVATE ttnte_static ${TORCH_PYTHON_LIBRARY})
@@ -205,7 +236,10 @@ target_include_directories(
           ${MESH_BINDINGS_DIR}
           ${PHYSICS_BINDINGS_DIR}
           ${PARALLEL_BINDINGS_DIR}
-          ${DRIVER_BINDINGS_DIR})
+          ${DRIVER_BINDINGS_DIR}
+          ${LINALG_BINDINGS_DIR}
+          ${TASK_BINDINGS_DIR}
+          ${SOLVERS_BINDINGS_DIR})
 
 set_target_properties(
   ttnte_python

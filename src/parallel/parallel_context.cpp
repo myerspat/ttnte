@@ -53,4 +53,9 @@ void ParallelContext::barrier() const
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
+void ParallelContext::mpi_abort() const
+{
+  MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+}
+
 } // namespace ttnte::parallel

@@ -1,6 +1,5 @@
 #include "ttnte/xs/server.hpp"
 #include "../utils/label.hpp"
-#include <memory>
 #include <pybind11/pytypes.h>
 #include <pybind11/stl.h>
 
@@ -10,15 +9,18 @@ void register_Server(py::module_& m)
 {
   using Server = ttnte::xs::Server;
   using Material = ttnte::xs::Material;
-  using ServerPtr = std::shared_ptr<Server>;
   register_Label<Server>(m, "Server");
 
-  py::class_<Server, ServerPtr>(m, "Server")
+  py::class_<Server, Server::Ptr>(m, "Server")
     // =================================================================
     // Public constructors
+    .def(py::init([](std::optional<Server::Label> label = std::nullopt) {
+      return Server::create(label);
+    }),
+      py::arg("label") = std::nullopt)
     .def(
-      py::init<std::optional<Server::Label>>(), py::arg("label") = std::nullopt)
-    .def(py::init<std::string>(), py::arg("label"))
+      py::init([](const std::string& label) { return Server::create(label); }),
+      py::arg("label"))
 
     // =================================================================
     // Public methods

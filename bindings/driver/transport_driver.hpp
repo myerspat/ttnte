@@ -9,20 +9,27 @@ namespace py = pybind11;
 template<typename BlockType>
 void register_TransportDriver(py::module_& m, const std::string& typestr)
 {
+  // 1. You MUST use 'typename' here because these types depend on BlockType
   using TransportDriver = ttnte::driver::TransportDriver<BlockType>;
-  using LoadHeuristicPtr =
-    ttnte::driver::TransportDriver<BlockType>::LoadHeuristicPtr;
+  using MeshPtr = typename TransportDriver::MeshPtr;
+  using XSServerPtr = typename TransportDriver::XSServerPtr;
+  using LoadHeuristicPtr = typename TransportDriver::LoadHeuristicPtr;
+  using DriverPtr = typename TransportDriver::Ptr; // Alias for the holder type
+
   std::string class_name = typestr + "TransportDriver";
 
   register_Label<TransportDriver>(m, class_name);
 
-  py::class_<TransportDriver>(m, class_name.c_str())
+  // 2. Use the Alias DriverPtr as the second template argument
+  py::class_<TransportDriver, DriverPtr>(m, class_name.c_str())
     // =================================================================
     // Public constructors
-    .def(
-      py::init<typename TransportDriver::MeshPtr,
-        typename TransportDriver::XSServerPtr,
-        const ttnte::parallel::ParallelContext&, std::optional<std::string>>(),
+    .def(py::init([](MeshPtr mesh, XSServerPtr xs_server,
+                    const ttnte::parallel::ParallelContext& mpi_context,
+                    std::optional<std::string> label) {
+      // Use the explicit factory call
+      return TransportDriver::create(mesh, xs_server, mpi_context, label);
+    }),
       py::arg("mesh"), py::arg("xs_server"), py::arg("mpi_context"),
       py::arg("label") = std::nullopt)
 

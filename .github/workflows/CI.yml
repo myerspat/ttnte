@@ -62,6 +62,8 @@ jobs:
       run: |
         pytest tests/unit/cad
         pytest tests/unit/mesh
+        pytest tests/unit/linalg
+        pytest tests/unit/solvers
 
     - name: Test Parallel (MPI)
       run: |

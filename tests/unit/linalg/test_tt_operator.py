@@ -1,118 +1,88 @@
-import torch as tn
-import numpy as np
-from torchtt import eye, random
-import cotengra as ctg
 import pytest
+import torch
 
-from ttnte.linalg.tt_operator import TTOperator as TTO_python
+from ttnte.linalg import TTOperator
 
-try:
-    from ttnte.cpp.linalg import TTOperator as TTO_cpp
+test_params = [
+    ("cpu", torch.float32),
+    ("cpu", torch.float64),
+    ("cuda", torch.float32),
+    ("cuda", torch.float64),
+]
 
-    cpp_available = True
 
-except ImportError:
-    cpp_available = False
+@pytest.mark.parametrize("device, dtype", test_params)
+def test_initialize(device, dtype):
+    # Skip if GPU is requested but not available
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
 
+    cores = [
+        torch.ones((i * 10, i * 10), device=device, dtype=dtype).reshape(
+            (1, i * 10, i * 10, 1)
+        )
+        for i in range(1, 4)
+    ]
+    name = "tt operator"
 
-def run_tt_operator(TTOperator):
-    tn.set_default_dtype(tn.float64)
+    tt = TTOperator(cores, name)
 
-    # Shape of input
-    shape = [10, 15, 20, 25, 30]
-
-    # Create an identity operator
-    I_tntt = eye(shape)
-
-    # Pass to TTOperator
-    I = TTOperator(I_tntt)
-
-    # Run checks
-    assert I.num_cores == 5
-    assert I.input_shape == list(shape)
-    assert I.output_shape == list(shape)
-    assert I.shape == [(s, s) for s in shape]
-    assert I.dtype == tn.float64
-    assert I.device == tn.device("cpu")
-    assert I.nelements == np.sum([s * s for s in shape])
-    assert I.compression == (np.prod(shape) ** 2) / I.nelements
-
-    # Check each core
-    for i in range(I.num_cores):
-        assert tn.equal(I.cores[i], I_tntt.cores[i].reshape(I.cores[i].shape))
-
-    # Check pass to cuda
-    if tn.cuda.is_available() and tn.cuda.device_count() > 0:
-        # Pass to GPU
-        I.cuda(0)
-
-        # Iterate through cores
-        for core in I.cores:
-            assert core.get_device() == 0
-
-        # Take off GPU
-        I.cpu()
-
-        for core in I.cores:
-            assert core.get_device() == -1
-
-    # Test matmul method with arbitrary vector
-    a = tn.rand(shape)
-    b = I @ a
-    assert tn.equal(a, b)
-
-    # Test type casting
-    I = I.type(tn.float32)
-    assert I.dtype == tn.float32
-
-    # ==================================================================
-    # Get random tensor train
-    tt_rand_tntt = random([(10, 10), (15, 15), (20, 20)], R=10)
-    tt_rand_tntt += tt_rand_tntt
-
-    # Create TTOperator
-    tt_rand = TTOperator(tt_rand_tntt.clone())
-
-    # Test matmul for this random tensor using torchtt as the expected
-    a = tn.rand([10, 15, 20])
-    a_expected = (
-        ctg.einsum("abcd,defg,ghij,cfi->abehj", *tt_rand_tntt.cores, a)
-        .squeeze_(0)
-        .squeeze_(-1)
+    assert tt.label.to_string() == "tt operator"
+    assert (
+        tt.device == torch.device(device)
+        if device == "cpu"
+        else torch.device(device, 0)
     )
-    a_ttop = tt_rand @ a
+    assert tt.dtype == dtype
+    assert tt.numel == 1400
 
-    # Check tensors are close
-    tn.testing.assert_close(a_ttop, a_expected)
-
-    # ==================================================================
-    # Test rounding
-    expected = (tt_rand_tntt).round(1e-10)
-    actual = tt_rand.round(1e-10)
-
-    # Check the tt was copied
-    for core_a, core_e in zip(actual.cores, tt_rand.cores):
-        assert not tn.equal(core_a, core_e)
-
-    # Checks
-    assert expected.R[1:-1] == actual.ranks
-    assert expected.shape == actual.shape
-
-    a = tn.rand([10, 15, 20])
-    a_expected = (
-        ctg.einsum("abcd,defg,ghij,cfi->abehj", *tt_rand_tntt.cores, a)
-        .squeeze_(0)
-        .squeeze_(-1)
-    )
-    a_ttop = tt_rand @ a
-    # Check tensors are close
-    tn.testing.assert_close(a_ttop, a_expected)
+    for i in range(1, 4):
+        torch.testing.assert_close(
+            tt.cores[i - 1],
+            torch.ones((i * 10, i * 10), device=device, dtype=dtype).reshape(
+                (1, i * 10, i * 10, 1)
+            ),
+        )
 
 
-def test_tt_operator_python():
-    run_tt_operator(TTO_python)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_to_methods(dtype):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
 
+    cores = [
+        torch.ones((i * 10, i * 10), device="cpu", dtype=torch.float64).reshape(
+            (1, i * 10, i * 10, 1)
+        )
+        for i in range(1, 4)
+    ]
 
-@pytest.mark.skipif(not cpp_available, reason="C++ backend failed to import")
-def test_tt_operator_cpp():
-    run_tt_operator(TTO_cpp)
+    tt0 = TTOperator(cores)
+
+    # Send to GPU as dtype
+    tt1 = tt0.to(torch.device("cuda", 0), dtype)
+
+    # Check the getters
+    assert tt0.device == torch.device("cpu")
+    assert tt0.dtype == torch.float64
+    assert tt1.device == torch.device("cuda", 0)
+    assert tt1.dtype == dtype
+
+    # Check individual tensors
+    for tt0_core, tt1_core in zip(tt0.cores, tt1.cores):
+        assert tt0_core.device == torch.device("cpu")
+        assert tt0_core.dtype == torch.float64
+        assert tt1_core.device == torch.device("cuda", 0)
+        assert tt1_core.dtype == dtype
+
+    # Test in-place version
+    tt0.to_(torch.device("cuda", 0), dtype)
+
+    # Check the getters
+    assert tt0.device == torch.device("cuda", 0)
+    assert tt0.dtype == dtype
+
+    # Check individual tensors
+    for tt0_core in tt0.cores:
+        assert tt0_core.device == torch.device("cuda", 0)
+        assert tt0_core.dtype == dtype

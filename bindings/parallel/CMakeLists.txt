@@ -1,8 +1,23 @@
 # Define the relative filenames
-set(PARALLEL_SRC_REL communicator.cpp parallel_context.cpp request.cpp
-                     parmetis_ops.cpp)
-set(PARALLEL_BINDINGS_REL bindings.cpp parallel_context.cpp routing_table.cpp
-                          communicator.cpp request.cpp)
+set(PARALLEL_SRC_REL
+    communicator.cpp
+    parallel_context.cpp
+    request.cpp
+    parmetis_ops.cpp
+    thread_pool.cpp
+    mpi_types.cpp
+    stream_pool.cpp)
+set(PARALLEL_BINDINGS_REL
+    bindings.cpp
+    parallel_context.cpp
+    routing_table.cpp
+    communicator.cpp
+    request.cpp
+    boundary_communicator.cpp
+    stream_pool.cpp
+    thread_pool.cpp
+    stream_guard.cpp
+    stream_handle.cpp)
 
 # Define the directory paths (Use local variables here, then push if needed)
 set(PARALLEL_SRC_DIR "${PROJECT_SOURCE_DIR}/src/parallel")
