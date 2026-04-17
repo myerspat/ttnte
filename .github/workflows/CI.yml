@@ -27,10 +27,16 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
 
-    - name: Install system dependencies (MPI)
+    - name: Install system dependencies (MPI and Linear Algebra)
       run: |
         sudo apt-get update
-        sudo apt-get install -y libppl-dev openmpi-bin libopenmpi-dev
+        sudo apt-get install -y \
+          libppl-dev \
+          openmpi-bin \
+          libopenmpi-dev \
+          libblas-dev\
+          liblapack-dev\
+          ninja-build
 
     - name: Install Python dependencies
       run: |
