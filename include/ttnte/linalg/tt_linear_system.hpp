@@ -1,7 +1,6 @@
 #pragma once
 
 #include "ttnte/linalg/linear_system.hpp"
-#include "ttnte/linalg/neighbor_coupling.hpp"
 #include "ttnte/linalg/tt_operator.hpp"
 #include "ttnte/linalg/tt_state.hpp"
 
