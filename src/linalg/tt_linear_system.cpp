@@ -4,6 +4,7 @@
 #include <ATen/ops/cat.h>
 #include <ATen/ops/empty.h>
 #include <cstdint>
+#include <torch/cuda.h>
 
 namespace ttnte::linalg {
 
@@ -50,9 +51,14 @@ TTLinearSystem::TTLinearSystem(const OpPtr& interior_op, const StPtr& state,
     device_buffer_ = torch::cat(new_cores, 0);
     active_buffer = device_buffer_;
   } else {
-    host_buffer_ = torch::cat(new_cores, 0).pin_memory();
+    host_buffer_ = torch::cat(new_cores, 0);
     device_buffer_ = torch::Tensor();
     active_buffer = host_buffer_;
+
+    // Pin memory if CUDA is available
+    if (torch::cuda::is_available()) {
+      host_buffer_ = host_buffer_.pin_memory();
+    }
   }
 
   // Create a "new" operator using the views into this buffer
