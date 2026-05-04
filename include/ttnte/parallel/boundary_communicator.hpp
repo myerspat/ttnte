@@ -7,6 +7,8 @@
 
 namespace ttnte::parallel {
 
+/// @brief The boundary communicator class that manages all the MPI boundary
+/// communicators.
 class BoundaryCommunicator {
 public:
   // =================================================================
@@ -16,6 +18,10 @@ public:
 private:
   // =================================================================
   // Private data
+  /// The boundary communicators. There is one for each face of the
+  /// computational domain. For 3-D IGA there will be 6 communicators. This
+  /// makes tagging easier as the TAG of the MPI communication now becomes
+  /// either the global ID of the sending or receiving mesh block.
   BoundaryComms boundary_comms_;
 
   // =================================================================
@@ -48,6 +54,10 @@ public:
 
   // =================================================================
   // Public methods
+  /// @brief Get the tag for this MPI communication using the refinement level.
+  /// If the senders refinement level is less than the receiver then use the
+  /// receiver's global ID. Returns the sender global ID otherwise.
+  /// @return The MPI tag for this communication.
   static int32_t generate_tag(
     int32_t sender_id, int sender_level, int32_t recv_id, int recv_level)
   {
@@ -58,7 +68,11 @@ public:
 
   // =================================================================
   // Public setters / getters
+  /// @return Get all the boundary communicators.
   const BoundaryComms& get_comms() const noexcept { return boundary_comms_; }
+  /// @brief Get a specific boundary communicator.
+  /// @param fid The face ID of the boundary communicator.
+  /// @return The boundary communicator.
   const Communicator& get_comm(int32_t fid) const
   {
     if (fid < 0 || fid >= boundary_comms_.size()) {

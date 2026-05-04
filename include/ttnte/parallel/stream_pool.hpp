@@ -7,6 +7,7 @@
 
 namespace ttnte::parallel {
 
+/// @brief A stream pool manager for torch CUDA streams.
 class StreamPool {
 public:
   // =================================================================
@@ -16,7 +17,9 @@ public:
 private:
   // =================================================================
   // Private data
+  /// Vector of available streams.
   c10::SmallVector<StreamHandle, 16> streams_;
+  /// Mutex of the class for thread safety.
   std::mutex mutex_;
 
   // =================================================================
@@ -32,8 +35,15 @@ public:
 
   // =================================================================
   // Public methods
+  /// @return A shared pointer to the instance of the stream pool for this MPI
+  /// rank.
   static Ptr instance(int num_streams = 16);
+  /// @brief Try to acquire a free stream. If the optional pointer is empty then
+  /// there is not an available stream.
+  /// @return An optional pointer to an available stream.
   std::optional<StreamHandle> try_acquire();
+  /// @brief Return the stream to the stream pool.
+  /// @param stream The returning stream.
   void release(const StreamHandle& stream);
 };
 

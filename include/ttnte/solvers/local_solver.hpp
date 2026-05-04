@@ -5,6 +5,7 @@
 
 namespace ttnte::solvers {
 
+/// @brief The local solver base class.
 class LocalSolver {
 public:
   // =================================================================
@@ -15,6 +16,8 @@ public:
 
   // =================================================================
   // Public methods
+  /// @brief Solve the local linear system.
+  /// @param local_system The local linear system to be solved.
   virtual void solve(const linalg::LinearSystem::Ptr& local_system) = 0;
 };
 

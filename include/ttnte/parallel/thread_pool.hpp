@@ -9,15 +9,22 @@
 
 namespace ttnte::parallel {
 
+/// @brief A thread pool manager.
 class ThreadPool {
 private:
   // =================================================================
   // Private data
+  /// Vector of worker threads.
   std::vector<std::thread> workers_;
+  /// A queue of tasks to execute among the workers.
   std::queue<std::function<void()>> tasks_;
 
+  /// Mutex for thread safety.
   std::mutex queue_mutex_;
+  /// Condition variable to avoid spinning CPU cycles when there are no workers
+  /// available.
   std::condition_variable cv_;
+  /// Boolean to terminate the thread pool.
   bool stop_;
 
 public:
@@ -32,6 +39,8 @@ public:
 
   // =================================================================
   // Public methods
+  /// @brief Push a new task to the queue.
+  /// @param f The function that needs to be executed.
   template<class FuncType>
   void push_task(FuncType&& f)
   {

@@ -14,6 +14,7 @@
 
 namespace ttnte::solvers {
 
+/// @brief The domain decomposition solver class.
 template<typename BlockType>
 class DDSolver {
 public:
@@ -58,6 +59,7 @@ private:
 public:
   // =================================================================
   // Public methods
+  /// @brief Create a shared pointer to a new instance of the DDSolver.
   template<typename... Args>
   static Ptr create(Args&&... args)
   {
@@ -66,25 +68,34 @@ public:
 
   // =================================================================
   // Public getters / setters
+  /// @return The label of the DD solver.
   const Label& get_label() const noexcept { return label_; }
+  /// @return Get the pointer to the DD strategy.
   const DDStrategy::Ptr& get_strategy() const noexcept { return strategy_; }
+  /// @return A vector of linear systems for each mesh block local to this MPI
+  /// rank.
   const std::vector<SystemPtr>& get_local_systems() const noexcept
   {
     return local_systems_;
   }
+  /// @return Get the world communicator.
   const parallel::Communicator& get_world_comm() const noexcept
   {
     return world_comm_;
   }
+  /// @return Get the boundary communicators.
   const parallel::BoundaryCommunicator& get_boundary_comms() const noexcept
   {
     return boundary_comms_;
   }
+  /// @return Get the GPU stream pool.
   const parallel::StreamPool::Ptr get_stream_pool() const noexcept
   {
     return stream_pool_;
   }
 
+  /// @param local_systems Set the vector of local linear systems for this MPI
+  /// rank.
   void set_systems(const std::vector<SystemPtr>& local_systems)
   {
     local_systems_ = local_systems;

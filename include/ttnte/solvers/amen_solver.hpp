@@ -5,6 +5,7 @@
 
 namespace ttnte::solvers {
 
+/// @brief The AMEn local solver which calls torchTT's implementation.
 class AMEnSolver : public LocalSolver {
 public:
   // =================================================================
@@ -16,14 +17,23 @@ protected:
   // Protected data
   /// Number of sweeps
   int nswp_;
+  /// Relative residual.
   double eps_;
+  /// Maximum allowed rank.
   int rmax_;
+  /// The largest size before switching from a direct solver to GMRES.
   int max_full_;
+  /// The rank enrichment size.
   int kickrank_;
+  /// ALS enrichment size.
   int kick2_;
+  /// Number of GMRES iterations for each subproblem.
   int local_iterations_;
+  /// The number of restarts in GMRES.
   int resets_;
+  /// Show output.
   bool verbose_;
+  /// What preconditioner to use.
   int prec_;
 
   // =================================================================
@@ -53,12 +63,15 @@ protected:
 public:
   // =================================================================
   // Public methods
+  /// @brief Create a shared pointer to a new AMEn solver instance.
   template<typename... Args>
   static Ptr create(Args&&... args)
   {
     return Ptr(new AMEnSolver(std::forward<Args>(args)...));
   }
 
+  /// @brief Solve the local linear system.
+  /// @param local_system The local linear system to be solved.
   void solve(const linalg::LinearSystem::Ptr& local_system) override final;
 };
 

@@ -5,10 +5,12 @@
 
 namespace ttnte::parallel {
 
+/// @brief A wrapper class for torch CUDA stream guards.
 class StreamGuard {
 private:
   // =================================================================
   // Private data
+  /// The stream guard casted as the base class.
   c10::StreamGuard guard_;
 
 public:
