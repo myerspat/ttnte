@@ -7,6 +7,10 @@
 
 namespace ttnte::task::mpi {
 
+/// @brief Method for converting torch types to the ttnte::parallel::DataType
+/// type.
+/// @param st The at::ScalarType data type.
+/// @return The resulting ttnte::parallel::DataType data type.
 inline parallel::DataType torch2ttnte(at::ScalarType st)
 {
   switch (st) {
@@ -23,6 +27,12 @@ inline parallel::DataType torch2ttnte(at::ScalarType st)
   }
 }
 
+/// @brief Test if the request has completed. If it has reset the task's mutable
+/// data.
+/// @param request The request.
+/// @param initiated Whether the request has started. We reset this when the
+/// request finishes.
+/// @return The status of the task.
 TaskStatus inline test_request(parallel::Request& request, bool& initiated)
 {
   if (request.test()) {
@@ -35,6 +45,14 @@ TaskStatus inline test_request(parallel::Request& request, bool& initiated)
   return TaskStatus::POLLING;
 }
 
+/// @brief Test if the request has completed. If it has reset the task's mutable
+/// data.
+/// @param request The request.
+/// @param initiated Whether the request has started. We reset this when the
+/// request finishes.
+/// @param packed_tensor The torch tensor used by the request. We set this to an
+/// undefined tensor once the task finishes.
+/// @return The status of the task.
 TaskStatus inline test_request(
   parallel::Request& request, bool& initiated, torch::Tensor& packed_tensor)
 {
@@ -49,6 +67,13 @@ TaskStatus inline test_request(
   return TaskStatus::POLLING;
 }
 
+/// @brief Configure an MPI non-blocking all-gather task.
+/// @param task The task who's payload will be updated.
+/// @param send_buffer The buffer to send.
+/// @param send_count The length of the send buffer.
+/// @param recv_buffer The buffer to receive the gathered data from other ranks.
+/// @param recv_count The length of the receive buffer.
+/// @param comm The communicator for access to MPI.
 template<typename BufferType>
 Task& configure_iallgather_task(Task& task, const BufferType* send_buffer,
   int send_count, BufferType* recv_buffer, int recv_count,
@@ -75,6 +100,13 @@ Task& configure_iallgather_task(Task& task, const BufferType* send_buffer,
   return task;
 }
 
+/// @brief Configure an MPI non-blocking send task.
+/// @param task The task who's payload will be updated.
+/// @param send_buffer The buffer to send.
+/// @param count The length of the send buffer.
+/// @param target_rank The rank which recieve the buffer.
+/// @param tag The tag for the data.
+/// @param comm The communicator for access to MPI.
 template<typename BufferType, typename TagType>
 Task& configure_isend_task(Task& task, const BufferType* send_buffer, int count,
   int target_rank, TagType tag, const parallel::Communicator& comm)
@@ -95,6 +127,13 @@ Task& configure_isend_task(Task& task, const BufferType* send_buffer, int count,
   return task;
 }
 
+/// @brief Configure an MPI non-blocking recieve task.
+/// @param task The task who's payload will be updated.
+/// @param recv_buffer The buffer to recieve the information in.
+/// @param count The length of the buffer of data.
+/// @param target_rank The rank which is sending the buffer of data.
+/// @param tag The tag for the data.
+/// @param comm The communicator for access to MPI.
 template<typename BufferType, typename TagType>
 Task& configure_irecv_task(Task& task, BufferType* recv_buffer, int count,
   int target_rank, TagType tag, const parallel::Communicator& comm)
@@ -115,6 +154,13 @@ Task& configure_irecv_task(Task& task, BufferType* recv_buffer, int count,
   return task;
 }
 
+/// @brief Configure an MPI non-blocking send without prior knowledge of its
+/// size.
+/// @param task The task who's payload will be updated.
+/// @param send_tensor The torch tensor to send.
+/// @param target_rank The MPI rank to send the buffer of data to.
+/// @param tag The tag for the data.
+/// @param comm The communicator for access to MPI.
 template<typename TagType>
 Task& configure_dynamic_isend_task(Task& task, const torch::Tensor* send_tensor,
   int target_rank, TagType tag, const parallel::Communicator& comm)
@@ -145,6 +191,13 @@ Task& configure_dynamic_isend_task(Task& task, const torch::Tensor* send_tensor,
   return task;
 }
 
+/// @brief Configure an MPI non-blocking recieve without prior knowledge of its
+/// size.
+/// @param task The task who's payload will be updated.
+/// @param recv_tensor The tensor to recieve the buffer of data.
+/// @param source_rank The MPI rank sending the information.
+/// @param tag The tag for the data.
+/// @param comm The communicator for access to MPI.
 template<typename TagType>
 Task& configure_dynamic_irecv_task(Task& task, torch::Tensor* recv_buffer,
   int source_rank, TagType tag, const parallel::Communicator& comm)

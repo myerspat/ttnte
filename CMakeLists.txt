@@ -241,6 +241,11 @@ target_include_directories(
           ${TASK_BINDINGS_DIR}
           ${SOLVERS_BINDINGS_DIR})
 
+if(APPLE)
+  set_target_properties(ttnte_python PROPERTIES LINK_FLAGS
+                                                "-undefined dynamic_lookup")
+endif()
+
 set_target_properties(
   ttnte_python
   PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/ttnte/cpp"

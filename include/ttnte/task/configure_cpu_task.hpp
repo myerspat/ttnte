@@ -5,6 +5,10 @@
 
 namespace ttnte::task::cpu {
 
+/// @brief Configure a task to execute `solver->solve(system)` on CPU.
+/// @param task The task to add the payload to.
+/// @param system The system passed to the `solver`.
+/// @param solver The solver with a `solve()` method.
 template<typename DataType, typename SolverType>
 Task& configure_solve_task(Task& task, const std::shared_ptr<DataType>& system,
   const std::shared_ptr<SolverType>& solver)

@@ -13,6 +13,7 @@
 
 namespace ttnte::task {
 
+/// @brief Status enum for tasks.
 enum class TaskStatus : uint8_t {
   WAITING,  // Waiting for the task to be ready to run
   READY,    // Task is ready to run
@@ -21,6 +22,7 @@ enum class TaskStatus : uint8_t {
   COMPLETED // This task is complete
 };
 
+/// @brief The target device that the task will run on.
 enum class DeviceTarget : uint8_t {
   CPU_SYNC,      // CPU only workload (blocking)
   CPU_ASYNC,     // CPU only workload (non-blocking)
@@ -30,6 +32,8 @@ enum class DeviceTarget : uint8_t {
   NETWORK_ASYNC, // Network workload using MPI (non-blocking)
 };
 
+/// @brief The task class for a task-based solver using a directed asyclic
+/// graph.
 class Task {
 public:
   // =================================================================
@@ -40,17 +44,17 @@ public:
 private:
   // =================================================================
   // Private data
-  /// Label of the task
+  /// Label of the task.
   Label label_;
-  /// Primary device
+  /// Primary device.
   DeviceTarget target_;
-  /// Status of the task
+  /// Status of the task.
   std::atomic<TaskStatus> status_ {TaskStatus::WAITING};
-  /// Vector of dependent tasks
+  /// Vector of dependent tasks.
   std::vector<Task*> dependencies_;
-  /// Function to run when READY
+  /// Function to run when TaskStatus::READY.
   std::function<TaskStatus()> payload_;
-  /// Whether the task's completion has been counted
+  /// Whether the task's completion has been counted.
   bool is_counted_ = false;
 
 public:
@@ -68,8 +72,14 @@ public:
 
   // =================================================================
   // Public methods
+  /// @brief Add a dependency that this task must wait for. Once all
+  /// dependencies are TaskStatus::COMPLETED then this task is
+  /// TaskStatus::READY.
+  /// @param dependency A pointer to the task that this task depends on.
   void add_dependency(Task* dependency) { dependencies_.push_back(dependency); }
 
+  /// @brief Check if the dependencies are have completed.
+  /// @return Whether all dependencies are done.
   bool check_dependencies() const
   {
     for (Task* dependency : dependencies_) {
@@ -80,11 +90,14 @@ public:
     return true;
   }
 
+  /// @brief Update the TaskStatus of this task.
+  /// @param new_status The new status of this task.
   void update_status(TaskStatus new_status)
   {
     status_.store(new_status, std::memory_order_release);
   }
 
+  /// @brief Execute the function that this task wraps.
   void execute()
   {
     try {
@@ -103,14 +116,17 @@ public:
     }
   }
 
+  /// @brief Check if this status has been counted as completed.
   bool is_counted() const noexcept { return is_counted_; }
 
+  /// @brief Change this task to counted.
   void count()
   {
     assert(get_status() == TaskStatus::COMPLETED);
     is_counted_ = true;
   }
 
+  /// @Brief Reset this task to waiting.
   void reset()
   {
     status_.store(TaskStatus::WAITING);
@@ -119,11 +135,16 @@ public:
 
   // =================================================================
   // Public Getters / Setters
+  /// @return The label of this class.
   const Label& get_label() const noexcept { return label_; }
+  /// @return The target device for this task.
   const DeviceTarget& get_target() const noexcept { return target_; }
+  /// @return The status of this task.
   TaskStatus get_status() const noexcept { return status_.load(); }
 
+  /// @param The new target device for this task.
   void set_target(DeviceTarget new_target) { target_ = new_target; }
+  /// @param The payload function that this task will execute.
   void set_payload(std::function<TaskStatus()> payload) { payload_ = payload; }
 };
 

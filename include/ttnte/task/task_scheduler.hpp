@@ -7,6 +7,7 @@
 
 namespace ttnte::task {
 
+/// @brief This class executes the graph held by the TaskGraph.
 class TaskScheduler {
 public:
   // =================================================================
@@ -16,15 +17,20 @@ public:
 private:
   // =================================================================
   // Private data
+  /// Label of the scheduler.
   Label label_;
+  /// The thread pool of the scheduler.
   parallel::ThreadPool thread_pool_;
 
-  // Thread lock
+  /// The mutex for stopping race conditions.
   std::mutex mutex;
 
 public:
   // =================================================================
   // Public constructor
+  /// @brief Constructor for the scheduler.
+  /// @param num_threads The number of threads for the thread pool.
+  /// @param label The label of the scheduler.
   TaskScheduler(
     size_t num_threads = 4, std::optional<std::string> label = std::nullopt)
     : thread_pool_(num_threads),
@@ -34,11 +40,15 @@ public:
 
   // =================================================================
   // Public methods
+  /// @brief Execute a task graph.
+  /// @param The TaskGraph to execute.
   void execute(TaskGraph& graph);
 
   // =================================================================
   // Public getters / setters
+  /// @return The label of the scheduler.
   const Label& get_label() const noexcept { return label_; }
+  /// @return The thread pool of the scheduler.
   const parallel::ThreadPool& get_thread_pool() const noexcept
   {
     return thread_pool_;
