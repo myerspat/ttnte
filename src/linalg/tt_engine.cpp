@@ -1,5 +1,8 @@
 #include "ttnte/linalg/tt_engine.hpp"
+#include "ttnte/linalg/matrix_ops.hpp"
+#include "ttnte/linalg/tt_ops.hpp"
 #include "ttnte/utils/exception.hpp"
+#include <cmath>
 
 namespace ttnte::linalg {
 
@@ -115,6 +118,212 @@ TTEngine& TTEngine::to_(const torch::Device& device, bool non_blocking,
     device, cores_[0].scalar_type(), non_blocking, copy, memory_format);
 }
 
+TTEngine::Tensors TTEngine::tt_svd(
+  torch::Tensor tensor, double eps, int64_t max_rank)
+{
+  // Case where there is only one dimension
+  if (tensor.ndimension() == 1) {
+    return Tensors {tensor.clone()};
+  }
+
+  int64_t ndim = tensor.ndimension();
+  double delta = tensor.norm(2).item<double>() * eps /
+                 std::sqrt(static_cast<double>(ndim - 1));
+  auto shape = tensor.sizes();
+
+  // Array of TT-cores
+  Tensors cores;
+  cores.reserve(ndim);
+
+  int64_t r = 1;
+  for (int64_t i = 0; i < ndim - 1; i++) {
+    int64_t n = shape[i];
+
+    // Perform truncated SVD
+    auto [u, s, vh, _1, _2] =
+      truncated_svd(tensor.reshape({r * n, -1}), delta, max_rank, false);
+
+    // Get the right rank
+    r = u.size(1);
+
+    // Store the current core
+    cores.push_back(u.reshape({-1, n, r}));
+
+    // Contract the singular values back into the tensor
+    tensor = s.unsqueeze(1) * vh;
+  }
+
+  // Push the last core into the array of tensors
+  cores.push_back(tensor.reshape({r, shape.back(), 1}));
+  return cores;
+}
+
+TTEngine& TTEngine::lr_orthogonalize_()
+{
+  // Iterate from left to right and perform QR
+  for (size_t i = 0; i < cores_.size() - 1; i++) {
+    torch::Tensor& core = cores_[i];
+    auto shape = core.sizes().vec();
+
+    // Perform QR decomposition
+    auto [q, r] = torch::linalg_qr(core.reshape({-1, shape.back()}), "reduced");
+
+    // Place Q back into the array of tensors
+    shape.back() = q.size(1);
+    core = q.reshape(shape);
+
+    // Contract R with the next core
+    cores_[i + 1] = torch::tensordot(r, cores_[i + 1], {1}, {0});
+  }
+
+  return *this;
+}
+
+TTEngine TTEngine::lr_orthogonalize() const
+{
+  auto copy = *this;
+  copy.lr_orthogonalize_();
+  return copy;
+}
+
+TTEngine& TTEngine::round_(double eps, int64_t max_rank)
+{
+  if (cores_.size() <= 1) {
+    return *this;
+  }
+  assert(max_rank > 0);
+  double delta = eps / std::sqrt(static_cast<double>(cores_.size() - 1));
+
+  // Compute left-to-right orthogonalization
+  lr_orthogonalize_();
+
+  for (size_t i = cores_.size() - 1; i > 0; i--) {
+    auto& rcore = cores_[i];
+    auto& lcore = cores_[i - 1];
+
+    // Get the shape of the right core
+    auto shape = rcore.sizes().vec();
+
+    // Perform truncated SVD
+    bool is_first_step = i == cores_.size() - 1;
+    auto [u, s, vh, new_delta, _1] = truncated_svd(
+      rcore.reshape({shape.front(), -1}), delta, max_rank, is_first_step);
+    if (is_first_step) {
+      delta = new_delta;
+    }
+
+    // Update the rank and emplace the new core
+    shape[0] = s.size(0);
+    rcore = vh.reshape(shape);
+
+    // Contract the left three tensors
+    lcore = torch::tensordot(lcore, u * s, {-1}, {0});
+  }
+
+  return *this;
+}
+
+TTEngine TTEngine::round(double eps, int64_t max_rank) const
+{
+  auto copy = *this;
+  copy.round_(eps, max_rank);
+  return copy;
+}
+
+TTEngine TTEngine::from_dense(
+  const torch::Tensor& tensor, double eps, int64_t max_rank)
+{
+  // Run the TT-SVD algorithm
+  auto cores = tt_svd(tensor, eps, max_rank);
+
+  // Reshape the cores into a vector
+  for (auto& core : cores) {
+    core.unsqueeze_(2);
+  }
+
+  return TTEngine(std::move(cores), false);
+}
+
+TTEngine TTEngine::from_dense(torch::Tensor tensor,
+  const c10::SmallVector<int64_t, 6>& m_modes,
+  const c10::SmallVector<int64_t, 6>& n_modes, double eps, int64_t max_rank,
+  bool is_interleaved)
+{
+  if (m_modes.size() != n_modes.size()) {
+    throw utils::runtime_error("ttnte::linalg::TTEngine::from_dense",
+      "`m_modes` and `n_modes` must have the same length");
+  }
+
+  // Number of cores
+  int64_t num_cores = n_modes.size();
+
+  // Check if we need to permute the dimensions
+  if (!is_interleaved) {
+    // Full shape from all modes
+    c10::SmallVector<int64_t, 12> full_shape;
+    full_shape.insert(full_shape.end(), m_modes.begin(), m_modes.end());
+    full_shape.insert(full_shape.end(), n_modes.begin(), n_modes.end());
+    tensor = tensor.reshape(full_shape);
+
+    // Permute to be interleaved
+    c10::SmallVector<int64_t, 12> permutation;
+    for (int64_t i = 0; i < num_cores; ++i) {
+      permutation.push_back(i);
+      permutation.push_back(i + num_cores);
+    }
+    tensor = tensor.permute(permutation);
+  }
+
+  // Combine dimensions for decomposition
+  c10::SmallVector<int64_t, 6> decomp_shape;
+  decomp_shape.reserve(num_cores);
+
+  // Check the sizes provided match the tensor given
+  {
+    int64_t size = 1;
+    for (size_t i = 0; i < num_cores; i++) {
+      decomp_shape.push_back(n_modes[i] * m_modes[i]);
+      size *= decomp_shape.back();
+    }
+
+    if (size != tensor.numel()) {
+      throw utils::runtime_error("ttnte::linalg::TTEngine::from_dense",
+        "The total size of `n_modes` and `m_modes` does not match\n"
+        "`tensor.numel()`");
+    }
+  }
+
+  // Reshape the given tensor and pass it to TT-SVD
+  auto cores = tt_svd(tensor.reshape(decomp_shape), eps, max_rank);
+  assert(cores.size() == num_cores);
+
+  // Unravel the individual dimensions
+  for (size_t i = 0; i < num_cores; i++) {
+    auto& core = cores[i];
+    assert(core.ndimension() == 3);
+    core = core.reshape({core.size(0), m_modes[i], n_modes[i], core.size(-1)});
+  }
+
+  return TTEngine(std::move(cores), false);
+}
+
+torch::Tensor TTEngine::to_dense() const
+{
+  if (cores_.size() == 0) {
+    return torch::Tensor();
+  } else if (cores_.size() == 1) {
+    return cores_[0].squeeze(0).squeeze(-1);
+  }
+
+  // Contract all tensors
+  auto result = torch::tensordot(cores_[0], cores_[1], {-1}, {0});
+  for (size_t i = 2; i < cores_.size(); i++) {
+    result = torch::tensordot(result, cores_[i], {-1}, {0});
+  }
+  result.squeeze_(0).squeeze_(-1);
+  return result;
+}
+
 void TTEngine::from_buffer(const torch::Tensor& buffer)
 {
   assert(buffer.numel() == get_numel() && buffer.ndimension() == 1);
@@ -127,6 +336,217 @@ void TTEngine::from_buffer(const torch::Tensor& buffer)
   }
 }
 
+TTEngine& TTEngine::neg_()
+{
+  cores_[0] = cores_[0].neg();
+  return *this;
+}
+
+TTEngine TTEngine::zeros(const c10::SmallVector<int64_t, 6>& m_modes,
+  std::optional<torch::Device> device, std::optional<torch::ScalarType> dtype)
+{
+  return zeros(
+    m_modes, c10::SmallVector<int64_t, 6>(m_modes.size(), 1), device, dtype);
+}
+
+TTEngine TTEngine::zeros(const c10::SmallVector<int64_t, 6>& m_modes,
+  const c10::SmallVector<int64_t, 6>& n_modes,
+  std::optional<torch::Device> device, std::optional<torch::ScalarType> dtype)
+{
+  if (m_modes.size() != n_modes.size()) {
+    throw utils::runtime_error("ttnte::linalg::tt::zeros",
+      "The length of `m_modes` must equal the length of `n_modes`");
+  }
+  size_t num_cores = m_modes.size();
+  auto options = at::TensorOptions().device(device).dtype(dtype);
+
+  TTEngine::Tensors cores;
+  cores.reserve(num_cores);
+
+  for (size_t i = 0; i < num_cores; i++) {
+    cores.push_back(torch::zeros({1, m_modes[i], n_modes[i], 1}, options));
+  }
+
+  return TTEngine(std::move(cores), false);
+}
+
+TTEngine TTEngine::ones(const c10::SmallVector<int64_t, 6>& m_modes,
+  std::optional<torch::Device> device, std::optional<torch::ScalarType> dtype)
+{
+  return ones(
+    m_modes, c10::SmallVector<int64_t, 6>(m_modes.size(), 1), device, dtype);
+}
+
+TTEngine TTEngine::ones(const c10::SmallVector<int64_t, 6>& m_modes,
+  const c10::SmallVector<int64_t, 6>& n_modes,
+  std::optional<torch::Device> device, std::optional<torch::ScalarType> dtype)
+{
+  if (m_modes.size() != n_modes.size()) {
+    throw utils::runtime_error("ttnte::linalg::tt::ones",
+      "The length of `m_modes` must equal the length of `n_modes`");
+  }
+  size_t num_cores = m_modes.size();
+  auto options = at::TensorOptions().device(device).dtype(dtype);
+
+  TTEngine::Tensors cores;
+  cores.reserve(num_cores);
+
+  for (size_t i = 0; i < num_cores; i++) {
+    cores.push_back(torch::ones({1, m_modes[i], n_modes[i], 1}, options));
+  }
+
+  return TTEngine(std::move(cores), false);
+}
+
+TTEngine& TTEngine::transpose_(const c10::SmallVector<int64_t, 6>& core_idxs)
+{
+  if (core_idxs.empty()) {
+    for (auto& core : cores_) {
+      core = core.transpose(1, 2);
+    }
+
+  } else {
+    for (const auto& idx : core_idxs) {
+      assert(idx < cores_.size());
+      cores_[idx] = cores_[idx].transpose(1, 2);
+    }
+  }
+
+  return *this;
+}
+
+TTEngine TTEngine::transpose(
+  const c10::SmallVector<int64_t, 6>& core_idxs) const
+{
+  auto result = *this;
+  result.transpose_(core_idxs);
+  return result;
+}
+
+// =================================================================
+// Public operators
+
+TTEngine TTEngine::operator-() const
+{
+  auto result = *this;
+  result.cores_[0] = result.cores_[0].neg();
+  return result;
+}
+
+TTEngine& TTEngine::operator+=(const TTEngine& other)
+{
+  int64_t num_cores = cores_.size();
+  TORCH_CHECK(num_cores == other.cores_.size(),
+    "TTEngines must have the same number of cores for addition.");
+
+  for (size_t i = 0; i < num_cores; ++i) {
+    auto& core_a = cores_[i];
+    const auto& core_b = other.cores_[i];
+
+    auto shape_a = core_a.sizes();
+    auto shape_b = core_b.sizes();
+
+    // Validate physical dimensions (n and m)
+    TORCH_CHECK(shape_a[1] == shape_b[1] && shape_a[2] == shape_b[2],
+      "Physical dimensions must match at core ", i);
+
+    int64_t ra_in = shape_a[0], ra_out = shape_a[3];
+    int64_t rb_in = shape_b[0], rb_out = shape_b[3];
+    int64_t n = shape_a[1], m = shape_a[2];
+
+    // Determine new bond ranks
+    // Boundary ranks stay at 1, internal ranks are summed
+    int64_t new_r_in = (i == 0) ? 1 : (ra_in + rb_in);
+    int64_t new_r_out = (i == num_cores - 1) ? 1 : (ra_out + rb_out);
+
+    torch::Tensor new_core =
+      torch::zeros({new_r_in, n, m, new_r_out}, core_a.options());
+
+    // Place Core A and Core B into the new core
+    if (i == 0) {
+      // First Core: Horizontal Concatenation [A, B]
+      new_core.slice(0, 0, 1).slice(3, 0, ra_out) = core_a;
+      new_core.slice(0, 0, 1).slice(3, ra_out, ra_out + rb_out) = core_b;
+    } else if (i == num_cores - 1) {
+      // Last Core: Vertical Concatenation [A; B]
+      new_core.slice(0, 0, ra_in).slice(3, 0, 1) = core_a;
+      new_core.slice(0, ra_in, ra_in + rb_in).slice(3, 0, 1) = core_b;
+    } else {
+      // Internal Cores: Block Diagonal [A 0; 0 B]
+      new_core.slice(0, 0, ra_in).slice(3, 0, ra_out) = core_a;
+      new_core.slice(0, ra_in, ra_in + rb_in)
+        .slice(3, ra_out, ra_out + rb_out) = core_b;
+    }
+
+    core_a = new_core;
+  }
+
+  return *this;
+}
+TTEngine& TTEngine::operator-=(const TTEngine& other)
+{
+  return *this += (-other);
+}
+TTEngine& TTEngine::operator*=(const TTEngine& other)
+{
+  int64_t num_cores = cores_.size();
+  TORCH_CHECK(num_cores == other.cores_.size(),
+    "TTEngines must have the same number of cores for addition.");
+
+  for (size_t i = 0; i < num_cores; ++i) {
+    auto& core_a = cores_[i];
+    const auto& core_b = other.cores_[i];
+
+    // Verify physical dimensions match
+    TORCH_CHECK(
+      core_a.size(1) == core_b.size(1) && core_a.size(2) == core_b.size(2),
+      "Physical dimensions must match for Hadamard product.");
+
+    // Use einsum to perform the Kronecker-like product on ranks
+    // a: [r1_in, n, m, r1_out]
+    // b: [r2_in, n, m, r2_out]
+    // We multiply matching n, m and combine the r_in and r_out dimensions
+    // Result: [r1_in, r2_in, n, m, r1_out, r2_out]
+    torch::Tensor combined =
+      torch::einsum("unmv,wnmz-> uwnmvz", {core_a, core_b});
+
+    // Reshape to combine the bond ranks back into 4D
+    core_a = combined.reshape({core_a.size(0) * core_b.size(0), core_a.size(1),
+      core_a.size(2), core_a.size(3) * core_b.size(3)});
+  }
+
+  return *this;
+}
+
+TTEngine& TTEngine::operator/=(const TTEngine& other)
+{
+  *this = elementwise_divide(*this, other);
+  return *this;
+}
+
+template<typename T>
+typename std::enable_if<std::is_arithmetic<T>::value ||
+                          std::is_same<T, torch::Tensor>::value,
+  TTEngine>::type
+operator/(const T& a, const TTEngine& b)
+{
+  // Create a numerator out of a
+  auto numerator = TTEngine::ones(
+    b.get_m_modes(), b.get_n_modes(), b.get_device(), b.get_dtype());
+  numerator *= a;
+  return elementwise_divide(numerator, b);
+}
+
+TTEngine operator/(const TTEngine& a, const TTEngine& b)
+{
+  return elementwise_divide(a, b);
+}
+
+template TTEngine operator/ <float>(const float& a, const TTEngine& b);
+template TTEngine operator/ <double>(const double& a, const TTEngine& b);
+template TTEngine operator/
+  <torch::Tensor>(const torch::Tensor& a, const TTEngine& b);
+
 // =================================================================
 // Public getters / setters
 int64_t TTEngine::get_numel() const
@@ -138,14 +558,15 @@ int64_t TTEngine::get_numel() const
   return total;
 }
 
-c10::SmallVector<int64_t, 5> TTEngine::get_ranks() const
+c10::SmallVector<int64_t, 7> TTEngine::get_ranks() const
 {
-  c10::SmallVector<int64_t, 5> ranks;
+  c10::SmallVector<int64_t, 7> ranks;
   ranks.reserve(cores_.size() - 1);
 
-  for (auto it = cores_.begin(); it != cores_.end() - 1; it++) {
-    ranks.push_back(it->size(3));
+  for (auto it = cores_.begin(); it != cores_.end(); it++) {
+    ranks.push_back(it->size(0));
   }
+  ranks.push_back(1);
 
   return ranks;
 }
@@ -161,6 +582,30 @@ c10::SmallVector<int64_t, 12> TTEngine::get_free_indices() const
   }
 
   return free_indices;
+}
+
+c10::SmallVector<int64_t, 6> TTEngine::get_m_modes() const
+{
+  c10::SmallVector<int64_t, 6> m_modes;
+  m_modes.reserve(cores_.size());
+
+  for (const auto& core : cores_) {
+    m_modes.push_back(core.size(1));
+  }
+
+  return m_modes;
+}
+
+c10::SmallVector<int64_t, 6> TTEngine::get_n_modes() const
+{
+  c10::SmallVector<int64_t, 6> n_modes;
+  n_modes.reserve(cores_.size());
+
+  for (const auto& core : cores_) {
+    n_modes.push_back(core.size(2));
+  }
+
+  return n_modes;
 }
 
 } // namespace ttnte::linalg

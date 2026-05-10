@@ -1,0 +1,426 @@
+#pragma once
+
+#include "ttnte/linalg/tt_engine.hpp"
+#include "ttnte/linalg/tt_operator.hpp"
+#include "ttnte/linalg/tt_state.hpp"
+#include <limits>
+#include <optional>
+
+namespace ttnte::linalg {
+
+/// @brief Compute a matrix-matrix product in TT format.
+/// @brief a The TT-matrix.
+/// @brief b The TT-matrix.
+/// @return The exact solution to a @ b.
+TTEngine mm(const TTEngine& a, const TTEngine& b);
+
+/// @brief Compute a matrix-vector product in TT format.
+/// @brief a The TT-matrix.
+/// @brief b The TT-vector.
+/// @return The exact solution to a @ b.
+inline TTEngine mv(const TTEngine& a, const TTEngine& b)
+{
+  return mm(a, b);
+}
+
+/// @brief Perform an element-wise division with two tensor trains using AMEn.
+/// This calls the torchTT implementation `torchtt._division.amen_divide()` in
+/// Python.
+/// @param a The numerator TT.
+/// @param b The denominator TT.
+/// @param nswp The maximum number of sweeps.
+/// @param initial_guess The initial guess of the solution.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @param max_full The maximum allowed size of a local problem to use a direct
+/// solver. For anything greater we use GMRES.
+/// @param kickrank The enrichment rank size.
+/// @param kick2 ALS enrichment.
+/// @param trunc_norm Which norm to base convergence off.
+/// @param local_iterations The max number of GMRES iterations.
+/// @param resets The maximum number of restarts in GMRES.
+/// @param verbose Whether to print progress.
+/// @param preconditioner Which preconditioner to use.
+/// @return The approximate solution for a / b.
+TTEngine elementwise_divide(const TTEngine& a, const TTEngine& b, int nswp = 50,
+  std::optional<TTEngine> initial_guess = std::nullopt, double eps = 1e-12,
+  int max_rank = std::numeric_limits<int>::max(), int max_full = 500,
+  int kickrank = 4, int kick2 = 0, std::string trunc_norm = "res",
+  int local_iterations = 40, int resets = 2, bool verbose = false,
+  std::optional<std::string> preconditioner = std::nullopt);
+
+/// @brief Compute a matrix-vector product in TT format using DMRG. This calls
+/// the C++ torchTT implementation.
+/// @param A The TT-matrix.
+/// @param x The TT-vector.
+/// @param y0 The initial guess TT-vector.
+/// @param nswp The maximum number of sweeps.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @param kickrank The enrichment rank size.
+/// @param verbose Whether to print progress.
+/// @return The approximate solution to A @ x.
+TTEngine dmrg_mv(const TTEngine& A, const TTEngine& x,
+  std::optional<TTEngine> y0 = std::nullopt, int nswp = 20, double eps = 1e-12,
+  int max_rank = std::numeric_limits<int>::max(), int kickrank = 4,
+  bool verbose = false);
+
+/// @brief Compute the element-wise (Hadamard) product using that defined in
+/// https://arxiv.org/pdf/2410.19747. This is functionally equivalent to
+/// `(a * b).round(eps, max_rank)`.
+/// @param a The TT-matrix.
+/// @param b The TT-vector.
+/// @param y0 The initial guess TT-vector.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @return The approximate solution to a * b.
+TTEngine fast_hadamard(const TTEngine& a, const TTEngine& b, double eps = 1e-10,
+  int max_rank = std::numeric_limits<int>::max());
+
+/// @brief Compute the matrix-matrix product in TT format using that defined in
+/// https://arxiv.org/pdf/2410.19747. This is functionally equivalent to
+/// `(a @ b).round(eps, max_rank)`.
+/// @param a The TT-matrix.
+/// @param b The TT-matrix.
+/// @param y0 The initial guess TT-vector.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @return The approximate solution to a @ b.
+TTEngine fast_mm(const TTEngine& a, const TTEngine& b, double eps = 1e-10,
+  int max_rank = std::numeric_limits<int>::max());
+
+/// @brief Compute the matrix-vector product in TT format using that defined in
+/// https://arxiv.org/pdf/2410.19747. This is functionally equivalent to
+/// `(a @ b).round(eps, max_rank)`.
+/// @param a The TT-matrix.
+/// @param b The TT-vector.
+/// @param y0 The initial guess TT-vector.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @return The approximate solution to a @ b.
+inline TTEngine fast_mv(const TTEngine& a, const TTEngine& b,
+  double eps = 1e-10, int max_rank = std::numeric_limits<int>::max())
+{
+  return fast_mm(a, b, eps, max_rank);
+}
+
+/// @brief Compute the matrix-matrix product in TT format using AMEn. This calls
+/// `torchtt._amen.amen_mm()`.
+/// @param a The TT-matrix.
+/// @param b The TT-matrix.
+/// @param nswp The maximum number of sweeps.
+/// @param x0 The initial guess TT-matrix.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @param kickrank The enrichment rank size.
+/// @param kick2 ALS enrichment.
+/// @param verbose Whether to print progress.
+/// @return The approximate solution to a @ b.
+TTEngine amen_mm(const linalg::TTEngine& a, const linalg::TTEngine& b,
+  int nswp = 22, std::optional<linalg::TTEngine> x0 = std::nullopt,
+  double eps = 1e-10, int max_rank = std::numeric_limits<int>::max(),
+  int kickrank = 4, int kick2 = 0, bool verbose = false);
+
+/// @brief Compute the matrix-vector product in TT format using AMEn. This calls
+/// `torchtt._amen.amen_mm()`.
+/// @param a The TT-matrix.
+/// @param b The TT-vector.
+/// @param nswp The maximum number of sweeps.
+/// @param x0 The initial guess TT-vector.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @param kickrank The enrichment rank size.
+/// @param kick2 ALS enrichment.
+/// @param verbose Whether to print progress.
+/// @return The approximate solution to a @ b.
+inline TTEngine amen_mv(const linalg::TTEngine& a, const linalg::TTEngine& b,
+  int nswp = 22, std::optional<linalg::TTEngine> x0 = std::nullopt,
+  double eps = 1e-10, int max_rank = std::numeric_limits<int>::max(),
+  int kickrank = 4, int kick2 = 0, bool verbose = false)
+{
+  return amen_mm(a, b, nswp, x0, eps, max_rank, kickrank, kick2, verbose);
+}
+
+/// @brief Solve a linear system in TT format using the Alternating Minimal
+/// Energy Method (AMEn). This calls the C++ implementation provided by torchTT.
+/// @param A The TT-matrix.
+/// @param b The TT-vector.
+/// @param x0 The initial guess TT-vector.
+/// @param nswp The maximum number of sweeps.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @param max_full The maximum allowed size of a local problem to use a direct
+/// solver. For anything greater we use GMRES.
+/// @param kickrank The enrichment rank size.
+/// @param kick2 ALS enrichment.
+/// @param local_iterations The max number of GMRES iterations.
+/// @param resets The maximum number of restarts in GMRES.
+/// @param verbose Whether to print progress.
+/// @param preconditioner Which preconditioner to use.
+/// @return The approximate solution x for A @ x = b.
+TTEngine amen_solve(const linalg::TTEngine& A, const linalg::TTEngine& b,
+  std::optional<linalg::TTEngine> x0 = std::nullopt, int nswp = 22,
+  double eps = 1e-10, int max_rank = std::numeric_limits<int>::max(),
+  int max_full = 500, int kickrank = 4, int kick2 = 0,
+  int local_iterations = 40, int resets = 2, bool verbose = false,
+  int preconditioner = 0);
+
+// =================================================================
+// Inline helpers
+
+/// @brief Compute a matrix-matrix product in TT format.
+/// @brief a The TT-matrix.
+/// @brief b The TT-matrix.
+/// @return The exact solution to a @ b.
+inline TTOperator::Ptr mm(const TTOperator::Ptr& a, const TTOperator::Ptr& b)
+{
+  return TTOperator::create(mm(a->get_engine(), b->get_engine()));
+}
+
+/// @brief Compute a matrix-vector product in TT format.
+/// @brief a The TT-matrix.
+/// @brief b The TT-vector.
+/// @return The exact solution to a @ b.
+inline TTState::Ptr mv(const TTOperator::Ptr& a, const TTState::Ptr& b)
+{
+  return TTState::create(mm(a->get_engine(), b->get_engine()));
+}
+
+/// @brief Perform an element-wise division with two tensor trains using AMEn.
+/// This calls the torchTT implementation `torchtt._division.amen_divide()` in
+/// Python.
+/// @param a The numerator TT.
+/// @param b The denominator TT.
+/// @param nswp The maximum number of sweeps.
+/// @param initial_guess The initial guess of the solution.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @param max_full The maximum allowed size of a local problem to use a direct
+/// solver. For anything greater we use GMRES.
+/// @param kickrank The enrichment rank size.
+/// @param kick2 ALS enrichment.
+/// @param trunc_norm Which norm to base convergence off.
+/// @param local_iterations The max number of GMRES iterations.
+/// @param resets The maximum number of restarts in GMRES.
+/// @param verbose Whether to print progress.
+/// @param preconditioner Which preconditioner to use.
+/// @return The approximate solution for a / b.
+inline TTState::Ptr elementwise_divide(const TTState::Ptr& a,
+  const TTState::Ptr& b, int nswp = 50,
+  std::optional<TTState::Ptr> initial_guess = std::nullopt, double eps = 1e-12,
+  int max_rank = std::numeric_limits<int>::max(), int max_full = 500,
+  int kickrank = 4, int kick2 = 0, std::string trunc_norm = "res",
+  int local_iterations = 40, int resets = 2, bool verbose = false,
+  std::optional<std::string> preconditioner = std::nullopt)
+{
+  return TTState::create(
+    elementwise_divide(a->get_engine(), b->get_engine(), nswp,
+      initial_guess.has_value() ? initial_guess.value()->get_engine()
+                                : std::optional<TTEngine>(std::nullopt),
+      eps, max_rank, max_full, kickrank, kick2, trunc_norm, local_iterations,
+      resets, verbose, preconditioner));
+}
+
+/// @brief Perform an element-wise division with two tensor trains using AMEn.
+/// This calls the torchTT implementation `torchtt._division.amen_divide()` in
+/// Python.
+/// @param a The numerator TT.
+/// @param b The denominator TT.
+/// @param nswp The maximum number of sweeps.
+/// @param initial_guess The initial guess of the solution.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @param max_full The maximum allowed size of a local problem to use a direct
+/// solver. For anything greater we use GMRES.
+/// @param kickrank The enrichment rank size.
+/// @param kick2 ALS enrichment.
+/// @param trunc_norm Which norm to base convergence off.
+/// @param local_iterations The max number of GMRES iterations.
+/// @param resets The maximum number of restarts in GMRES.
+/// @param verbose Whether to print progress.
+/// @param preconditioner Which preconditioner to use.
+/// @return The approximate solution for a / b.
+inline TTOperator::Ptr elementwise_divide(const TTOperator::Ptr& a,
+  const TTOperator::Ptr& b, int nswp = 50,
+  std::optional<TTOperator::Ptr> initial_guess = std::nullopt,
+  double eps = 1e-12, int max_rank = std::numeric_limits<int>::max(),
+  int max_full = 500, int kickrank = 4, int kick2 = 0,
+  std::string trunc_norm = "res", int local_iterations = 40, int resets = 2,
+  bool verbose = false,
+  std::optional<std::string> preconditioner = std::nullopt)
+{
+  return TTOperator::create(
+    elementwise_divide(a->get_engine(), b->get_engine(), nswp,
+      initial_guess.has_value() ? initial_guess.value()->get_engine()
+                                : std::optional<TTEngine>(std::nullopt),
+      eps, max_rank, max_full, kickrank, kick2, trunc_norm, local_iterations,
+      resets, verbose, preconditioner));
+}
+
+/// @brief Compute a matrix-vector product in TT format using DMRG. This calls
+/// the C++ torchTT implementation.
+/// @param A The TT-matrix.
+/// @param x The TT-vector.
+/// @param y0 The initial guess TT-vector.
+/// @param nswp The maximum number of sweeps.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @param kickrank The enrichment rank size.
+/// @param verbose Whether to print progress.
+/// @return The approximate solution to A @ x.
+inline TTState::Ptr dmrg_mv(const TTOperator::Ptr& A, const TTState::Ptr& x,
+  std::optional<TTState::Ptr> y0 = std::nullopt, int nswp = 20,
+  double eps = 1e-12, int max_rank = std::numeric_limits<int>::max(),
+  int kickrank = 4, bool verbose = false)
+{
+  return TTState::create(dmrg_mv(A->get_engine(), x->get_engine(),
+    y0.has_value() ? y0.value()->get_engine()
+                   : std::optional<TTEngine>(std::nullopt),
+    nswp, eps, max_rank, kickrank, verbose));
+}
+
+/// @brief Compute the element-wise (Hadamard) product using that defined in
+/// https://arxiv.org/pdf/2410.19747. This is functionally equivalent to
+/// `(a * b).round(eps, max_rank)`.
+/// @param a The TT-matrix.
+/// @param b The TT-vector.
+/// @param y0 The initial guess TT-vector.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @return The approximate solution to a * b.
+inline TTState::Ptr fast_hadamard(const TTState::Ptr& a, const TTState::Ptr& b,
+  double eps = 1e-10, int max_rank = std::numeric_limits<int>::max())
+{
+  return TTState::create(
+    fast_hadamard(a->get_engine(), b->get_engine(), eps, max_rank));
+}
+
+/// @brief Compute the element-wise (Hadamard) product using that defined in
+/// https://arxiv.org/pdf/2410.19747. This is functionally equivalent to
+/// `(a * b).round(eps, max_rank)`.
+/// @param a The TT-matrix.
+/// @param b The TT-vector.
+/// @param y0 The initial guess TT-vector.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @return The approximate solution to a * b.
+inline TTOperator::Ptr fast_hadamard(const TTOperator::Ptr& a,
+  const TTOperator::Ptr& b, double eps = 1e-10,
+  int max_rank = std::numeric_limits<int>::max())
+{
+  return TTOperator::create(
+    fast_hadamard(a->get_engine(), b->get_engine(), eps, max_rank));
+}
+
+/// @brief Compute the matrix-vector product in TT format using that defined in
+/// https://arxiv.org/pdf/2410.19747. This is functionally equivalent to
+/// `(a @ b).round(eps, max_rank)`.
+/// @param a The TT-matrix.
+/// @param b The TT-vector.
+/// @param y0 The initial guess TT-vector.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @return The approximate solution to a @ b.
+inline TTState::Ptr fast_mv(const TTOperator::Ptr& a, const TTState::Ptr& b,
+  double eps = 1e-10, int max_rank = std::numeric_limits<int>::max())
+{
+  return TTState::create(
+    fast_mm(a->get_engine(), b->get_engine(), eps, max_rank));
+}
+
+/// @brief Compute the matrix-matrix product in TT format using that defined in
+/// https://arxiv.org/pdf/2410.19747. This is functionally equivalent to
+/// `(a @ b).round(eps, max_rank)`.
+/// @param a The TT-matrix.
+/// @param b The TT-matrix.
+/// @param y0 The initial guess TT-vector.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @return The approximate solution to a @ b.
+inline TTOperator::Ptr fast_mm(const TTOperator::Ptr& a,
+  const TTOperator::Ptr& b, double eps = 1e-10,
+  int max_rank = std::numeric_limits<int>::max())
+{
+  return TTOperator::create(
+    fast_mm(a->get_engine(), b->get_engine(), eps, max_rank));
+}
+
+/// @brief Compute the matrix-vector product in TT format using AMEn. This calls
+/// `torchtt._amen.amen_mm()`.
+/// @param a The TT-matrix.
+/// @param b The TT-vector.
+/// @param nswp The maximum number of sweeps.
+/// @param x0 The initial guess TT-vector.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @param kickrank The enrichment rank size.
+/// @param kick2 ALS enrichment.
+/// @param verbose Whether to print progress.
+/// @return The approximate solution to a @ b.
+inline TTState::Ptr amen_mv(const TTOperator::Ptr& a, const TTState::Ptr& b,
+  int nswp = 22, std::optional<TTState::Ptr> x0 = std::nullopt,
+  double eps = 1e-10, int max_rank = std::numeric_limits<int>::max(),
+  int kickrank = 4, int kick2 = 0, bool verbose = false)
+{
+  return TTState::create(amen_mm(a->get_engine(), b->get_engine(), nswp,
+    x0.has_value() ? x0.value()->get_engine()
+                   : std::optional<TTEngine>(std::nullopt),
+    eps, max_rank, kickrank, kick2, verbose));
+}
+
+/// @brief Compute the matrix-matrix product in TT format using AMEn. This calls
+/// `torchtt._amen.amen_mm()`.
+/// @param a The TT-matrix.
+/// @param b The TT-matrix.
+/// @param nswp The maximum number of sweeps.
+/// @param x0 The initial guess TT-matrix.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @param kickrank The enrichment rank size.
+/// @param kick2 ALS enrichment.
+/// @param verbose Whether to print progress.
+/// @return The approximate solution to a @ b.
+inline TTOperator::Ptr amen_mm(const TTOperator::Ptr& a,
+  const TTOperator::Ptr& b, int nswp = 22,
+  std::optional<TTOperator::Ptr> x0 = std::nullopt, double eps = 1e-10,
+  int max_rank = std::numeric_limits<int>::max(), int kickrank = 4,
+  int kick2 = 0, bool verbose = false)
+{
+  return TTOperator::create(amen_mm(a->get_engine(), b->get_engine(), nswp,
+    x0.has_value() ? x0.value()->get_engine()
+                   : std::optional<TTEngine>(std::nullopt),
+    eps, max_rank, kickrank, kick2, verbose));
+}
+
+/// @brief Solve a linear system in TT format using the Alternating Minimal
+/// Energy Method (AMEn). This calls the C++ implementation provided by torchTT.
+/// @param A The TT-matrix.
+/// @param b The TT-vector.
+/// @param x0 The initial guess TT-vector.
+/// @param nswp The maximum number of sweeps.
+/// @param eps The truncation tolerance.
+/// @param max_rank The maximum allowed rank.
+/// @param max_full The maximum allowed size of a local problem to use a direct
+/// solver. For anything greater we use GMRES.
+/// @param kickrank The enrichment rank size.
+/// @param kick2 ALS enrichment.
+/// @param local_iterations The max number of GMRES iterations.
+/// @param resets The maximum number of restarts in GMRES.
+/// @param verbose Whether to print progress.
+/// @param preconditioner Which preconditioner to use.
+/// @return The approximate solution x for A @ x = b.
+inline TTState::Ptr amen_solve(const TTOperator::Ptr& A, const TTState::Ptr& b,
+  std::optional<TTState::Ptr> x0 = std::nullopt, int nswp = 22,
+  double eps = 1e-10, int max_rank = std::numeric_limits<int>::max(),
+  int max_full = 500, int kickrank = 4, int kick2 = 0,
+  int local_iterations = 40, int resets = 2, bool verbose = false,
+  int preconditioner = 0)
+{
+  return TTState::create(amen_solve(A->get_engine(), b->get_engine(),
+    x0.has_value() ? x0.value()->get_engine()
+                   : std::optional<TTEngine>(std::nullopt),
+    nswp, eps, max_rank, max_full, kickrank, kick2, local_iterations, resets,
+    verbose, preconditioner));
+}
+
+} // namespace ttnte::linalg

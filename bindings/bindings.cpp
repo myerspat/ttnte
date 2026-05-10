@@ -14,6 +14,8 @@ void init_driver(py::module_& m);
 void init_linalg(py::module_& m);
 void init_solvers(py::module_& m);
 
+void register_python_cleanup(py::module_& m);
+
 PYBIND11_MODULE(ttnte_python, m)
 {
   // auto m_utils = m.def_submodule("utils");
@@ -45,4 +47,6 @@ PYBIND11_MODULE(ttnte_python, m)
 
   auto m_solvers = m.def_submodule("solvers");
   init_solvers(m_solvers);
+
+  register_python_cleanup(m);
 }

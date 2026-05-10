@@ -21,13 +21,7 @@ warnings.filterwarnings(
 
 tn.set_default_dtype(tn.float64)
 
-# Start MPI context
-import atexit
-
 from ttnte.parallel import mpi_context
-
-# Register finalize method to run on Python exit
-atexit.register(mpi_context.finalize)
 
 # This should always be the last line of this file
 __version__ = "0.0.0b0"

@@ -50,12 +50,4 @@
 #     from .gmres import gmres
 #     from .eig import LinearSolverOptions, power
 
-from ttnte.cpp.ttnte_python.linalg import (
-    State,
-    Operator,
-    TTEngine,
-    TTState,
-    TTOperator,
-    LinearSystem,
-    TTLinearSystem,
-)
+from ttnte.cpp.ttnte_python.linalg import *

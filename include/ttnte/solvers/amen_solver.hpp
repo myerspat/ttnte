@@ -20,7 +20,7 @@ protected:
   /// Relative residual.
   double eps_;
   /// Maximum allowed rank.
-  int rmax_;
+  int max_rank_;
   /// The largest size before switching from a direct solver to GMRES.
   int max_full_;
   /// The rank enrichment size.
@@ -34,27 +34,27 @@ protected:
   /// Show output.
   bool verbose_;
   /// What preconditioner to use.
-  int prec_;
+  int preconditioner_;
 
   // =================================================================
   // Protected constructors
   AMEnSolver(int nswp = 22, double eps = 1e-10,
-    int rmax = std::numeric_limits<int>::max(), int max_full = 500,
+    int max_rank = std::numeric_limits<int>::max(), int max_full = 500,
     int kickrank = 4, int kick2 = 0, int local_iterations = 40, int resets = 2,
-    bool verbose = false, int prec = 0)
-    : nswp_(nswp), eps_(eps), rmax_(rmax), max_full_(max_full),
+    bool verbose = false, int preconditioner = 0)
+    : nswp_(nswp), eps_(eps), max_rank_(max_rank), max_full_(max_full),
       kickrank_(kickrank), kick2_(kick2), local_iterations_(local_iterations),
       resets_(resets), verbose_(verbose)
   {
-    if (nswp_ < 1 || eps_ < 0 || rmax_ < 1 || max_full < 0 || kickrank < 0 ||
-        kick2 < 0 || local_iterations_ < 1 || resets_ < 1) {
+    if (nswp_ < 1 || eps_ < 0 || max_rank_ < 1 || max_full < 0 ||
+        kickrank < 0 || kick2 < 0 || local_iterations_ < 1 || resets_ < 1) {
       throw utils::runtime_error("ttnte::solvers::AMEnSolver::AMEnSolver",
-        "`nswp`, `rmax`, `local_iterations`, and `resets` must be greater\n"
+        "`nswp`, `max_rank`, `local_iterations`, and `resets` must be greater\n"
         "than or equal to 1 and `eps`, `max_full`, `kickrank`, and `kick2`\n"
         "must be greater than or equal to 0");
     }
 
-    if (prec < 0 || prec > 2) {
+    if (preconditioner < 0 || preconditioner > 2) {
       throw utils::runtime_error("ttnte::solvers::AMEnSolver::AMEnSolver",
         "`prec` is either 0, 1, or 2");
     }

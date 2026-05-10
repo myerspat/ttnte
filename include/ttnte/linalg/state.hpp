@@ -106,6 +106,13 @@ public:
     bool copy = false,
     std::optional<at::MemoryFormat> memory_format = std::nullopt) = 0;
 
+  /// @brief Method for packing the state vector information into a single torch
+  /// tensor for MPI communication.
+  virtual torch::Tensor pack() const = 0;
+
+  /// @brief Unpack from a buffer.
+  static Ptr unpack(const torch::Tensor& buffer, bool clone = true);
+
   // =================================================================
   // Public getters / setters
   /// @return The label of the state vector.
