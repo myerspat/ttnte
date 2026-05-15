@@ -184,3 +184,171 @@ def test_patch_evaluate_basis_checks(device, dtype):
                 torch.zeros(2, device=device, dtype=mismatch_dtype),
             ]
         )
+
+
+# =======================================
+# Test Knot Refinement Methods
+# =======================================
+
+# =======================================
+# Test Knot Insertion Methods
+
+
+# Test Knot Insertion in First Parametric Dimension
+@pytest.mark.parametrize("device, dtype", test_params)
+def test_patch_knot_insert_dir0(device, dtype):
+    """Non-in-place knot insertion along direction 0 preserves geometry."""
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    # Create circle to test insertion methods on
+    c_exact = refine(circle(2), factor=[3, 1], degree=[2, 3])
+    c = Patch.from_igakit(c_exact, device=device, dtype=dtype)
+
+    new_knot = 0.25
+    original_kv0 = torch.tensor(c_exact.knots[0], device=device, dtype=dtype)
+    original_kv1 = torch.tensor(c_exact.knots[1], device=device, dtype=dtype)
+    c_ref = c_exact.insert(0, new_knot, 1)
+
+    new_knots = [
+        torch.tensor([new_knot], device=device, dtype=dtype),
+        torch.tensor([], device=device, dtype=dtype),
+    ]
+    c_inserted = c.knot_insert(new_knots)
+
+    # Original patch is unchanged
+    torch.testing.assert_close(c.basis[0].knotvector, original_kv0)
+
+    # Knot vector updated correctly
+    torch.testing.assert_close(
+        c_inserted.basis[0].knotvector,
+        torch.tensor(c_ref.knots[0], device=device, dtype=dtype),
+    )
+    # Direction 1 is unchanged
+    torch.testing.assert_close(c_inserted.basis[1].knotvector, original_kv1)
+
+    # Control points match igakit reference
+    torch.testing.assert_close(
+        c_inserted.ctrlptsw,
+        torch.tensor(c_ref.control, device=device, dtype=dtype),
+    )
+
+    # Check geometry preservation
+    u = torch.linspace(0, 1, 7, device=device, dtype=dtype)
+    v = torch.linspace(0, 1, 7, device=device, dtype=dtype)
+    torch.testing.assert_close(c.evaluate([u, v]), c_inserted.evaluate([u, v]))
+
+
+# Test Knot Insertion in Second Parametric Dimension
+@pytest.mark.parametrize("device, dtype", test_params)
+def test_patch_knot_insert_dir1(device, dtype):
+    """Non-in-place knot insertion along direction 1 preserves geometry."""
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    # Create circle to test insertion methods on
+    c_exact = refine(circle(2), factor=[3, 1], degree=[2, 3])
+    c = Patch.from_igakit(c_exact, device=device, dtype=dtype)
+
+    new_knot = 0.6
+    c_ref = c_exact.insert(1, new_knot, 1)
+
+    new_knots = [
+        torch.tensor([], device=device, dtype=dtype),
+        torch.tensor([new_knot], device=device, dtype=dtype),
+    ]
+    c_inserted = c.knot_insert(new_knots)
+
+    # Direction 1 is unchanged
+    torch.testing.assert_close(
+        c_inserted.basis[1].knotvector,
+        torch.tensor(c_ref.knots[1], device=device, dtype=dtype),
+    )
+
+    # Control points match igakit reference
+    torch.testing.assert_close(
+        c_inserted.ctrlptsw,
+        torch.tensor(c_ref.control, device=device, dtype=dtype),
+    )
+
+    # Check geometry preservation
+    u = torch.linspace(0, 1, 7, device=device, dtype=dtype)
+    v = torch.linspace(0, 1, 7, device=device, dtype=dtype)
+    torch.testing.assert_close(c.evaluate([u, v]), c_inserted.evaluate([u, v]))
+
+
+# Test Multiple Insertion of The Same Knots
+@pytest.mark.parametrize("device, dtype", test_params)
+def test_patch_knot_insert_reps(device, dtype):
+    """Reps > 1 inserts the same knots multiple times."""
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    # Create circle to test insertion methods on
+    c_exact = refine(circle(2), factor=[3, 1], degree=[2, 3])
+    c = Patch.from_igakit(c_exact, device=device, dtype=dtype)
+
+    new_knot = 0.25
+    reps = 2
+    # igakit reference: insert the same knot `reps` times
+    c_ref = c_exact
+    for _ in range(reps):
+        c_ref = c_ref.insert(0, new_knot, 1)
+
+    new_knots = [
+        torch.tensor([new_knot], device=device, dtype=dtype),
+        torch.tensor([], device=device, dtype=dtype),
+    ]
+    c_inserted = c.knot_insert(new_knots, reps=reps)
+
+    # Knots in first dimension and control points match igakit reference
+    torch.testing.assert_close(
+        c_inserted.basis[0].knotvector,
+        torch.tensor(c_ref.knots[0], device=device, dtype=dtype),
+    )
+    torch.testing.assert_close(
+        c_inserted.ctrlptsw,
+        torch.tensor(c_ref.control, device=device, dtype=dtype),
+    )
+
+    # Check geometry preservation
+    u = torch.linspace(0, 1, 7, device=device, dtype=dtype)
+    v = torch.linspace(0, 1, 7, device=device, dtype=dtype)
+    torch.testing.assert_close(c.evaluate([u, v]), c_inserted.evaluate([u, v]))
+
+
+# Test Knot Insertion In-Place Method
+@pytest.mark.parametrize("device, dtype", test_params)
+def test_patch_knot_insert_inplace(device, dtype):
+    """In-place knot insertion matches the non-in-place result."""
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    # Create circle to test insertion methods on
+    c_exact = refine(circle(2), factor=[3, 1], degree=[2, 3])
+
+    new_knots = [
+        torch.tensor([0.25], device=device, dtype=dtype),
+        torch.tensor([], device=device, dtype=dtype),
+    ]
+
+    c_out_of_place = Patch.from_igakit(c_exact, device=device, dtype=dtype)
+    c_inplace = Patch.from_igakit(c_exact, device=device, dtype=dtype)
+
+    result = c_out_of_place.knot_insert(new_knots)
+    c_inplace.knot_insert_(new_knots)
+
+    # First Dimension knot vectors match igakit reference
+    torch.testing.assert_close(
+        c_inplace.basis[0].knotvector,
+        result.basis[0].knotvector,
+    )
+    torch.testing.assert_close(c_inplace.ctrlptsw, result.ctrlptsw)
+
+    # Check geometry preservation
+    u = torch.linspace(0, 1, 7, device=device, dtype=dtype)
+    v = torch.linspace(0, 1, 7, device=device, dtype=dtype)
+    torch.testing.assert_close(
+        c_inplace.evaluate([u, v]),
+        result.evaluate([u, v]),
+    )

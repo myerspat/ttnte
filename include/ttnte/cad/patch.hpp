@@ -105,7 +105,7 @@ public:
     const c10::SmallVector<torch::Tensor, 3>& local_coords);
 
   // Insert new knots following generalized version of Algorithim 5.5
-  // from the NURBS book.
+  // from the NURBS book. Output new knot vector and ctrl_pts
   //
   // new_knots:
   //   Vector of 1D tensors, one per parametric dimension.
@@ -113,7 +113,19 @@ public:
   //
   // Action:
   //   Edits knotvector_ and ctrlptsw_.
-  void knot_insert(const c10::SmallVector<torch::Tensor, 3>& new_knots,
+  Patch knot_insert(const c10::SmallVector<torch::Tensor, 3>& new_knots,
+    const int64_t& reps = 1);
+
+  // Insert new knots following generalized version of Algorithim 5.5
+  // from the NURBS book. Replace old knot vectors and ctrl pts with output
+  //
+  // new_knots:
+  //   Vector of 1D tensors, one per parametric dimension.
+  //   Amount of times to insert knots.
+  //
+  // Action:
+  //   Edits knotvector_ and ctrlptsw_.
+  void knot_insert_(const c10::SmallVector<torch::Tensor, 3>& new_knots,
     const int64_t& reps = 1);
 
   // // MPI communication

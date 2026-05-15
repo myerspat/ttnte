@@ -395,19 +395,27 @@ torch::Tensor Patch::evaluate_basis(
   return result.permute(permute_order);
 }
 
-void Patch::knot_insert(const torch::Tensor& new_knots, const int64_t& reps)
+Patch Patch::knot_insert(
+  const c10::SmallVector<torch::Tensor, 3>& new_knots, const int64_t& reps)
 {
+  // Validate current knots in basis
   is_finalized_or_error("knot_insertion");
 
+  // Validate new knots
   if (new_knots.size() != get_ndim()) {
     throw utils::runtime_error(*this, error_context("knot_insertion"),
       "The length of `new_knots` must equal the patch dimension");
   }
 
-  if (reps !> 0) {
+  if (reps <= 0) {
     throw utils::runtime_error(*this, error_context("knot_insertion"),
       "Amount of times knots are inserted must be greater than 0");
   }
+
+  // Index local variables
+  const auto& options = new_knots[0].options();
+  const int64_t ndim = get_ndim();
+  torch::Tensor Pw = ctrlptsw_;
 
   for (const auto& u : new_knots) {
     // Check these are each 1-D
@@ -421,33 +429,60 @@ void Patch::knot_insert(const torch::Tensor& new_knots, const int64_t& reps)
     }
   }
 
-  // Index local variables
-  const auto& options = local_coords[0].options();
-  const int64_t ndim = get_ndim();
-  const auto& Pw = ctrlptsw_;
+  // Start working state from current patch
+  Basis working_basis = basis_;
 
-  // Insert knots 'reps' number of times.
-  for (int64_t p = 0; p < ndim; ++p) {
-    const torch::Tensor& X = new_knots[p];
+  // Insert knots 'reps' number of times
+  for (int64_t rep = 0; rep < reps; ++rep) {
+    Basis new_basis; // reset every rep
 
-    // If there are knots to insert on this dimension, insert them
-    if (X.numelem() != 0) {
-      const auto& U = basis_[p];
-      std::tie(X, std::ignore) = torch::sort(X);
+    // Insert knots in each parametric dimension
+    for (int64_t p = 0; p < ndim; ++p) {
+      const torch::Tensor& X_raw = new_knots[p];
+      torch::Tensor Ubar;
 
-      // Calculate a and b
-      int64_t a = U.find_spans(X[0]).item<int64_t>();
-      int64_t b = U.find_spans(X[-1]).item<int64_t>();
+      // Verify X is not empty
+      if (X_raw.numel() != 0) {
+        auto& B = working_basis[p]; // use updated basis, not basis_
+        const auto [X, _] = torch::sort(X_raw);
 
-      if (X.device().is_cuda()) {
-        throw utils::runtime_error(
-          *this, error_context("knot_insertion"), "CUDA not implemented yet");
+        // Initialize a and b from Algorithim 5.5 from NURBS book
+        int64_t a = B.find_spans(X[0]).item<int64_t>();
+        int64_t b = B.find_spans(X[-1]).item<int64_t>();
+        const torch::Tensor& U = B.get_knotvector();
+
+        // Verify not on CUDA
+        if (X.device().is_cuda()) {
+          throw utils::runtime_error(
+            *this, error_context("knot_insertion"), "CUDA not implemented yet");
+        } else {
+          auto [Pw_p, Ubar_p] =
+            patch::launch_knot_insert_cpu(Pw, U, X, B.get_degree(), a, b, p);
+          Pw = Pw_p;
+          Ubar = Ubar_p;
+        }
       } else {
-        return patch::launch_knot_insert_cpu(
-          Pw.to(X.device()), U.to(X.device()), X, p, a, b, r);
+        Ubar = working_basis[p].get_knotvector();
       }
+
+      new_basis.push_back(BSplineBasis(Ubar, working_basis[p].get_degree()));
     }
+
+    working_basis = new_basis; // carry forward for next rep
   }
+
+  // Finalize result
+  auto result = Patch(Pw, working_basis, is_rational_, label_.to_string());
+  result.finalize();
+  return result;
+}
+
+// In place version of knot insertion
+void Patch::knot_insert_(
+  const c10::SmallVector<torch::Tensor, 3>& new_knots, const int64_t& reps)
+{
+  // Replace current patch with patch produced by knot_insert
+  *this = knot_insert(new_knots, reps);
 }
 
 // =================================================================

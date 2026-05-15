@@ -1,10 +1,10 @@
 #pragma once
 
-#include "ttnte/cad/bspline_math.cuh"
+#include "ttnte/cad/patch_math.cuh"
 #include <ATen/Dispatch.h>
 #include <torch/torch.h>
 
-namespace ttnte::cad::bspline {
+namespace ttnte::cad::patch {
 
 inline std::tuple<torch::Tensor, torch::Tensor> launch_knot_insert_cpu(
   const torch::Tensor& Pw, // (n0+1, n1+1, ..., nk+1, ..., nd+1, dim)
@@ -20,8 +20,8 @@ inline std::tuple<torch::Tensor, torch::Tensor> launch_knot_insert_cpu(
   TORCH_CHECK(U.device() == Pw.device(), "U and Pw must be on the same device");
 
   // Check data type match
-  TORCH_CHECK(U.scalar_type() == X.scalar_type() == Ubar.scalar_type(),
-    "U, X, and Ubar must be the same scalar type");
+  TORCH_CHECK(U.scalar_type() == X.scalar_type(),
+    "U, and X must be the same scalar type");
 
   TORCH_CHECK(
     Pw.dim() >= 2, "Pw must have at least one parametric dim + component dim");
@@ -38,6 +38,7 @@ inline std::tuple<torch::Tensor, torch::Tensor> launch_knot_insert_cpu(
   auto Qw = torch::empty(out_shape, Pw.options());
   auto Ubar = torch::empty({U.size(0) + r + 1}, U.options()); // adjusted below
 
+  // Make tensors contiguous
   auto Pw_c = Pw.contiguous();
   auto U_c = U.contiguous();
   auto X_c = X.contiguous();
@@ -50,9 +51,6 @@ inline std::tuple<torch::Tensor, torch::Tensor> launch_knot_insert_cpu(
   }
 
   // Strides in the flattened fiber-index space.
-  // We treat all axes except `dir` as a flat outer index, then map back
-  // to per-axis indices when computing Pw/Qw offsets.
-  //
   // fiber_strides[ax] = product of sizes of axes (ax+1 .. n_param_dims-1)
   //                     excluding dir, in the non-dir axis ordering.
   std::vector<int64_t> non_dir_sizes;
@@ -89,6 +87,7 @@ inline std::tuple<torch::Tensor, torch::Tensor> launch_knot_insert_cpu(
     }
   }
 
+  // Account for both single and double precision
   AT_DISPATCH_FLOATING_TYPES(Pw.scalar_type(), "knot_insert_nd_cpu", [&] {
     const scalar_t* U_ptr = U_c.data_ptr<scalar_t>();
     const scalar_t* X_ptr = X_c.data_ptr<scalar_t>();
@@ -101,9 +100,25 @@ inline std::tuple<torch::Tensor, torch::Tensor> launch_knot_insert_cpu(
     for (int64_t j = 0; j <= a; ++j)
       Ubar_ptr[j] = U_ptr[j];
     for (int64_t j = b + p; j <= m; ++j)
-      Ubar_ptr[j + r] = U_ptr[j];
+      Ubar_ptr[j + r + 1] = U_ptr[j];
 
-    // Parallel over fibers
+    {
+      int64_t ii = b + p - 1;
+      int64_t kk = b + p + r;
+
+      for (int64_t j = r; j >= 0; --j) {
+        while (X_ptr[j] <= U_ptr[ii] && ii > a) {
+          Ubar_ptr[kk] = U_ptr[ii];
+          kk--;
+          ii--;
+        }
+
+        Ubar_ptr[kk] = X_ptr[j];
+        kk--;
+      }
+    }
+
+    // Parallelize over fibers
     at::parallel_for(0, n_fibers, 0, [&](int64_t beg, int64_t end) {
       for (int64_t f = beg; f < end; ++f) {
 
@@ -132,15 +147,14 @@ inline std::tuple<torch::Tensor, torch::Tensor> launch_knot_insert_cpu(
         const int64_t pw_step = pw_strides[dir]; // stride along dir in Pw
         const int64_t qw_step = qw_strides[dir]; // stride along dir in Qw
 
-        patch::knot_insertion(int64_t dir, int64_t a, int64_t b, int64_t n,
-          int64_t p, int64_t r, int64_t pw_step, int64_t qw_step,
-          int64_t pw_base, int64_t qw_base, const scalar_t* U_ptr,
-          const scalar_t* X_ptr, scalar_t* Ubar_ptr, const scalar_t* Pw_ptr,
-          scalar_t* Qw_ptr);
+        // Generalization of Algorithim 5.5 from NURBS Book to work over
+        // parrallelization
+        patch::knot_insertion(dir, a, b, n, p, r, pw_step, qw_step, pw_base,
+          qw_base, dim, U_ptr, X_ptr, Ubar_ptr, Pw_ptr, Qw_ptr);
       }
     });
   });
 
   return {Qw, Ubar};
 }
-} // namespace ttnte::cad::bspline
+} // namespace ttnte::cad::patch
