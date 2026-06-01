@@ -5,25 +5,28 @@
 
 namespace {
 
-py::object ttnte2torchtt(const ttnte::linalg::TTEngine& engine)
+py::object ttnte2torchtt(
+  const ttnte::linalg::TTEngine& engine, bool is_vec = false)
 {
   py::list cores;
 
   for (const auto& core : engine.get_cores()) {
-    cores.append(py::cast(core));
+    cores.append(py::cast(is_vec ? core.squeeze(2) : core));
   }
 
   return ttnte::python::PackageManager::instance().torchtt.attr("TT")(cores);
 }
 
-ttnte::linalg::TTEngine torchtt2ttnte(const py::object& py_engine)
+ttnte::linalg::TTEngine torchtt2ttnte(
+  const py::object& py_engine, bool is_vec = false)
 {
   // Get the list of cores
   py::list py_cores = py_engine.attr("cores").cast<py::list>();
 
   ttnte::linalg::TTEngine::Tensors cores;
   for (auto core : py_cores) {
-    cores.push_back(core.cast<torch::Tensor>());
+    cores.push_back(is_vec ? core.cast<torch::Tensor>().unsqueeze(2)
+                           : core.cast<torch::Tensor>());
   }
 
   return ttnte::linalg::TTEngine(cores, false);
@@ -40,7 +43,7 @@ linalg::TTEngine Acquire::amen_divide(const linalg::TTEngine& a,
   const linalg::TTEngine& b, int nswp, std::optional<linalg::TTEngine> x0,
   double eps, int rmax, int max_full, int kickrank, int kick2,
   std::string trunc_norm, int local_iterations, int resets, bool verbose,
-  std::optional<std::string> preconditioner)
+  std::optional<std::string> preconditioner) const
 {
   const auto& a_cores = a.get_cores();
   const auto& b_cores = b.get_cores();
@@ -112,7 +115,7 @@ linalg::TTEngine Acquire::amen_divide(const linalg::TTEngine& a,
 
 linalg::TTEngine Acquire::amen_mm(const linalg::TTEngine& a,
   const linalg::TTEngine& b, int nswp, std::optional<linalg::TTEngine> x0,
-  double eps, int rmax, int kickrank, int kick2, bool verbose)
+  double eps, int rmax, int kickrank, int kick2, bool verbose) const
 {
   // Get the Python versions of the TTs
   py::object py_a = ttnte2torchtt(a);
@@ -129,6 +132,120 @@ linalg::TTEngine Acquire::amen_mm(const linalg::TTEngine& a,
       py::arg("nswp") = nswp, py::arg("X0") = py_x0, py::arg("eps") = eps,
       py::arg("rmax") = rmax, py::arg("kickrank") = kickrank,
       py::arg("kick2") = kick2, py::arg("verbose") = verbose));
+}
+
+linalg::TTEngine Acquire::function_interpolate(
+  const std::function<torch::Tensor(const torch::Tensor&)>& func,
+  const linalg::TTEngine& x, double eps,
+  std::optional<linalg::TTEngine> start_tens, int nswp, int kick, int rmax,
+  bool verbose) const
+{
+  py::cpp_function py_func = py::cpp_function(func);
+
+  // Pass as a single object, NOT a list! This triggers eval_mv = False
+  py::object py_x = ttnte2torchtt(x, true);
+
+  py::object py_start = py::none();
+  if (start_tens.has_value()) {
+    py_start = ttnte2torchtt(*start_tens, true);
+  }
+
+  py::object py_result =
+    PackageManager::instance()
+      .torchtt.attr("interpolate")
+      .attr("function_interpolate")(py_func, py_x, py::arg("eps") = eps,
+        py::arg("start_tens") = py_start, py::arg("nswp") = nswp,
+        py::arg("kick") = kick, py::arg("rmax") = rmax,
+        py::arg("verbose") = verbose);
+
+  return torchtt2ttnte(py_result, true);
+}
+
+linalg::TTEngine Acquire::function_interpolate(
+  const std::function<torch::Tensor(const std::vector<torch::Tensor>&)>& func,
+  const std::vector<linalg::TTEngine>& xs, double eps,
+  std::optional<linalg::TTEngine> start_tens, int nswp, int kick, int rmax,
+  bool verbose) const
+{
+  // The Adapter: Bridge Python's [M, d] tensor to C++'s std::vector
+  auto pybind_wrapper = [func](const torch::Tensor& pts) -> torch::Tensor {
+    // pts is shape [M, d]. We slice it into 'd' separate 1D tensors.
+    int64_t num_vars = pts.size(1);
+    std::vector<torch::Tensor> unpacked_vars;
+    unpacked_vars.reserve(num_vars);
+
+    for (int64_t i = 0; i < num_vars; ++i) {
+      unpacked_vars.push_back(pts.select(1, i));
+    }
+
+    // Call the user's generalized C++ function
+    return func(unpacked_vars);
+  };
+
+  // Wrap our adapter, NOT the raw user function
+  py::cpp_function py_func = py::cpp_function(pybind_wrapper);
+
+  // Convert the vector of grid TTs into a Python list of torchtt.TT
+  py::list py_xs;
+  for (const auto& x : xs) {
+    py_xs.append(ttnte2torchtt(x, true));
+  }
+
+  // Handle the initial guess (start_tens)
+  py::object py_start = py::none();
+  if (start_tens.has_value()) {
+    py_start = ttnte2torchtt(*start_tens, true);
+  }
+
+  // Call torchtt.interpolate.function_interpolate
+  py::object py_result =
+    PackageManager::instance()
+      .torchtt.attr("interpolate")
+      .attr("function_interpolate")(py_func, py_xs, py::arg("eps") = eps,
+        py::arg("start_tens") = py_start, py::arg("nswp") = nswp,
+        py::arg("kick") = kick, py::arg("rmax") = rmax,
+        py::arg("verbose") = verbose);
+
+  // Convert back to C++ TTEngine
+  return torchtt2ttnte(py_result, true);
+}
+
+linalg::TTEngine Acquire::dmrg_cross(
+  const std::function<torch::Tensor(const torch::Tensor&)>& func,
+  const std::vector<int64_t>& N, double eps, int nswp,
+  std::optional<linalg::TTEngine> x0, int kick, int rmax, bool verbose,
+  const torch::Device& device, const torch::ScalarType& dtype) const
+{
+  // Wrap the C++ lambda so Python can call it
+  py::cpp_function py_func = py::cpp_function(func);
+
+  // Convert the C++ shape vector to a Python list
+  py::list py_N;
+  for (int64_t n : N) {
+    py_N.append(n);
+  }
+
+  // Handle the initial guess
+  py::object py_start = py::none();
+  if (x0.has_value()) {
+    py_start = ttnte2torchtt(*x0, true);
+  }
+
+  // Call torchtt.interpolate.dmrg_cross
+  // Note: torchTT uses slightly different kwargs across its modules.
+  // dmrg_cross typically uses 'X0' and 'kickrank' (unlike
+  // function_interpolate).
+  py::object py_result =
+    PackageManager::instance()
+      .torchtt.attr("interpolate")
+      .attr("dmrg_cross")(py_func, py_N, py::arg("eps") = eps,
+        py::arg("nswp") = nswp, py::arg("x_start") = py_start,
+        py::arg("kick") = kick, py::arg("dtype") = dtype,
+        py::arg("device") = device, py::arg("rmax") = rmax,
+        py::arg("verbose") = verbose);
+
+  // Convert the resulting Python TT object back to a C++ TTEngine
+  return torchtt2ttnte(py_result, true);
 }
 
 } // namespace ttnte::python::torchtt

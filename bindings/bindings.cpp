@@ -13,6 +13,7 @@ void init_parallel(py::module_& m);
 void init_driver(py::module_& m);
 void init_linalg(py::module_& m);
 void init_solvers(py::module_& m);
+void init_math(py::module_& m);
 
 void register_python_cleanup(py::module_& m);
 
@@ -47,6 +48,9 @@ PYBIND11_MODULE(ttnte_python, m)
 
   auto m_solvers = m.def_submodule("solvers");
   init_solvers(m_solvers);
+
+  auto m_math = m.def_submodule("math");
+  init_math(m_math);
 
   register_python_cleanup(m);
 }

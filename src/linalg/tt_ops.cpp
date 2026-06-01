@@ -367,4 +367,33 @@ TTEngine amen_solve(const linalg::TTEngine& A, const linalg::TTEngine& b,
   return TTEngine(TTEngine::Tensors(x_cores.cbegin(), x_cores.cend()), true);
 }
 
+TTEngine function_interpolate(
+  const std::function<torch::Tensor(const torch::Tensor&)>& func,
+  const TTEngine& x, double eps, std::optional<TTEngine> start_tens, int nswp,
+  int kick, int rmax, bool verbose)
+{
+  return python::torchtt::Acquire().function_interpolate(
+    func, x, eps, start_tens, nswp, kick, rmax, verbose);
+}
+
+TTEngine function_interpolate(
+  const std::function<torch::Tensor(const std::vector<torch::Tensor>&)>& func,
+  const std::vector<TTEngine>& xs, double eps,
+  std::optional<TTEngine> start_tens, int nswp, int kick, int rmax,
+  bool verbose)
+{
+  return python::torchtt::Acquire().function_interpolate(
+    func, xs, eps, start_tens, nswp, kick, rmax, verbose);
+}
+
+TTEngine dmrg_cross(
+  const std::function<torch::Tensor(const torch::Tensor&)>& func,
+  const std::vector<int64_t>& N, double eps, int nswp,
+  std::optional<TTEngine> x0, int kick, int rmax, bool verbose,
+  const torch::Device& device, const torch::ScalarType& dtype)
+{
+  return python::torchtt::Acquire().dmrg_cross(
+    func, N, eps, nswp, x0, kick, rmax, verbose, device, dtype);
+}
+
 } // namespace ttnte::linalg

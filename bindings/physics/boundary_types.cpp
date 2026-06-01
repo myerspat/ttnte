@@ -12,6 +12,8 @@ void register_BoundaryType(py::module_& m)
     .value("INTERNAL", BoundaryType::INTERNAL, "Connected to another MeshBlock")
     .value("VACUUM", BoundaryType::VACUUM, "Free stream/Vacuum boundary")
     .value("REFLECTIVE", BoundaryType::REFLECTIVE, "Mirror/Reflective boundary")
+    .value("DEGENERATE", BoundaryType::DEGENERATE,
+      "Boundary is degenerate and needs no boundary operators")
     .export_values()
     .def("__str__", [](ttnte::physics::BoundaryType t) {
       return ttnte::physics::to_string(t);

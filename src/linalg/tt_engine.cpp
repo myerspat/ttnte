@@ -118,18 +118,64 @@ TTEngine& TTEngine::to_(const torch::Device& device, bool non_blocking,
     device, cores_[0].scalar_type(), non_blocking, copy, memory_format);
 }
 
+TTEngine& TTEngine::to_(const torch::TensorOptions& options)
+{
+  for (auto& core : cores_) {
+    core = core.to(options);
+  }
+  return *this;
+}
+
+double TTEngine::sum() const
+{
+  if (cores_.empty())
+    return 0.0;
+  if (cores_.size() == 1)
+    return cores_[0].sum().item<double>();
+
+  torch::Tensor v = torch::ones(
+    {1, 1}, torch::TensorOptions().device(get_device()).dtype(get_dtype()));
+
+  for (const auto& core : cores_) {
+    torch::Tensor m = core.sum({1, 2});
+    v = torch::mm(v, std::move(m));
+  }
+
+  return v.reshape({}).item<double>();
+}
+
+double TTEngine::norm() const
+{
+  if (cores_.empty())
+    return 0.0;
+  if (cores_.size() == 1)
+    return cores_[0].norm(2).item<double>();
+
+  // TODO: Take advantage of orthogonalization if it has already been applied
+  torch::Tensor v = torch::ones(
+    {1, 1}, torch::TensorOptions().device(get_device()).dtype(get_dtype()));
+
+  for (const auto& core : cores_) {
+    torch::Tensor w = torch::tensordot(std::move(v), core, {0}, {0});
+    v = torch::tensordot(std::move(w), core, {0, 1, 2}, {0, 1, 2});
+  }
+
+  double result = v.reshape({}).item<double>();
+  return (result > 0.0) ? std::sqrt(result) : 0.0;
+}
+
 TTEngine::Tensors TTEngine::tt_svd(
   torch::Tensor tensor, double eps, int64_t max_rank)
 {
   // Case where there is only one dimension
   if (tensor.ndimension() == 1) {
-    return Tensors {tensor.clone()};
+    return Tensors {tensor.clone().reshape({1, tensor.size(0), 1})};
   }
 
   int64_t ndim = tensor.ndimension();
   double delta = tensor.norm(2).item<double>() * eps /
                  std::sqrt(static_cast<double>(ndim - 1));
-  auto shape = tensor.sizes();
+  auto shape = tensor.sizes().vec();
 
   // Array of TT-cores
   Tensors cores;
@@ -307,21 +353,34 @@ TTEngine TTEngine::from_dense(torch::Tensor tensor,
   return TTEngine(std::move(cores), false);
 }
 
-torch::Tensor TTEngine::to_dense() const
+torch::Tensor TTEngine::to_dense(bool interleave) const
 {
   if (cores_.size() == 0) {
     return torch::Tensor();
   } else if (cores_.size() == 1) {
-    return cores_[0].squeeze(0).squeeze(-1);
+    return cores_[0].squeeze({0, -1});
   }
+
+  int64_t num_cores = cores_.size();
+  c10::SmallVector<int64_t, 12> dims(2 * num_cores, 0);
+  dims[num_cores] = 1;
+  dims[1] = 2;
+  dims[num_cores + 1] = 3;
 
   // Contract all tensors
   auto result = torch::tensordot(cores_[0], cores_[1], {-1}, {0});
   for (size_t i = 2; i < cores_.size(); i++) {
+    dims[i] = 2 * i;
+    dims[i + num_cores] = dims[i] + 1;
+
     result = torch::tensordot(result, cores_[i], {-1}, {0});
   }
-  result.squeeze_(0).squeeze_(-1);
-  return result;
+
+  if (interleave) {
+    return result.squeeze({0, -1});
+  } else {
+    return result.squeeze({0, -1}).permute(dims);
+  }
 }
 
 void TTEngine::from_buffer(const torch::Tensor& buffer)
@@ -423,6 +482,263 @@ TTEngine TTEngine::transpose(
   return result;
 }
 
+TTEngine& TTEngine::diagonalize_(const c10::SmallVector<int64_t, 6>& core_idxs)
+{
+  // If the provided vector is empty, diagonalize all cores.
+  c10::SmallVector<int64_t, 6> target_idxs = core_idxs;
+  if (target_idxs.empty()) {
+    for (int64_t i = 0; i < static_cast<int64_t>(cores_.size()); ++i) {
+      target_idxs.push_back(i);
+    }
+  }
+
+  for (int64_t idx : target_idxs) {
+    TORCH_CHECK(idx >= 0 && idx < static_cast<int64_t>(cores_.size()),
+      "ttnte::linalg::TTEngine::diagonalize_: Core index out of bounds");
+
+    torch::Tensor& core = cores_[idx];
+    auto shape = core.sizes();
+    TORCH_CHECK(shape.size() == 4,
+      "ttnte::linalg::TTEngine::diagonalize_: Expected 4D core (rl, m, n, rr)");
+
+    int64_t rl = shape[0];
+    int64_t m = shape[1];
+    int64_t n = shape[2];
+    int64_t rr = shape[3];
+
+    // Ensure this core is actually a vector (one of the spatial dims is 1)
+    TORCH_CHECK(m == 1 || n == 1,
+      "ttnte::linalg::TTEngine::diagonalize_: Core must have at least one "
+      "spatial mode of size 1 to be diagonalized");
+
+    int64_t I = std::max(m, n);
+
+    // Allocate the new square core (rl, I, I, rr) with zeros
+    torch::Tensor new_core = torch::zeros({rl, I, I, rr}, core.options());
+
+    // Squeeze out the singleton spatial dimension to get a 3D tensor: (rl, I,
+    // rr)
+    torch::Tensor vec_core = (m == 1) ? core.squeeze(1) : core.squeeze(2);
+
+    // new_core.diagonal(0, 1, 2) extracts the diagonal across the spatial
+    // modes. It returns a view of shape (rl, rr, I). We permute vec_core from
+    // (rl, I, rr) to (rl, rr, I) to match the view and copy the data.
+    new_core.diagonal(0, 1, 2).copy_(vec_core.permute({0, 2, 1}));
+
+    // Replace the original core
+    cores_[idx] = new_core;
+  }
+
+  return *this;
+}
+
+TTEngine TTEngine::diagonalize(
+  const c10::SmallVector<int64_t, 6>& core_idxs) const
+{
+  auto copy = *this;
+  copy.diagonalize_(core_idxs);
+  return copy;
+}
+
+bool TTEngine::is_rank_one() const
+{
+  for (size_t i = 0; i < cores_.size() - 1; i++) {
+    if (cores_[i].size(-1) != 1) {
+      return false;
+    }
+  }
+  return true;
+}
+
+TTEngine& TTEngine::expand_(const c10::SmallVector<int64_t, 6>& m_modes,
+  const c10::SmallVector<int64_t, 6>& n_modes)
+{
+  for (size_t i = 0; i < cores_.size(); i++) {
+    auto& core = cores_[i];
+    auto shape = core.sizes().vec();
+
+    if ((shape[1] != m_modes[i] && shape[1] != 1) ||
+        (shape[2] != n_modes[i] && shape[2] != 1)) {
+      throw utils::runtime_error("ttnte::linalg::TTEngine::expand_",
+        "Cannot expand a dimension with size greater than 1");
+    }
+
+    shape[1] = m_modes[i];
+    shape[2] = n_modes[i];
+    core = core.expand(shape);
+  }
+
+  return *this;
+}
+
+TTEngine TTEngine::expand(const c10::SmallVector<int64_t, 6>& m_modes,
+  const c10::SmallVector<int64_t, 6>& n_modes) const
+{
+  auto result = *this;
+  result.expand_(m_modes, n_modes);
+  return result;
+}
+
+TTEngine& TTEngine::contract_rank_dim_(size_t dim)
+{
+  if (cores_.size() <= 1 || dim >= cores_.size() - 1) {
+    return *this;
+  }
+
+  // Cores involved
+  auto& core_l = cores_[dim];
+  const auto& core_r = cores_[dim + 1];
+
+  // Dimension sizes in each core involved
+  int64_t r_l = core_l.size(0);
+  int64_t m_l = core_l.size(1);
+  int64_t n_l = core_l.size(2);
+  int64_t m_r = core_r.size(1);
+  int64_t n_r = core_r.size(2);
+  int64_t r_r = core_r.size(3);
+
+  // Compute the contraction, permute the dimensions, and reshape
+  cores_[dim] = torch::tensordot(cores_[dim], cores_[dim + 1], {-1}, {0})
+                  .permute({0, 1, 3, 2, 4, 5})
+                  .reshape({r_l, m_l * m_r, n_l * n_r, r_r});
+  cores_.erase(cores_.begin() + dim + 1);
+  return *this;
+}
+
+TTEngine TTEngine::contract_rank_dim(size_t dim) const
+{
+  auto result = *this;
+  result.contract_rank_dim_(dim);
+  return result;
+}
+
+c10::SmallVector<linalg::TTEngine, 6> TTEngine::meshgrid(const Tensors& vecs)
+{
+  size_t ndim = vecs.size();
+  if (ndim == 0) {
+    return {TTEngine()};
+  }
+  const auto& device = vecs[0].device();
+  const auto& dtype = vecs[0].scalar_type();
+  const auto& options = torch::TensorOptions().device(device).dtype(dtype);
+
+  Tensors ones;
+  ones.reserve(ndim);
+  for (const auto& vec : vecs) {
+    if (vec.ndimension() != 1 || vec.device() != device ||
+        vec.scalar_type() != dtype) {
+      throw utils::runtime_error("ttnte::linalg::TTEngine::meshgrid",
+        "All tensors given must be 1-D, on the same device, and have the same\n"
+        "data type");
+    }
+    ones.push_back(torch::ones({1, vec.size(0), 1, 1}, options));
+  }
+
+  c10::SmallVector<linalg::TTEngine, 6> grids;
+  grids.reserve(ndim);
+  for (size_t i = 0; i < ndim; i++) {
+    Tensors grid = ones;
+    grid[i] = vecs[i].reshape({1, -1, 1, 1});
+    grids.emplace_back(grid, false);
+  }
+
+  return grids;
+}
+
+TTEngine& TTEngine::kron_(const TTEngine& other)
+{
+  cores_.append(other.cores_);
+  return *this;
+}
+
+TTEngine& TTEngine::kron_(const torch::Tensor& other)
+{
+  if (other.ndimension() == 1) {
+    cores_.push_back(other.reshape({1, -1, 1, 1}));
+  } else if (other.ndimension() == 2) {
+    cores_.push_back(other.reshape({1, other.size(0), other.size(1), 1}));
+  } else if (other.ndimension() == 4) {
+    if (other.size(0) != 1 || other.size(-1) != 1) {
+      throw utils::runtime_error("ttnte::linalg::TTEngine::kron_",
+        "The given tensor is 4-D with non-unit rank dimensions");
+    }
+    cores_.push_back(other);
+  } else {
+    throw utils::runtime_error("ttnte::linalg::TTEngine::kron_",
+      "The given tensor was not 1-, 2-, or 4-D");
+  }
+
+  return *this;
+}
+
+TTEngine TTEngine::kron(const TTEngine& other) const
+{
+  auto copy = *this;
+  copy.kron_(other);
+  return copy;
+}
+
+TTEngine TTEngine::kron(const torch::Tensor& other) const
+{
+  auto copy = *this;
+  copy.kron_(other);
+  return copy;
+}
+
+torch::Tensor TTEngine::evaluate_at(const torch::Tensor& indices) const
+{
+  TORCH_CHECK(indices.dim() == 2,
+    "Indices must be a 2D tensor of shape [BatchSize, NumCores].");
+  TORCH_CHECK(indices.size(1) == static_cast<int64_t>(cores_.size()),
+    "Indices width must match the number of TT cores.");
+
+  bool is_vector = true;
+  for (const auto& core : cores_) {
+    if (core.size(2) != 1) {
+      is_vector = false;
+      break;
+    }
+  }
+  TORCH_CHECK(is_vector, "The TT must be a TT-vector");
+
+  int64_t batch_size = indices.size(0);
+  int64_t num_cores = cores_.size();
+
+  // Ensure indices are long integers and sit on the same device as the TT cores
+  auto idx = indices.to(get_device(), torch::kInt64);
+
+  // Extract matching physical coordinates for the entire batch out of Core 0
+  auto tmp =
+    cores_[0]
+      .index_select(
+        1, idx.select(1, 0)) // Shape: [Rank_Left(1), Batch, Mode_N, Rank_Right]
+      .select(
+        2, 0) // Shape: [Rank_Left(1), Batch, Rank_Right] (Assumes Mode_N=1)
+      .permute({1, 0, 2}) // Shape: [Batch, Rank_Left(1), Rank_Right]
+      .contiguous();
+
+  // Iterate through the remaining cores using batched matrix multiplication
+  for (int64_t k = 1; k < num_cores; ++k) {
+    // Slice out the sub-matrices for this core across the entire batch
+    auto sliced_core =
+      cores_[k]
+        .index_select(
+          1, idx.select(1, k)) // Shape: [Rank_Left, Batch, Mode_N, Rank_Right]
+        .select(2, 0)          // Shape: [Rank_Left, Batch, Rank_Right]
+        .permute({1, 0, 2})    // Shape: [Batch, Rank_Left, Rank_Right]
+        .contiguous();
+
+    // Contract the shared rank dimension via Batched Matrix Multiplication
+    // [Batch, 1, Rank_Left] x [Batch, Rank_Left, Rank_Right] -> [Batch, 1,
+    // Rank_Right]
+    tmp = torch::bmm(tmp, sliced_core);
+  }
+
+  // Collapse the trailing singleton dimensions to return a flat batch
+  // of scalars
+  return tmp.squeeze({1, 2}); // Shape: [Batch]
+}
+
 // =================================================================
 // Public operators
 
@@ -438,6 +754,10 @@ TTEngine& TTEngine::operator+=(const TTEngine& other)
   int64_t num_cores = cores_.size();
   TORCH_CHECK(num_cores == other.cores_.size(),
     "TTEngines must have the same number of cores for addition.");
+
+  if (num_cores == 1) {
+    cores_[0] += other.cores_[0];
+  }
 
   for (size_t i = 0; i < num_cores; ++i) {
     auto& core_a = cores_[i];

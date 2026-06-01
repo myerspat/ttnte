@@ -10,6 +10,7 @@ namespace ttnte::python {
 class PackageManager {
 public:
   // Modules
+  py::module_ numpy;
   py::module_ torchtt;
 
   /// @return Get the instance of the singleton manager.

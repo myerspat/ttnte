@@ -12,6 +12,7 @@ enum class BoundaryType : uint8_t {
   INTERNAL,
   VACUUM,
   REFLECTIVE,
+  DEGENERATE,
 };
 
 /// @brief Convert the BoundaryType to a string name.
@@ -20,17 +21,17 @@ enum class BoundaryType : uint8_t {
 [[nodiscard]] constexpr std::string_view to_string(BoundaryType type)
 {
   switch (type) {
-  case BoundaryType::UNKNOWN:
-    return "UNKNOWN";
   case BoundaryType::INTERNAL:
     return "INTERNAL";
   case BoundaryType::VACUUM:
     return "VACUUM";
   case BoundaryType::REFLECTIVE:
     return "REFLECTIVE";
+  case BoundaryType::DEGENERATE:
+    return "DEGENERATE";
+  default:
+    return "UNKNOWN";
   }
-
-  return "UNKNOWN";
 }
 
 /// @brief Which planes to apply a prescribed boundary condition type to.

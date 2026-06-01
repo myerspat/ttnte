@@ -53,6 +53,11 @@ private:
   // NURBS: stores (N_1, ..., N_D, dim + 1) where the last dim is (wx, wy, wz)
   torch::Tensor ctrlptsw_;
 
+  /// Orientation for this patch. If the patch is in a left-handed coordinate
+  /// system then we scale by this to get it back to the right-handed coordinate
+  /// system.
+  double orientation_ = 1.0;
+
   // =================================================================
   // Private constructors
   Patch(std::optional<std::string> label = std::nullopt);
@@ -93,16 +98,38 @@ public:
   /// of each input tensor and d is the number of physical dimensions.
   torch::Tensor evaluate(
     const c10::SmallVector<torch::Tensor, 3>& local_coords);
-    
-  // Compute all non-vanishing B-spline/NURBS basis functions.
-  //
-  // local_coords:
-  //   Vector of 1D tensors, one per parametric dimension.
-  //
-  // Returns:
-  //   Tensor of shape (n1, ..., nk, p1+1, ..., pk+1)
+
+  /// @brief Compute all non-vanishing B-spline/NURBS basis functions.
+  /// @param local_coords The tensor product parametric coordinates.
+  /// @param derivative_order The order of derivative to compute to.
+  /// @return A tensor of shape (n1, ..., nk, p1 + 1, ...., pk + 1,
+  /// derivative_order + 1). If `derivative_order == 1` then the last dimension
+  /// is squeezed.
   torch::Tensor evaluate_basis(
-    const c10::SmallVector<torch::Tensor, 3>& local_coords);
+    const c10::SmallVector<torch::Tensor, 3>& local_coords,
+    const int64_t& derivative_order = 0) const;
+
+  /// @brief Compute all B-spline/NURBS basis functions.
+  /// @param local_coords The tensor product parametric coordinates.
+  /// @param derivative_order The order of derivative to compute to.
+  /// @param eval_cross_terms Whether to evaluate cross derivatives.
+  /// @return If `eval_cross_terms == true` then a tensor of shape (n1, ..., nk,
+  /// derivative_order + 1, ..., derivative_order + 1, c1, ..., ck) where ni is
+  /// the number of parametric points and ci is the number of control points all
+  /// along parametric dimension i. Note that there will be as many dimensions
+  /// for derivatives as there are parametric dimensions. If `eval_cross_terms
+  /// == false` when we compute no cross terms and the dimensions for the
+  /// derivatives are collapsed into one where the first index are the zeroth
+  /// derivative, the next `get_ndim()` are the first, and so on.
+  torch::Tensor evaluate_all_basis(
+    const c10::SmallVector<torch::Tensor, 3>& local_coords,
+    int64_t derivative_order = 0, bool eval_cross_terms = false) const;
+
+  /// @brief Compute the Jacobian at tensor product points.
+  /// @param local_coords The tensor product parametric coordinates.
+  /// @return A tensor of shape (n1, ..., nk, n_physical, n_parametric, p1 + 1).
+  torch::Tensor evaluate_all_jacobian(
+    const c10::SmallVector<torch::Tensor, 3>& local_coords) const;
 
   // // MPI communication
   // template<typename T>
@@ -170,6 +197,14 @@ public:
   /// @return Class info in a string for printing.
   std::string to_string_impl() const;
 
+  /// @brief Send the patch to a device or a different data type (in-place).
+  /// @param options The tensor options.
+  void to_(const torch::TensorOptions& options);
+
+  /// @brief Send the patch to a device or a different data type (in-place).
+  /// @param options The tensor options.
+  Ptr to(const torch::TensorOptions& options) const;
+
   // =================================================================
   // Public Getters / Setters
   /// @return The control points (weighted for NUBRS) in the shape of (N1, ...,
@@ -205,8 +240,12 @@ public:
   /// @return The number of control points along each parametric dimension.
   std::vector<int64_t> get_ctrlpts_sizes() const;
 
-  // Get bounding box implementation
+  /// @return Get bounding box. (Implementation)
   torch::Tensor get_bbox_impl(double epsilon = 0.0) const;
+
+  /// @return Get the orientation of the patch (left- versus right-handed
+  /// coordinate system)
+  double get_orientation() const noexcept { return orientation_; }
 
   /// @brief Get the spline that defining the upper or lower boundary along a
   /// parametric dimension.

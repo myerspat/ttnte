@@ -14,6 +14,8 @@ def from_igakit(
     device: Optional[torch.device] = None,
     dtype: Optional[torch.dtype] = None,
     fill: Optional[MaterialLabel] = None,
+    drop_invariant_dims: bool = True,
+    tol: float = 1e-10,
 ):
     """Build a ``ttnte.cad.Patch`` from an ``igakit.cad.NURBS``.
 
@@ -29,6 +31,11 @@ def from_igakit(
         Data type to initialize the control points and knot vectors as.
     fill: torch.xs.MaterialLabel, optional
         Fill of the patch.
+    drop_invariant_dims: bool, default=True
+        Drop spatial dimensions that do not vary by control point.
+    tol: float, default=1e-10
+        The tolerance for checking if this is a B-spline or NURBS and
+        which dimensions do not very.
 
     Return
     ------
@@ -51,13 +58,36 @@ def from_igakit(
     ]
     patch.set_basis(basis)
 
-    # If not all weights are one then we make a NURBS else B-Spline
-    if (kitpatch.control[..., -1] != 1.0).any():
-        patch.set_ctrlptsw(torch.tensor(kitpatch.control, device=device, dtype=dtype))
+    # Convert the control points to a pytorch tensor
+    ctrlptsw = torch.tensor(kitpatch.control, device=device, dtype=dtype)
+
+    if drop_invariant_dims:
+        # Separate and un-weight control points from their weights
+        weights = ctrlptsw[..., -1:]
+        ctrlpts = ctrlptsw[..., :-1] / weights
+
+        # Flatten and check variation
+        flat_ctrlpts = ctrlpts.reshape((-1, ctrlpts.shape[-1]))
+        variation = flat_ctrlpts.max(dim=0).values - flat_ctrlpts.min(dim=0).values
+        active_dims = variation > tol
+
+        # Check this is not a single point patch
+        if not active_dims.any():
+            active_dims[0] = True
+
+        # Append True to keep the weight dimension at the end
+        keep_indices = torch.cat([active_dims, torch.tensor([True], device=device)])
+
+        # Filter the control tensor
+        ctrlptsw = ctrlptsw[..., keep_indices]
+
+    # Set control points for B-spline or NURBS
+    if (torch.abs(ctrlptsw[..., -1] - 1.0) < tol).all():
+        # B-spline
+        patch.set_ctrlpts(ctrlptsw[..., :-1])
     else:
-        patch.set_ctrlpts(
-            torch.tensor(kitpatch.control[..., :-1], device=device, dtype=dtype)
-        )
+        # NURBS
+        patch.set_ctrlptsw(ctrlptsw)
 
     # Add fill
     if fill is not None:

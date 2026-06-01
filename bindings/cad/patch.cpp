@@ -58,6 +58,17 @@ void register_Patch(py::module_& m)
             local_coords.begin(), local_coords.end()));
         },
         py::arg("local_coords"))
+      .def(
+        "evaluate_all_basis",
+        [](Patch& self, const std::vector<torch::Tensor>& local_coords,
+          int64_t derivative_order = 0, bool eval_cross_terms = false) {
+          return self.evaluate_all_basis(
+            c10::SmallVector<torch::Tensor, 3>(
+              local_coords.begin(), local_coords.end()),
+            derivative_order, eval_cross_terms);
+        },
+        py::arg("local_coords"), py::arg("derivative_order") = 0,
+        py::arg("eval_cross_terms") = false)
 
       .def("get_order", &Patch::get_order, py::arg("dim"))
       .def("get_degree", &Patch::get_degree, py::arg("dim"))

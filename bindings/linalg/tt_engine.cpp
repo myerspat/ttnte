@@ -116,10 +116,26 @@ void register_TTEngine(py::module_& m)
       py::arg("m_modes"), py::arg("n_modes"), py::arg("device") = py::none(),
       py::arg("dtype") = py::none())
 
+    // Meshgrid
+    .def_static("meshgrid", [](const std::vector<torch::Tensor>& vecs) {
+        auto result = TTEngine::meshgrid(TTEngine::Tensors(vecs.cbegin(), vecs.cend()));
+        return std::vector<TTEngine>(result.begin(), result.end());
+    }, py::arg("vecs"), py::call_guard<py::gil_scoped_release>())
+
+
     // =================================================================
     // Transpose tensors
-    .def("transpose_", [](TTEngine& self, const std::vector<int64_t>& core_idxs = {}) {return self.transpose_(c10::SmallVector<int64_t, 6>(core_idxs.cbegin(), core_idxs.cend()));}, py::arg("core_idxs") = std::vector<int64_t>{})
-    .def("transpose", [](const TTEngine& self, const std::vector<int64_t>& core_idxs = {}) {return self.transpose(c10::SmallVector<int64_t, 6>(core_idxs.cbegin(), core_idxs.cend()));}, py::arg("core_idxs") = std::vector<int64_t>{})
+    .def("transpose_",
+      [](TTEngine& self, const std::vector<int64_t>& core_idxs = {}) {
+        return self.transpose_(c10::SmallVector<int64_t, 6>(core_idxs.cbegin(), core_idxs.cend()));
+      },
+      py::arg("core_idxs") = std::vector<int64_t>{},
+      py::return_value_policy::reference_internal)
+    .def("transpose",
+      [](const TTEngine& self, const std::vector<int64_t>& core_idxs = {}) {
+        return self.transpose(c10::SmallVector<int64_t, 6>(core_idxs.cbegin(), core_idxs.cend()));
+      },
+      py::arg("core_idxs") = std::vector<int64_t>{})
 
     // =================================================================
     // Casting and Device Transfers (with GIL release)
@@ -163,6 +179,11 @@ void register_TTEngine(py::module_& m)
       py::arg("copy") = false, py::arg("memory_format") = py::none(),
       py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
+    .def("to_",
+      py::overload_cast<const torch::TensorOptions&>(&TTEngine::to_),
+      py::arg("options"),
+      py::return_value_policy::reference_internal,
+      py::call_guard<py::gil_scoped_release>())
 
     // =================================================================
     // Tensor Train Operations (with GIL release)
@@ -181,6 +202,7 @@ void register_TTEngine(py::module_& m)
       py::call_guard<py::gil_scoped_release>())
 
     .def("to_dense", &TTEngine::to_dense,
+        py::arg("interleave") = false,
       py::call_guard<py::gil_scoped_release>())
 
     .def("from_buffer", &TTEngine::from_buffer, py::arg("buffer"),
@@ -188,6 +210,59 @@ void register_TTEngine(py::module_& m)
 
     .def("neg_", &TTEngine::neg_, py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
+
+    .def("norm", &TTEngine::norm, py::call_guard<py::gil_scoped_release>())
+    .def("sum", &TTEngine::sum, py::call_guard<py::gil_scoped_release>())
+
+    .def("diagonalize_",
+      [](TTEngine& self, const std::vector<int64_t>& core_idxs = {}) {
+        return self.diagonalize_(c10::SmallVector<int64_t, 6>(core_idxs.cbegin(), core_idxs.cend()));
+      },
+      py::arg("core_idxs") = std::vector<int64_t>{},
+      py::return_value_policy::reference_internal)
+    .def("diagonalize",
+      [](const TTEngine& self, const std::vector<int64_t>& core_idxs = {}) {
+        return self.diagonalize(c10::SmallVector<int64_t, 6>(core_idxs.cbegin(), core_idxs.cend()));
+      },
+      py::arg("core_idxs") = std::vector<int64_t>{})
+
+    .def("is_rank_one", &TTEngine::is_rank_one)
+
+    .def("expand_",
+      [](TTEngine& self, const std::vector<int64_t>& m_modes, const std::vector<int64_t>& n_modes){
+        return self.expand_(
+            c10::SmallVector<int64_t, 6>(m_modes.cbegin(), m_modes.cend()),
+            c10::SmallVector<int64_t, 6>(n_modes.cbegin(), n_modes.cend()));
+      },
+      py::arg("m_modes"), py::arg("n_modes"),
+      py::return_value_policy::reference_internal,
+      py::call_guard<py::gil_scoped_release>())
+    .def("expand",
+      [](const TTEngine& self, const std::vector<int64_t>& m_modes, const std::vector<int64_t>& n_modes){
+        return self.expand(
+            c10::SmallVector<int64_t, 6>(m_modes.cbegin(), m_modes.cend()),
+            c10::SmallVector<int64_t, 6>(n_modes.cbegin(), n_modes.cend()));
+      },
+      py::arg("m_modes"), py::arg("n_modes"),
+      py::call_guard<py::gil_scoped_release>())
+
+    .def("contract_rank_dim_", &TTEngine::contract_rank_dim_,
+             py::arg("dim"), py::return_value_policy::reference_internal,
+             py::call_guard<py::gil_scoped_release>())
+    .def("contract_rank_dim", &TTEngine::contract_rank_dim,
+          py::arg("dim"), py::call_guard<py::gil_scoped_release>())
+
+    .def("kron_", py::overload_cast<const TTEngine&>(&TTEngine::kron_),
+          py::arg("other"), py::return_value_policy::reference_internal)
+    .def("kron", py::overload_cast<const TTEngine&>(&TTEngine::kron, py::const_),
+          py::arg("other"))
+    .def("kron_", py::overload_cast<const torch::Tensor&>(&TTEngine::kron_),
+          py::arg("other"), py::return_value_policy::reference_internal)
+    .def("kron", py::overload_cast<const torch::Tensor&>(&TTEngine::kron, py::const_),
+          py::arg("other"))
+
+    .def("evaluate_at", &TTEngine::evaluate_at, py::arg("indices"),
+        py::call_guard<py::gil_scoped_release>())
 
     // =================================================================
     // Mathematical Operators

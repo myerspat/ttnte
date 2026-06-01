@@ -87,6 +87,16 @@ public:
     bool copy = false,
     std::optional<at::MemoryFormat> memory_format = std::nullopt);
 
+  /// @brief Send this TT to another data type or device (in-place).
+  /// @param options The tensor options used for each core.
+  /// @return A reference to this TT after.
+  TTEngine& to_(const torch::TensorOptions& options);
+
+  /// @return The sum over all indices.
+  double sum() const;
+  /// @return The Frobenius norm of this TT.
+  double norm() const;
+
   /// @brief TT-SVD algorithm. Decompose a tensor into a tensor train.
   /// @param tensor The tensor to be approximately decomposed.
   /// @param eps The truncation tolerance.
@@ -136,8 +146,10 @@ public:
     bool is_interleaved = false);
 
   /// @brief Contract rank dimensions to make a full tensor.
+  /// @param interleave Whether to leave the tensor interleaved or group indices
+  /// by (output, input).
   /// @return The dense tensor.
-  torch::Tensor to_dense() const;
+  torch::Tensor to_dense(bool interleave = false) const;
 
   /// @brief Update the TT from a buffer.
   /// @param buffer The buffer of data holding all the TT cores.
@@ -188,11 +200,85 @@ public:
   /// @param cores The indices of which cores to index.
   /// @return The transposed TT.
   TTEngine& transpose_(const c10::SmallVector<int64_t, 6>& core_idxs = {});
-
   /// @brief Perform a transpose.
   /// @param cores The indices of which cores to index.
   /// @return The transposed TT.
   TTEngine transpose(const c10::SmallVector<int64_t, 6>& core_idxs = {}) const;
+
+  /// @brief Diagonalize a select set of cores (in-place). This assumes the
+  /// cores are already for a TT-vector.
+  /// @param core_idxs Indices into the cores vector of which we are to
+  /// diagonalize.
+  TTEngine& diagonalize_(const c10::SmallVector<int64_t, 6>& core_idxs = {});
+  /// @brief Diagonalize a select set of cores. This assumes the cores are
+  /// already for a TT-vector.
+  /// @param core_idxs Indices into the cores vector of which we are to
+  /// diagonalize.
+  TTEngine diagonalize(
+    const c10::SmallVector<int64_t, 6>& core_idxs = {}) const;
+
+  /// @return Whether the TT is rank-one.
+  bool is_rank_one() const;
+
+  /// @brief Expand a core along a given dimension (in-place). The values across
+  /// the other dimensions are repeated for the new one.
+  /// @param m_modes The shape of the output dimensions of the TT.
+  /// @param n_modes The shape of the input dimensions of the TT.
+  /// @return A reference to this TT after the expansion.
+  TTEngine& expand_(const c10::SmallVector<int64_t, 6>& m_modes,
+    const c10::SmallVector<int64_t, 6>& n_modes);
+  /// @brief Expand a core along a given dimension. The values across
+  /// the other dimensions are repeated for the new one.
+  /// @param m_modes The shape of the output dimensions of the TT.
+  /// @param n_modes The shape of the input dimensions of the TT.
+  /// @return The expanded TT.
+  TTEngine expand(const c10::SmallVector<int64_t, 6>& m_modes,
+    const c10::SmallVector<int64_t, 6>& n_modes) const;
+
+  /// @brief Contract a specific rank dimension (in-place).
+  /// @param dim The index of which dimension to contract (not including the end
+  /// ranks).
+  /// @return A reference to this TT after the rank dimension has been
+  /// contracted.
+  TTEngine& contract_rank_dim_(size_t dim);
+  /// @brief Contract a specific rank dimension.
+  /// @param dim The index of which dimension to contract (not including the end
+  /// ranks).
+  /// @return The TT after the rank dimension has been contracted.
+  TTEngine contract_rank_dim(size_t dim) const;
+
+  /// @brief Create a mesh grid (like numpy or pytorch) but in TT format.
+  /// @param vecs The grid along each dimension.
+  /// @return Each tensor in vecs seperated into their own TT with ones in the
+  /// other dimensions.
+  static c10::SmallVector<linalg::TTEngine, 6> meshgrid(const Tensors& vecs);
+
+  /// @brief Compute the Kronecker product of thie TT with another TT
+  /// (in-place). Note this just combines the two TT core vectors into one.
+  /// @param other The other TT.
+  /// @return A reference to this TT after the Kronecker product.
+  TTEngine& kron_(const TTEngine& other);
+  /// @brief Compute the Kronecker product of thie TT with another TT. Note this
+  /// just combines the two TT core vectors into one.
+  /// @param other The other TT.
+  /// @return The resulting TT.
+  TTEngine kron(const TTEngine& other) const;
+  /// @brief Compute the Kronecker product with another tensor (in-place). This
+  /// adds the tensor to the end of the list of TT-cores.
+  /// @param other The tensor.
+  /// @return A reference to this TT after the Kronecker product.
+  TTEngine& kron_(const torch::Tensor& other);
+  /// @brief Compute the Kronecker product with another tensor. This
+  /// adds the tensor to the end of the list of TT-cores.
+  /// @param other The tensor.
+  /// @return The resulting TT.
+  TTEngine kron(const torch::Tensor& other) const;
+
+  /// @brief Evaluate this TT at a list of indices.
+  /// @param indices A tensor that is (N, C) where C is the number of indices in
+  /// this TT.
+  /// @return The resulting N evaluations.
+  torch::Tensor evaluate_at(const torch::Tensor& indices) const;
 
   // =================================================================
   // Public operators

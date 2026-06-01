@@ -1,5 +1,6 @@
 # Relevant files from src
-set(PY_SRC_REL package_manager.cpp acquire.cpp release.cpp torchtt.cpp)
+set(PY_SRC_REL package_manager.cpp acquire.cpp release.cpp torchtt.cpp
+               numpy.cpp)
 
 # Relevant files from bindings/python
 set(PY_BINDINGS_REL bindings.cpp)

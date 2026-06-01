@@ -126,6 +126,14 @@ public:
   /// @return A shortened string of this class for printing.
   std::string to_string() const { return derived().to_string_impl(); }
 
+  /// @brief Send this block to another device or data type (in-place).
+  /// @param options The tensor options.
+  void to_(const torch::TensorOptions& options)
+  {
+    is_finalized_or_error("to_");
+    meshdata_ = meshdata_.to(options);
+  }
+
   // =================================================================
   // Public Getters / Setters
   /// @return Get a static pointer to the derived class.

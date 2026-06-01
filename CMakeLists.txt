@@ -175,6 +175,7 @@ add_subdirectory(bindings/linalg)
 add_subdirectory(bindings/task)
 add_subdirectory(bindings/solvers)
 add_subdirectory(bindings/python)
+add_subdirectory(bindings/math)
 
 # ==============================================================================
 # C++ side
@@ -189,7 +190,9 @@ add_library(
   ${TASK_SRC}
   ${LINALG_SRC}
   ${SOLVERS_SRC}
-  ${PY_SRC})
+  ${PY_SRC}
+  ${PHYSICS_SRC}
+  ${MATH_SRC})
 set_target_properties(ttnte_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(ttnte_static PUBLIC partitioning_suite ${TORCH_LIBRARIES}
                                           MPI::MPI_CXX torchtt_headers)
@@ -223,7 +226,8 @@ add_library(
   ${LINALG_BINDINGS}
   ${TASK_BINDINGS}
   ${SOLVERS_BINDINGS}
-  ${PY_BINDINGS})
+  ${PY_BINDINGS}
+  ${MATH_BINDINGS})
 
 # Link python bindings to the static
 target_link_libraries(ttnte_python PRIVATE ttnte_static ${TORCH_PYTHON_LIBRARY})
@@ -243,7 +247,8 @@ target_include_directories(
           ${LINALG_BINDINGS_DIR}
           ${TASK_BINDINGS_DIR}
           ${SOLVERS_BINDINGS_DIR}
-          ${PY_BINDINGS_DIR})
+          ${PY_BINDINGS_DIR}
+          ${MATH_BINDINGS_DIR})
 
 if(APPLE)
   set_target_properties(ttnte_python PROPERTIES LINK_FLAGS

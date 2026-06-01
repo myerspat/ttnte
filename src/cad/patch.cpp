@@ -1,8 +1,33 @@
 #include "ttnte/cad/patch.hpp"
 #include "ttnte/cad/bspline_basis.hpp"
+#include "ttnte/linalg/binomial.hpp"
 #include "ttnte/utils/exception.hpp"
 #include "ttnte/utils/io_formatting.hpp"
 #include <sstream>
+
+namespace {
+
+void check_parametric_coords(const ttnte::cad::Patch& patch,
+  const torch::Tensor& u, int64_t expected_ndim,
+  const torch::Device& expected_device, const torch::ScalarType& expected_dtype,
+  const std::string& func_name)
+{
+  if (!u.defined() || u.ndimension() != expected_ndim || u.numel() == 0) {
+    throw ttnte::utils::runtime_error(patch, func_name,
+      "The parametric coordinates tensor must be a defined " +
+        std::to_string(expected_ndim) + "-dimensional tensor");
+  }
+  if (u.device() != expected_device || u.dtype() != expected_dtype) {
+    throw ttnte::utils::runtime_error(patch, func_name,
+      "All parametric coordinate tensors must have the same dtype and device");
+  }
+  if (torch::logical_or(u < 0.0, u > 1.0).any().item<bool>()) {
+    throw ttnte::utils::runtime_error(
+      patch, func_name, "All parametric coordinates should be between 0 and 1");
+  }
+}
+
+} // namespace
 
 namespace ttnte::cad {
 
@@ -33,7 +58,7 @@ Patch::Patch(const torch::Tensor& ctrlpts, const torch::Tensor& weights,
 void Patch::finalize_impl()
 {
   if (basis_.empty() || !ctrlptsw_.defined()) {
-    throw utils::runtime_error(*this, error_context("validate"),
+    throw utils::runtime_error(*this, error_context("finalize_impl"),
       "Both the basis and control points must be set before validation");
   }
 
@@ -45,13 +70,13 @@ void Patch::finalize_impl()
        << "A " << ctrlptsw_.ndimension()
        << "-dimensional control point tensor was given";
 
-    throw utils::runtime_error(*this, error_context("validate"), ss.str());
+    throw utils::runtime_error(*this, error_context("finalize_impl"), ss.str());
   }
 
   // Check the control point tensor shape matches the basis
   for (size_t i = 0; i < basis_.size(); i++) {
     if (basis_[i].get_size() != ctrlptsw_.size(i)) {
-      throw utils::runtime_error(*this, error_context("validate"),
+      throw utils::runtime_error(*this, error_context("finalize_impl"),
         "There must be an equal number of basis functions and control points"
         "along each dimension");
     }
@@ -62,7 +87,7 @@ void Patch::finalize_impl()
   auto dtype = ctrlptsw_.dtype();
   for (const auto& b : basis_) {
     if (b.get_device() != device || b.get_dtype() != dtype) {
-      throw utils::runtime_error(*this, error_context("validate"),
+      throw utils::runtime_error(*this, error_context("finalize_impl"),
         "The basis and control points should be on the same device with the "
         "same data type");
     }
@@ -97,6 +122,35 @@ void Patch::finalize_impl()
   ctrlptsw_ = meshdata_.narrow(0, idx, cpw_size).view(cpw_shape);
 
   is_finalized_ = true;
+
+  // Compute the Jacobian at the centroid of the patch to determine the
+  // orientation of the patch
+  int64_t ndim = get_ndim();
+  int64_t phys_ndim =
+    is_rational_ ? ctrlptsw_.size(-1) - 1 : ctrlptsw_.size(-1);
+  auto jac = evaluate_all_jacobian(c10::SmallVector<torch::Tensor, 3>(ndim,
+                                     torch::tensor({0.5}, ctrlptsw_.options())))
+               .reshape({phys_ndim, ndim});
+
+  // Compute the determinant and the condition number
+  double cond = torch::linalg_cond(jac).item<double>();
+
+  // Check for degeneracies
+  double max_cond = jac.scalar_type() == torch::kFloat64 ? 1e12 : 1e5;
+  if (std::isnan(cond) || std::isinf(cond) || cond > max_cond) {
+    throw utils::runtime_error(*this, error_context("finalize_impl"),
+      "Patch is degenerate, or pinched at its center point. Condition number\n"
+      "of " +
+        std::to_string(cond) + "exceeds precision limits.");
+  }
+
+  if (phys_ndim == ndim) {
+    double det = torch::linalg_det(jac).item<double>();
+    orientation_ = (det >= 0.0) ? 1.0 : -1.0;
+  } else if (phys_ndim < ndim) {
+    throw utils::runtime_error(*this, error_context("finalize_impl"),
+      "Patches cannot have more parametric dimensions than physical");
+  }
 }
 
 torch::Tensor Patch::evaluate(const torch::Tensor& local_coords)
@@ -280,14 +334,296 @@ std::string Patch::to_string_impl() const
   return ss.str();
 }
 
+torch::Tensor Patch::evaluate_all_basis(
+  const c10::SmallVector<torch::Tensor, 3>& local_coords,
+  int64_t derivative_order, bool eval_cross_terms) const
+{
+  is_finalized_or_error("evaluate_basis");
+  const auto& options = local_coords[0].options();
+  const int64_t ndim = get_ndim();
+
+  if (local_coords.size() != ndim) {
+    throw utils::runtime_error(*this, error_context("evaluate_basis"),
+      "The length of `local_coords` must equal the patch dimension");
+  }
+  if (derivative_order < 0) {
+    throw utils::runtime_error(*this, error_context("evaluate_basis"),
+      "`derivative_order` must be greater than or equal to 0");
+  }
+
+  c10::SmallVector<int64_t, 3> orders;
+  orders.reserve(ndim);
+  for (size_t d = 0; d < ndim; d++) {
+    // Run checks on the given parametric coordinates
+    check_parametric_coords(*this, local_coords[d], 1, get_device(),
+      get_dtype(), error_context("evaluate_all_basis"));
+    orders.push_back(std::min(derivative_order, basis_[d].get_degree()));
+  }
+
+  // Broadcasting helper function
+  auto get_broadcast_shape = [&](size_t d) {
+    if (eval_cross_terms) {
+      c10::SmallVector<int64_t, 9> shape(3 * ndim, 1);
+      shape[d] = local_coords[d].size(0);
+      shape[ndim + d] = orders[d] + 1;
+      shape[2 * ndim + d] = basis_[d].get_size();
+      return shape;
+    } else {
+      c10::SmallVector<int64_t, 9> shape(2 * ndim + 1, 1);
+      shape[d] = local_coords[d].size(0);
+      shape[ndim] = orders[d] + 1;
+      shape[ndim + 1 + d] = basis_[d].get_size();
+      return shape;
+    }
+  };
+
+  // Compute the B-spline basis functions and their derivatives
+  torch::Tensor result;
+  if (!eval_cross_terms && derivative_order > 0) {
+    // Allocate the result tensor
+    c10::SmallVector<int64_t, 9> shape(2 * ndim + 1, 1);
+    for (size_t d = 0; d < ndim; d++) {
+      const auto& b = basis_[d];
+
+      shape[d] = local_coords[d].size(0); // Number of points along dimension d
+      shape[ndim] += orders[d];           // Total number of derivatives
+      shape[ndim + 1 + d] =
+        b.get_size(); // Number of control points along dimension d
+    }
+    result = torch::empty(shape, options);
+
+    // Compute the derivatives and populate them accordingly
+    int64_t pos = 1;
+    for (size_t d = 0; d < ndim; d++) {
+      const auto& b = basis_[d];
+      const auto& u = local_coords[d];
+      int64_t order = orders[d];
+
+      auto evals =
+        b.evaluate_all(u, derivative_order).reshape(get_broadcast_shape(d));
+      auto der0 = evals.narrow(ndim, 0, 1);
+
+      if (d == 0) {
+        result.copy_(der0);
+        if (order > 0) {
+          result.narrow(ndim, 1, order).copy_(evals.slice(ndim, 1));
+        }
+
+      } else {
+        // Multiply the zeroth derivative up to just before the derivatives of
+        // this dimension
+        result.narrow(ndim, 0, pos).mul_(der0);
+
+        // Multiply the zeroth derivative for all entries past the derivatives
+        // of this dimension
+        if (pos + order < shape[ndim]) {
+          result.slice(ndim, pos + order).mul_(der0);
+        }
+
+        if (order > 0) {
+          result.narrow(ndim, pos, order).mul_(evals.slice(ndim, 1));
+        }
+      }
+      pos += order;
+    }
+  } else {
+    // Compute all cross term derivatives for a B-spline
+    for (size_t d = 0; d < ndim; d++) {
+      const auto& b = basis_[d];
+      const auto& u = local_coords[d];
+
+      // Get the broadcasting shape
+      auto shape = get_broadcast_shape(d);
+
+      result = (d == 0)
+                 ? b.evaluate_all(u, derivative_order).reshape(shape)
+                 : result * b.evaluate_all(u, derivative_order).reshape(shape);
+    }
+  }
+
+  // Return B-spline result
+  if (!is_rational_) {
+    if (derivative_order == 0) {
+      auto shape = result.sizes().vec();
+      shape.erase(shape.begin() + ndim, shape.end() - ndim);
+      return result.reshape(shape);
+    }
+    return result;
+  }
+
+  // Apply the weight tensor
+  c10::SmallVector<int64_t, 9> w_shape(
+    eval_cross_terms ? (3 * ndim) : (2 * ndim + 1), 1);
+  c10::SmallVector<int64_t, 3> sum_dims;
+  for (size_t i = eval_cross_terms ? (2 * ndim) : (ndim + 1);
+    i < w_shape.size(); i++) {
+    w_shape[i] = result.size(i);
+    sum_dims.push_back(i);
+  }
+  result.mul_(get_weights().reshape(w_shape));
+
+  // Compute the sum over all control points
+  auto W = result.sum(sum_dims, true);
+
+  // Return early if we want no derivatives
+  if (derivative_order == 0) {
+    result.div_(W);
+    auto shape = result.sizes().vec();
+    shape.erase(shape.begin() + ndim, shape.end() - ndim);
+    return result.reshape(shape);
+  }
+
+  if (!eval_cross_terms) {
+    // Compute the rational zeroth derivative
+    auto W0 = W.select(ndim, 0);
+    result.select(ndim, 0).div_(W0);
+
+    // Compute pure rational derivatives incrementally
+    int64_t pos = 1;
+    for (size_t d = 0; d < ndim; d++) {
+      int64_t order = orders[d];
+
+      for (int64_t k = 1; k <= order; k++) {
+        int64_t k_idx = pos + k - 1;
+
+        // A^(k) currently lives in result.select(ndim, k_idx)
+        auto Rk = result.select(ndim, k_idx);
+        torch::Tensor sum_term = torch::zeros_like(Rk);
+
+        // Summation: binom(k, i) * W^(i) * R^(k-i)
+        for (int64_t i = 1; i <= k; i++) {
+          int64_t binom = linalg::binomial.get(k, i);
+          int64_t i_idx = pos + i - 1;
+          int64_t k_minus_i_idx = (k == i) ? 0 : pos + (k - i) - 1;
+
+          auto Wi = W.select(ndim, i_idx);
+          auto R_k_minus_i = result.select(ndim, k_minus_i_idx);
+
+          // sum_term += binom * Wi * R_k_minus_i
+          sum_term.addcmul_(Wi, R_k_minus_i, binom);
+        }
+
+        // R^(k) = (A^(k) - sum_term) / W^(0)
+        // Since Rk is a view into result, this updates the tensor in-place
+        Rk.sub_(sum_term).div_(W0);
+      }
+      pos += order;
+    }
+    return result;
+
+  } else {
+    // Odometer indexing for multi-index
+    c10::SmallVector<int64_t, 3> k_idx(ndim, 0);
+    c10::SmallVector<int64_t, 3> k_lim;
+    k_lim.reserve(ndim);
+    for (size_t i = ndim; i < 2 * ndim; i++) {
+      k_lim.push_back(result.size(i) - 1);
+    }
+    auto increment_index = [](c10::SmallVector<int64_t, 3>& multi_index,
+                             const c10::SmallVector<int64_t, 3>& limits) {
+      for (int i = multi_index.size() - 1; i >= 0; --i) {
+        if (++multi_index[i] <= limits[i]) {
+          return true;
+        }
+        multi_index[i] = 0;
+      }
+      return false;
+    };
+    auto get_linear_index = [&](
+                              const c10::SmallVector<int64_t, 3>& multi_index) {
+      int64_t linear_idx = 0;
+      int64_t stride = 1;
+      for (int i = ndim - 1; i >= 0; --i) {
+        linear_idx += multi_index[i] * stride;
+        stride *= k_lim[i] + 1;
+      }
+      return linear_idx;
+    };
+
+    // Flatten both tensors
+    auto final_shape = result.sizes();
+    result = result.flatten(ndim, 2 * ndim - 1);
+    W = W.flatten(ndim, 2 * ndim - 1);
+
+    // Base weight tensor and zeroth derivative
+    auto W0 = W.narrow(ndim, 0, 1);
+    result.narrow(ndim, 0, 1).div_(W0);
+
+    // Recursive loop
+    while (increment_index(k_idx, k_lim)) {
+      int64_t k_linear = get_linear_index(k_idx);
+
+      // Get numerator term
+      torch::Tensor Ak = result.narrow(ndim, k_linear, 1);
+
+      // Sum over contributing slices
+      torch::Tensor sum_term = torch::zeros_like(Ak);
+      c10::SmallVector<int64_t, 3> i_idx(ndim, 0);
+
+      while (increment_index(i_idx, k_idx)) {
+        // Multi-index Binomial coefficient
+        int64_t binom = 1;
+        c10::SmallVector<int64_t, 3> k_minus_i(ndim);
+
+        for (size_t d = 0; d < ndim; d++) {
+          binom *= linalg::binomial.get(k_idx[d], i_idx[d]);
+          k_minus_i[d] = k_idx[d] - i_idx[d];
+        }
+
+        // Index out relevant tensors
+        torch::Tensor Wi = W.narrow(ndim, get_linear_index(i_idx), 1);
+        torch::Tensor prev =
+          result.narrow(ndim, get_linear_index(k_minus_i), 1);
+
+        // sum_term += binom * Wi * prev
+        sum_term.addcmul_(Wi, prev, binom);
+      }
+
+      // Place the result back into the results tensor
+      result.narrow(ndim, k_linear, 1).copy_((Ak - sum_term) / W0);
+    }
+
+    return result.reshape(final_shape);
+  }
+}
+
+torch::Tensor Patch::evaluate_all_jacobian(
+  const c10::SmallVector<torch::Tensor, 3>& local_coords) const
+{
+  is_finalized_or_error("evaluate_all_jacobian");
+  int64_t ndim = get_ndim();
+
+  // Evaluate the basis and the first derivatives
+  auto evals = evaluate_all_basis(local_coords, 1, false).narrow(ndim, 1, ndim);
+
+  // Get the unweighted control points
+  torch::Tensor ctrlpts = get_ctrlpts();
+
+  // Get the dimensions to contract over
+  c10::SmallVector<int64_t, 3> dims_evals(ndim);
+  c10::SmallVector<int64_t, 3> dims_ctrlpts(ndim);
+  for (int64_t i = 0; i < ndim; i++) {
+    dims_evals[i] = ndim + 1 + i;
+    dims_ctrlpts[i] = i;
+  }
+
+  return torch::tensordot(evals, ctrlpts, dims_evals, dims_ctrlpts)
+    .transpose(-2, -1);
+}
+
 torch::Tensor Patch::evaluate_basis(
-  const c10::SmallVector<torch::Tensor, 3>& local_coords)
+  const c10::SmallVector<torch::Tensor, 3>& local_coords,
+  const int64_t& derivative_order) const
 {
   is_finalized_or_error("evaluate_basis");
 
   if (local_coords.size() != get_ndim()) {
     throw utils::runtime_error(*this, error_context("evaluate_basis"),
       "The length of `local_coords` must equal the patch dimension");
+  }
+  if (derivative_order < 0) {
+    throw utils::runtime_error(*this, error_context("evaluate_basis"),
+      "`derivative_order` must be greater than or equal to 0");
   }
 
   const auto& options = local_coords[0].options();
@@ -296,7 +632,7 @@ torch::Tensor Patch::evaluate_basis(
   c10::SmallVector<torch::Tensor, 3> basis_per_dim;
   basis_per_dim.reserve(ndim);
 
-  std::vector<int64_t> interleaved_shape;
+  c10::SmallVector<int64_t, 6> interleaved_shape;
   interleaved_shape.reserve(2 * ndim);
 
   for (size_t d = 0; d < local_coords.size(); ++d) {
@@ -337,7 +673,7 @@ torch::Tensor Patch::evaluate_basis(
   auto result = torch::ones(interleaved_shape, options);
 
   for (int64_t d = 0; d < ndim; ++d) {
-    std::vector<int64_t> shape(2 * ndim, 1);
+    c10::SmallVector<int64_t, 6> shape(2 * ndim, 1);
     shape[2 * d] = local_coords[d].size(0);
     shape[2 * d + 1] = basis_[d].get_degree() + 1;
 
@@ -367,14 +703,13 @@ torch::Tensor Patch::evaluate_basis(
         local_weights.reshape({local_weights.size(0), -1}), idx)
                         .reshape(shape);
 
-      local_weights = torch::movedim(
-        local_weights, std::vector<int64_t>{0, 1},
-        std::vector<int64_t>{2 * d, 2 * d + 1});
+      local_weights = torch::movedim(local_weights, std::vector<int64_t> {0, 1},
+        std::vector<int64_t> {2 * d, 2 * d + 1});
     }
 
     auto numerator = result * local_weights;
 
-    std::vector<int64_t> local_axes;
+    c10::SmallVector<int64_t, 3> local_axes;
     local_axes.reserve(ndim);
     for (int64_t d = 0; d < ndim; ++d) {
       local_axes.push_back(2 * d + 1);
@@ -393,6 +728,35 @@ torch::Tensor Patch::evaluate_basis(
   }
 
   return result.permute(permute_order);
+}
+
+void Patch::to_(const torch::TensorOptions& options)
+{
+  // Run base class first
+  this->mesh::MeshBlock<Patch>::to_(options);
+
+  // Create views for the knot vector
+  int64_t idx = 0;
+  for (auto& b : basis_) {
+    // Length of the knot vector
+    int64_t kv_size = b.get_knotvector().size(0);
+
+    // Create a new B-Spline basis with a view of the knot vector
+    b = BSplineBasis(
+      meshdata_.narrow(0, idx, kv_size), b.get_degree(), true, b.get_label());
+    idx += kv_size;
+  }
+
+  // Deal with the control points
+  ctrlptsw_ = meshdata_.narrow(0, idx, ctrlptsw_.numel());
+}
+
+Patch::Ptr Patch::to(const torch::TensorOptions& options) const
+{
+  // Create a copy of this object
+  auto copy = *this;
+  copy.to_(options);
+  return std::make_shared<Patch>(copy);
 }
 
 // =================================================================

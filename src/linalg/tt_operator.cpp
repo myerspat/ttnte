@@ -108,21 +108,7 @@ TTOperator::Ptr TTOperator::from_dense(torch::Tensor tensor,
 
 torch::Tensor TTOperator::to_dense(bool interleave) const
 {
-  auto tensor = tt_matrix_.to_dense();
-
-  if (!interleave) {
-    size_t num_cores = tensor.ndimension() / 2;
-    c10::SmallVector<int64_t, 12> dims(tensor.ndimension(), 0);
-
-    for (size_t i = 0; i < num_cores; i++) {
-      dims[i] = 2 * i;
-      dims[i + num_cores] = dims[i] + 1;
-    }
-
-    tensor = tensor.permute(dims);
-  }
-
-  return tensor;
+  return tt_matrix_.to_dense(interleave);
 }
 
 void TTOperator::from_buffer(const torch::Tensor& buffer)

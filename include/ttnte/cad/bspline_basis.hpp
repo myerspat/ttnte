@@ -32,6 +32,8 @@ public:
     std::optional<std::string> label = std::nullopt);
   BSplineBasis(
     const torch::Tensor& knotvector, int64_t degree, const Label& label);
+  BSplineBasis(const torch::Tensor& knotvector, int64_t degree,
+    bool is_finalized, const Label& label);
 
   // =================================================================
   // Public methods
@@ -64,16 +66,6 @@ public:
   /// @param u A 1-D tensor of parametric coordinates between [0, 1].
   /// @return A 1-D tensor of the first index into the knot vector.
   torch::Tensor find_spans(const torch::Tensor& u) const;
-
-  // // TODO: Function that takes in a single double between [0, 1]
-  // // and returns a torch::Tensor of non-zero basis values at x
-  // // If derivative_order is non-zero then evaluate the derivative there
-  // torch::Tensor inline evaluate(
-  //   const double& u, const int64_t& derivative_order = 0)
-  // {
-  //   throw utils::runtime_error(
-  //     *this, error_context("evaluate"), "Not implemented yet");
-  // }
 
   /// @brief Evaluate all the non-zero basis functions and their derivatives (if
   /// ``derivative_order > 0``) at a set of parametric coordinates.

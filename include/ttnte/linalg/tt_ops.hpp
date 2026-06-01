@@ -165,6 +165,66 @@ TTEngine amen_solve(const linalg::TTEngine& A, const linalg::TTEngine& b,
   int local_iterations = 40, int resets = 2, bool verbose = false,
   int preconditioner = 0);
 
+/// @brief Interpolate a TT-vector representation for a function using TT-cross
+/// (univariate case). This calls the Python implementation in
+/// `torchtt.interpolate.function_interpolate()`.
+/// @param func The function to interpolate into the TT format.
+/// @param x The points to evaluate the function at.
+/// @param eps The truncation tolerance.
+/// @param start_tens The initial guess TT-vector.
+/// @param nswp The maximum number of sweeps.
+/// @param kick The enrichment rank size.
+/// @param rmax The maximum allowed rank.
+/// @param verbose Whether to print progress.
+/// @return The interpolated TT-vector.
+TTEngine function_interpolate(
+  const std::function<torch::Tensor(const torch::Tensor&)>& func,
+  const TTEngine& x, double eps = 1e-9,
+  std::optional<TTEngine> start_tens = std::nullopt, int nswp = 20,
+  int kick = 2, int rmax = std::numeric_limits<int>::max(),
+  bool verbose = false);
+
+/// @brief Interpolate a TT-vector representation for a function using TT-cross
+/// (multivariate case). This calls the Python implementation in
+/// `torchtt.interpolate.function_interpolate()`.
+/// @param func The function to interpolate into the TT format.
+/// @param x The points to evaluate the function at.
+/// @param eps The truncation tolerance.
+/// @param start_tens The initial guess TT-vector.
+/// @param nswp The maximum number of sweeps.
+/// @param kick The enrichment rank size.
+/// @param rmax The maximum allowed rank.
+/// @param verbose Whether to print progress.
+/// @return The interpolated TT-vector.
+TTEngine function_interpolate(
+  const std::function<torch::Tensor(const std::vector<torch::Tensor>&)>& func,
+  const std::vector<TTEngine>& xs, double eps = 1e-9,
+  std::optional<TTEngine> start_tens = std::nullopt, int nswp = 20,
+  int kick = 2, int rmax = std::numeric_limits<int>::max(),
+  bool verbose = false);
+
+/// @brief Interpolate a TT-vector representation of a tensor or function with
+/// index inputs using DMRG. This calls the Python implementation in
+/// `torchtt.interpolate.dmrg_cross()`.
+/// @param func The function to interpolate into the TT format.
+/// @param N The size of each dimension.
+/// @param eps The truncation tolerance.
+/// @param nswp The maximum number of sweeps.
+/// @param x0 The initial guess TT-vector.
+/// @param kick The enrichment rank size.
+/// @param rmax The maximum allowed rank.
+/// @param verbose Whether to print progress.
+/// @param device Which device to run this on.
+/// @param dtype What data type to compute this.
+/// @return The interpolated TT-vector.
+TTEngine dmrg_cross(
+  const std::function<torch::Tensor(const torch::Tensor&)>& func,
+  const std::vector<int64_t>& N, double eps = 1e-9, int nswp = 20,
+  std::optional<TTEngine> x0 = std::nullopt, int kick = 2,
+  int rmax = std::numeric_limits<int>::max(), bool verbose = false,
+  const torch::Device& device = torch::kCPU,
+  const torch::ScalarType& dtype = torch::kFloat64);
+
 // =================================================================
 // Inline helpers
 

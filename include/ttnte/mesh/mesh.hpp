@@ -269,10 +269,10 @@ public:
           const torch::Tensor& bbox = bblock->get_bbox().to(torch::kFloat64);
           const torch::Tensor bbox_center = bbox.sum(0) / 2.0;
 
-          // Check if the face is degenerate and set it to a vacuum boundary
+          // Check if the face is degenerate and set it to be so
           if (is_face_degenerate(bblock->get_coords(), tol)) {
             block->set_boundary_type(
-              dim, is_upper, physics::BoundaryType::VACUUM);
+              dim, is_upper, physics::BoundaryType::DEGENERATE);
           } else {
             // Get the key for this
             auto key = PointKey(bbox_center, tol);
@@ -356,29 +356,29 @@ public:
   /// @return Whether the face is degenerate or not.
   static bool is_face_degenerate(const torch::Tensor& coords, double tol = 1e-8)
   {
-    // 1. Determine topological dimension (grid_ndim)
+    // Determine topological dimension (grid_ndim)
     // coords shape is [N1, ..., ND, spatial_dims]
     int64_t tensor_ndim = coords.ndimension();
     int64_t grid_ndim = tensor_ndim - 1;
 
-    // 2. Flatten the grid so we just have a list of points: [Total_Points,
+    // Flatten the grid so we just have a list of points: [Total_Points,
     // Spatial_Dims]
     torch::Tensor pts = coords.reshape({-1, coords.size(-1)});
 
-    // 3. Center the points around their mean
+    // Center the points around their mean
     torch::Tensor center = pts.mean(0);
     torch::Tensor centered_pts = pts - center;
 
-    // 4. Perform SVD to find the physical rank
+    // Perform SVD to find the physical rank
     // linalg_svd returns a tuple: (U, S, Vh). We only need the singular values
     // (S).
     const auto& s = torch::linalg_svdvals(centered_pts);
 
-    // 5. Count how many singular values are significantly larger than zero
+    // Count how many singular values are significantly larger than zero
     // This tells us how many physical dimensions the points actually span.
     int physical_rank = (s > tol).sum().item<int>();
 
-    // 6. If the physical rank is less than the grid topology, it has collapsed.
+    // If the physical rank is less than the grid topology, it has collapsed.
     return physical_rank < grid_ndim;
   }
 

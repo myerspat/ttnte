@@ -10,12 +10,14 @@ PackageManager& PackageManager::instance()
 
 PackageManager::PackageManager()
 {
+  numpy = py::module_::import("numpy");
   torchtt = py::module_::import("torchtt");
 }
 
 void PackageManager::clear()
 {
   // Clear modules
+  numpy = py::module_();
   torchtt = py::module_();
 }
 

@@ -49,7 +49,7 @@ public:
   // =================================================================
   // Public methods
   bool is_finalized() const noexcept { return is_finalized_; }
-  bool is_fissile() const noexcept { return is_fissile(); }
+  bool is_fissile() const noexcept { return is_fissile_; }
   void finalize();
 
   // =================================================================

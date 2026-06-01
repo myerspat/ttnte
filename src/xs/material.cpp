@@ -51,8 +51,8 @@ void Material::finalize()
 
   // Check fissile XSs
   if (is_fissile_) {
-    static const std::array<std::string, 4> xs_1d_names = {"chi", "nu_fission"};
-    const std::array<torch::Tensor, 4> xss = {chi_, nu_fission_};
+    static const std::array<std::string, 2> xs_1d_names = {"chi", "nu_fission"};
+    const std::array<torch::Tensor, 2> xss = {chi_, nu_fission_};
     assert(xs_1d_names.size() == xss.size());
 
     // Iterate through 1-D XSs
@@ -62,9 +62,9 @@ void Material::finalize()
   }
 
   // Array of XS names and tensors to check
-  static const std::array<std::string, 4> xs_1d_names = {
+  static const std::array<std::string, 3> xs_1d_names = {
     "absorption", "fission", "kappa_fission"};
-  const std::array<torch::Tensor, 4> xss = {
+  const std::array<torch::Tensor, 3> xss = {
     absorption_, fission_, kappa_fission_};
   assert(xs_1d_names.size() == xss.size());
 

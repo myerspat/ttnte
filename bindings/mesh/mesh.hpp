@@ -31,6 +31,7 @@ void register_Mesh(py::module_& m, const std::string& typestr)
     // =================================================================
     // Public methods
     .def("is_finalized", &Mesh::is_finalized)
+    .def("is_connected", &Mesh::is_connected)
     .def("finalize", &Mesh::finalize)
     .def("reserve", &Mesh::reserve, py::arg("size"))
     .def("add_block", &Mesh::add_block, py::arg("new_block"))

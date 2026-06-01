@@ -70,6 +70,10 @@ jobs:
         pytest tests/unit/mesh
         pytest tests/unit/linalg
         pytest tests/unit/solvers
+        pytest tests/unit/math
+        pytest tests/unit/physics
+
+        pytest tests/regression/single_patch
 
     - name: Test Parallel (MPI)
       run: |

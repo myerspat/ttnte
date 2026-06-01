@@ -118,7 +118,7 @@ TTState::Ptr TTState::from_dense(const torch::Tensor& tensor, double eps,
 
 torch::Tensor TTState::to_dense() const
 {
-  auto tensor = tt_vector_.to_dense();
+  auto tensor = tt_vector_.to_dense(true);
 
   // Create a vector of dimensions to squeeze
   c10::SmallVector<int64_t, 6> dims;

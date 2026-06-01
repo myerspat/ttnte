@@ -19,6 +19,20 @@ BSplineBasis::BSplineBasis(
   normalize_knotvector();
 }
 
+BSplineBasis::BSplineBasis(const torch::Tensor& knotvector, int64_t degree,
+  bool is_finalized, const Label& label)
+  : Basis<BSplineBasis>(label), degree_(degree)
+{
+  if (is_finalized) {
+    knotvector_ = knotvector;
+    is_finalized_ = true;
+  } else {
+    knotvector_ = knotvector.clone();
+    normalize_knotvector();
+    is_finalized = false;
+  }
+}
+
 // =================================================================
 // Public methods
 void BSplineBasis::finalize(const torch::Tensor& knotvector_view)
@@ -146,9 +160,10 @@ torch::Tensor BSplineBasis::evaluate_all(const torch::Tensor& u,
   } else {
     // Handle derivatives
     auto result = torch::zeros(
-      {u.size(0), derivative_order + 1, get_size()}, nonzero.options());
+      {u.size(0), std::min(derivative_order, degree_) + 1, get_size()},
+      nonzero.options());
 
-    for (int64_t k = 0; k <= derivative_order; ++k) {
+    for (int64_t k = 0; k <= std::min(derivative_order, degree_); ++k) {
       // Scatter into the corresponding 2D slice of the result
       result.select(1, k).scatter_(1, col_indices, nonzero.select(1, k));
     }
