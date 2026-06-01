@@ -9,8 +9,7 @@ from igakit.cad import refine, NURBS
 
 from ttnte import mpi_context
 from ttnte.xs.benchmarks import pu239
-from ttnte.cad.surfaces import circle
-from ttnte.cad import Patch, BSplineBasis
+from ttnte.cad import Patch
 from ttnte.mesh import IGAMesh
 from ttnte.physics import (
     BoundaryType,
@@ -22,8 +21,8 @@ from ttnte.math import ProductQuadrature
 from ttnte.linalg import TTOperator, TTEngine, mm
 
 test_params = [
-    # ("cpu", torch.float32),
-    # ("cpu", torch.float64),
+    ("cpu", torch.float32),
+    ("cpu", torch.float64),
     ("cuda", torch.float32),
     ("cuda", torch.float64),
 ]

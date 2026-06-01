@@ -70,6 +70,27 @@ void register_Patch(py::module_& m)
         py::arg("local_coords"), py::arg("derivative_order") = 0,
         py::arg("eval_cross_terms") = false)
 
+      // Knot Refinement Methods
+      // Knot Insertion
+      .def(
+        "knot_insert",
+        [](Patch& self, const std::vector<torch::Tensor>& new_knots,
+          const int64_t reps) {
+          return self.knot_insert(c10::SmallVector<torch::Tensor, 3>(
+                                    new_knots.begin(), new_knots.end()),
+            reps);
+        },
+        py::arg("new_knots"), py::arg("reps") = 1)
+      .def(
+        "knot_insert_",
+        [](Patch& self, const std::vector<torch::Tensor>& new_knots,
+          const int64_t reps) {
+          self.knot_insert_(c10::SmallVector<torch::Tensor, 3>(
+                              new_knots.begin(), new_knots.end()),
+            reps);
+        },
+        py::arg("new_knots"), py::arg("reps") = 1)
+
       .def("get_order", &Patch::get_order, py::arg("dim"))
       .def("get_degree", &Patch::get_degree, py::arg("dim"))
       .def("get_ctrlpts_size", &Patch::get_ctrlpts_size, py::arg("dim"))

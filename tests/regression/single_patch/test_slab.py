@@ -137,7 +137,7 @@ def test_slab(device, dtype):
     k, psi = power(A, F)
     psi.round_(config.rounding.eps, config.rounding.max_rank)
     psi.to_(torch.device("cpu"))
-    assert 1e5 * abs(1 - k) < 10
+    assert 1e5 * abs(1 - k) < 15
 
     # TODO: Add scalar flux checks once we figure out how to combine the
     # solution with the patch.

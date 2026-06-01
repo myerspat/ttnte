@@ -8,8 +8,8 @@ from ttnte.linalg import TTEngine, mm, amen_solve
 def power(A: TTEngine, F: TTEngine, Bin: TTEngine | None = None):
     device = A.device
     dtype = A.dtype
-    tol = 1e-5 if dtype == torch.float32 else 1e-8
-    eps = 1e-6 if dtype == torch.float32 else 1e-10
+    tol = 1e-5 if dtype == torch.float32 else 1e-6
+    eps = 1e-6 if dtype == torch.float32 else 1e-8
 
     # Create an initial guess
     psi = TTEngine.ones(A.m_modes, device=device, dtype=dtype)

@@ -1,5 +1,6 @@
 #include "ttnte/cad/patch.hpp"
 #include "ttnte/cad/bspline_basis.hpp"
+#include "ttnte/cad/patch_kernels.hpp"
 #include "ttnte/linalg/binomial.hpp"
 #include "ttnte/utils/exception.hpp"
 #include "ttnte/utils/io_formatting.hpp"
@@ -19,7 +20,8 @@ void check_parametric_coords(const ttnte::cad::Patch& patch,
   }
   if (u.device() != expected_device || u.dtype() != expected_dtype) {
     throw ttnte::utils::runtime_error(patch, func_name,
-      "All parametric coordinate tensors must have the same dtype and device");
+      "All parametric coordinate tensors must have the same dtype and "
+      "device");
   }
   if (torch::logical_or(u < 0.0, u > 1.0).any().item<bool>()) {
     throw ttnte::utils::runtime_error(
@@ -757,6 +759,96 @@ Patch::Ptr Patch::to(const torch::TensorOptions& options) const
   auto copy = *this;
   copy.to_(options);
   return std::make_shared<Patch>(copy);
+}
+
+Patch Patch::knot_insert(
+  const c10::SmallVector<torch::Tensor, 3>& new_knots, const int64_t& reps)
+{
+  // Validate current knots in basis
+  is_finalized_or_error("knot_insertion");
+
+  // Validate new knots
+  if (new_knots.size() != get_ndim()) {
+    throw utils::runtime_error(*this, error_context("knot_insertion"),
+      "The length of `new_knots` must equal the patch dimension");
+  }
+
+  if (reps <= 0) {
+    throw utils::runtime_error(*this, error_context("knot_insertion"),
+      "Amount of times knots are inserted must be greater than 0");
+  }
+
+  // Index local variables
+  const auto& options = new_knots[0].options();
+  const int64_t ndim = get_ndim();
+  torch::Tensor Pw = ctrlptsw_;
+
+  for (const auto& u : new_knots) {
+    // Check these are each 1-D
+    if (u.ndimension() != 1 || !u.defined()) {
+      throw utils::runtime_error(*this, error_context("knot_insertion"),
+        "Each axis of points must be 1-dimensional and defined");
+    } else if (u.device() != options.device() || u.dtype() != options.dtype()) {
+      throw utils::runtime_error(*this, error_context("knot_insertion"),
+        "All tensors given in `local_coords` must data type and on the same "
+        "device");
+    }
+  }
+
+  // Start working state from current patch
+  Basis working_basis = basis_;
+
+  // Insert knots 'reps' number of times
+  for (int64_t rep = 0; rep < reps; ++rep) {
+    Basis new_basis; // reset every rep
+
+    // Insert knots in each parametric dimension
+    for (int64_t p = 0; p < ndim; ++p) {
+      const torch::Tensor& X_raw = new_knots[p];
+      torch::Tensor Ubar;
+
+      // Verify X is not empty
+      if (X_raw.numel() != 0) {
+        auto& B = working_basis[p]; // use updated basis, not basis_
+        const auto [X, _] = torch::sort(X_raw);
+
+        // Initialize a and b from Algorithim 5.5 from NURBS book
+        int64_t a = B.find_spans(X[0]).item<int64_t>();
+        int64_t b = B.find_spans(X[-1]).item<int64_t>();
+        const torch::Tensor& U = B.get_knotvector();
+
+        // Verify not on CUDA
+        if (X.device().is_cuda()) {
+          throw utils::runtime_error(
+            *this, error_context("knot_insertion"), "CUDA not implemented yet");
+        } else {
+          auto [Pw_p, Ubar_p] =
+            patch::launch_knot_insert_cpu(Pw, U, X, B.get_degree(), a, b, p);
+          Pw = Pw_p;
+          Ubar = Ubar_p;
+        }
+      } else {
+        Ubar = working_basis[p].get_knotvector();
+      }
+
+      new_basis.push_back(BSplineBasis(Ubar, working_basis[p].get_degree()));
+    }
+
+    working_basis = new_basis; // carry forward for next rep
+  }
+
+  // Finalize result
+  auto result = Patch(Pw, working_basis, is_rational_, label_.to_string());
+  result.finalize();
+  return result;
+}
+
+// In place version of knot insertion
+void Patch::knot_insert_(
+  const c10::SmallVector<torch::Tensor, 3>& new_knots, const int64_t& reps)
+{
+  // Replace current patch with patch produced by knot_insert
+  *this = knot_insert(new_knots, reps);
 }
 
 // =================================================================

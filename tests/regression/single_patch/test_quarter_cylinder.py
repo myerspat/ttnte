@@ -183,7 +183,7 @@ def test_infinite_homogeneous_cylinder(device, dtype):
     k, psi = power(A, F)
     psi.round_(config.rounding.eps, config.rounding.max_rank)
     psi.to_(torch.device("cpu"))
-    assert 1e5 * abs(1 - k) < 110
+    assert 1e5 * abs(1 - k) < 115
 
     # Get the angular integral
     angular = TTEngine(

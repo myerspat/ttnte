@@ -1,7 +1,8 @@
-import os
 import multiprocessing
 
+import torch
 import pytest
+
 from ttnte import mpi_context
 
 
@@ -14,4 +15,9 @@ def always_spawn():
 def mpi_init():
     """Handle MPI initialization and synchronized tear down for the entire test
     session."""
+    # Initialize MPI
     mpi_context.init()
+    num_threads_per_rank = min(
+        multiprocessing.cpu_count() // mpi_context.world_size, 16
+    )
+    torch.set_num_threads(num_threads_per_rank)
