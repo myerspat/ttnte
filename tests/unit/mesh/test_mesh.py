@@ -107,11 +107,13 @@ def test_mesh(device, dtype):
     # Expected connections
     expected_connections = {0: [1, 2], 1: [0, 3], 2: [0, 3], 3: [1, 2]}
     expected_unknowns = {0: 3, 1: 3, 2: 4, 3: 4}
-    expected_vacuums = {0: 1, 1: 1, 2: 0, 3: 0}
+    expected_vacuums = {0: 0, 1: 0, 2: 0, 3: 0}
+    expected_degeneracies = {0: 1, 1: 1, 2: 0, 3: 0}
 
     connections = {0: [], 1: [], 2: [], 3: []}
     unknowns = {0: 0, 1: 0, 2: 0, 3: 0}
     vacuums = {0: 0, 1: 0, 2: 0, 3: 0}
+    degeneracies = {0: 0, 1: 0, 2: 0, 3: 0}
 
     for i, patch in enumerate(mesh.blocks):
         for dim, is_upper in product([0, 1, 2], [False, True]):
@@ -126,12 +128,15 @@ def test_mesh(device, dtype):
                 unknowns[i] += 1
             elif boundary.type == BoundaryType.VACUUM:
                 vacuums[i] += 1
+            elif boundary.type == BoundaryType.DEGENERATE:
+                degeneracies[i] += 1
             else:
                 raise RuntimeError("Unexpected boundary type found")
 
     assert expected_connections == connections
     assert expected_unknowns == unknowns
     assert expected_vacuums == vacuums
+    assert expected_degeneracies == degeneracies
 
     # Test the mapping method for mesh
     face_a = mesh.blocks[0].get_boundary(0, 0)
@@ -153,11 +158,13 @@ def test_mesh(device, dtype):
 
     expected_reflectives = {0: 2, 1: 2, 2: 2, 3: 2}
     expected_unknowns = {0: 1, 1: 1, 2: 2, 3: 2}
+    expected_degeneracies = {0: 1, 1: 1, 2: 0, 3: 0}
 
     connections = {0: [], 1: [], 2: [], 3: []}
     reflectives = {0: 0, 1: 0, 2: 0, 3: 0}
     unknowns = {0: 0, 1: 0, 2: 0, 3: 0}
     vacuums = {0: 0, 1: 0, 2: 0, 3: 0}
+    degeneracies = {0: 0, 1: 0, 2: 0, 3: 0}
     for i, patch in enumerate(mesh.blocks):
         for dim, is_upper in product([0, 1, 2], [False, True]):
             boundary = patch.get_boundary_info(dim, is_upper)
@@ -172,6 +179,8 @@ def test_mesh(device, dtype):
                 vacuums[i] += 1
             elif boundary.type == BoundaryType.REFLECTIVE:
                 reflectives[i] += 1
+            elif boundary.type == BoundaryType.DEGENERATE:
+                degeneracies[i] += 1
             else:
                 raise RuntimeError("Unexpected boundary type found")
 
@@ -179,17 +188,20 @@ def test_mesh(device, dtype):
     assert expected_unknowns == unknowns
     assert expected_vacuums == vacuums
     assert expected_reflectives == reflectives
+    assert expected_degeneracies == degeneracies
 
     # Finalize the mesh and check
     mesh.finalize()
 
     expected_unknowns = {0: 0, 1: 0, 2: 0, 3: 0}
-    expected_vacuums = {0: 2, 1: 2, 2: 2, 3: 2}
+    expected_vacuums = {0: 1, 1: 1, 2: 2, 3: 2}
+    expected_degeneracies = {0: 1, 1: 1, 2: 0, 3: 0}
 
     connections = {0: [], 1: [], 2: [], 3: []}
     reflectives = {0: 0, 1: 0, 2: 0, 3: 0}
     unknowns = {0: 0, 1: 0, 2: 0, 3: 0}
     vacuums = {0: 0, 1: 0, 2: 0, 3: 0}
+    degeneracies = {0: 0, 1: 0, 2: 0, 3: 0}
     for i, patch in enumerate(mesh.blocks):
         for dim, is_upper in product([0, 1, 2], [False, True]):
             boundary = patch.get_boundary_info(dim, is_upper)
@@ -204,6 +216,8 @@ def test_mesh(device, dtype):
                 vacuums[i] += 1
             elif boundary.type == BoundaryType.REFLECTIVE:
                 reflectives[i] += 1
+            elif boundary.type == BoundaryType.DEGENERATE:
+                degeneracies[i] += 1
             else:
                 raise RuntimeError("Unexpected boundary type found")
 
@@ -211,6 +225,7 @@ def test_mesh(device, dtype):
     assert expected_unknowns == unknowns
     assert expected_vacuums == vacuums
     assert expected_reflectives == reflectives
+    assert expected_degeneracies == degeneracies
 
     # Check the connectivity graph
     conn_graph = mesh.build_connectivity_graph()
