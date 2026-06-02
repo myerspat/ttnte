@@ -19,7 +19,7 @@ def test_sph_harm(device, dtype):
         pytest.skip("CUDA not available")
 
     # Get a quadrature set
-    qset = ProductQuadrature.chebyshev_legendre(4)
+    qset = ProductQuadrature.gauss_legendre_chebyshev(4, 4, 3)
     qset.to_(torch.device(device), dtype)
     mu, gamma = [qset.get_points()[:, i] for i in range(2)]
 
