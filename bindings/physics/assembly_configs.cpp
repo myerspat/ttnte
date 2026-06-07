@@ -63,8 +63,7 @@ void register_assembly_configs(py::module_& m)
     .def(py::init<>())
     .def_readwrite(
       "interior_loss_fmt", &DGTransportAssemblerConfig::interior_loss_fmt)
-    .def_readwrite(
-      "scattering_fmt", &DGTransportAssemblerConfig::scattering_fmt)
+    .def_readwrite("scatter_fmt", &DGTransportAssemblerConfig::scatter_fmt)
     .def_readwrite("source_fmt", &DGTransportAssemblerConfig::source_fmt)
     .def_readwrite("outflow_fmt", &DGTransportAssemblerConfig::outflow_fmt)
     .def_readwrite("inflow_fmt", &DGTransportAssemblerConfig::inflow_fmt);

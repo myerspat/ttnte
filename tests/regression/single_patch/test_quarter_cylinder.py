@@ -15,10 +15,10 @@ from ttnte.physics import (
     BoundaryType,
     BCPlane,
     DGTransportAssemblerConfig,
-    TTDIGAFirstOrderTransportBackend2D,
+    DIGAFirstOrderTransportAssembler2D,
 )
 from ttnte.math import ProductQuadrature
-from ttnte.linalg import TTOperator, TTEngine, mm
+from ttnte.linalg import Operator, TTEngine, mm
 
 test_params = [
     ("cpu", torch.float32),
@@ -124,31 +124,27 @@ def test_infinite_homogeneous_cylinder(device, dtype):
     config.cross.eps = config.rounding.eps
     config.max_dense_size = int(1e10) if dtype == torch.float32 else 0
     config.cross_jacobian_inverse = False if dtype == torch.float32 else True
-    backend = TTDIGAFirstOrderTransportBackend2D(c, qset, xs_server, config)
+    assembler = DIGAFirstOrderTransportAssembler2D(c, qset, xs_server, config)
 
     # Assemble individual operators
-    H = backend.assemble_loss_operator()
-    S = backend.assemble_scatter_operator()
-    F = backend.assemble_fission_operator()
+    assembler.assemble()
+    H = assembler.interior_loss_op
+    S = assembler.scatter_op
+    F = assembler.fission_op
+    Bin = assembler.inflow_ops
+    Bout = assembler.outflow_ops
 
-    Bout = []
-    Bin = []
-    for dim, is_upper in product(range(c.ndim), [False, True]):
-        B = backend.assemble_boundary_operators(dim, is_upper)
-        if B[0] != None:
-            Bout.append(B[0])
-        if B[1] != None:
-            Bin.append(B[1])
+    assert len(Bin) == 4
     assert len(Bout) == 4
-    assert len(Bin) == 2
+    assert sum([b.defined() for b in Bin]) == 2
 
     # Check the operators
     for op in [H, S, F] + Bout + Bin:
-        if op == None:
+        if not op.defined():
             continue
 
-        assert isinstance(op, TTOperator)
-        en = op.engine
+        assert isinstance(op, Operator) and op.is_tt
+        en = op.as_tt()
         assert len(en) == 5
         assert en.device == torch.device("cpu")
         assert en.dtype == dtype
@@ -168,13 +164,17 @@ def test_infinite_homogeneous_cylinder(device, dtype):
             assert en[i].shape[-1] == en[i + 1].shape[0]
 
     # Total outflow and inflow boundary operators
-    Bout = sum(Bout).round(config.rounding.eps, config.rounding.max_rank).engine
-    Bin = sum(Bin).round(config.rounding.eps, config.rounding.max_rank).engine
+    Bout = sum(Bout).round(config.rounding.eps, config.rounding.max_rank).as_tt()
+    Bin = (
+        sum(b for b in Bin if b.defined())
+        .round(config.rounding.eps, config.rounding.max_rank)
+        .as_tt()
+    )
 
     # Compute the total operator on the LHS
-    A = H.engine - S.engine + Bout - Bin
+    A = H.as_tt() - S.as_tt() + Bout - Bin
     A.round_(config.rounding.eps, config.rounding.max_rank)
-    F = F.engine
+    F = F.as_tt()
 
     # Send the TT-operators to GPU if needed
     A.to_(torch.device(device))

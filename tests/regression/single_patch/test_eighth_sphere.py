@@ -15,10 +15,10 @@ from ttnte.physics import (
     BoundaryType,
     BCPlane,
     DGTransportAssemblerConfig,
-    TTDIGAFirstOrderTransportBackend3D,
+    DIGAFirstOrderTransportAssembler3D,
 )
 from ttnte.math import ProductQuadrature
-from ttnte.linalg import TTOperator, TTEngine, mm
+from ttnte.linalg import Operator, TTEngine, mm
 
 test_params = [
     ("cpu", torch.float32),
@@ -129,67 +129,79 @@ def test_homogeneous_sphere(device, dtype):
     config.cross.eps = config.rounding.eps
     config.max_dense_size = int(1e10)
     config.cross_jacobian_inverse = False
-    backend = TTDIGAFirstOrderTransportBackend3D(c, qset, xs_server, config)
+    assembler = DIGAFirstOrderTransportAssembler3D(c, qset, xs_server, config)
 
     # Assemble individual operators
-    H = backend.assemble_loss_operator()
-    S = backend.assemble_scatter_operator()
-    F = backend.assemble_fission_operator()
+    assembler.assemble()
+    H = assembler.interior_loss_op
+    S = assembler.scatter_op
+    F = assembler.fission_op
+    Bin = assembler.inflow_ops
+    Bout = assembler.outflow_ops
 
-    Bout = []
-    Bin = []
-    for dim, is_upper in product(range(c.ndim), [False, True]):
-        B = backend.assemble_boundary_operators(dim, is_upper)
-        if B[0] != None:
-            Bout.append(B[0])
-        if B[1] != None:
-            Bin.append(B[1])
-    # assert len(Bout) == 4
-    # assert len(Bin) == 2
+    assert len(Bin) == 6
+    assert len(Bout) == 6
+    assert sum([b.defined() for b in Bin]) == 4
+    assert sum([b.defined() for b in Bout]) == 5
 
     # Check the operators
     for op in [H, S, F] + Bout + Bin:
-        if op == None:
+        if not op.defined():
             continue
 
-        # assert isinstance(op, TTOperator)
-        # en = op.engine
-        # assert len(en) == 5
-        # assert en.device == torch.device("cpu")
-        # assert en.dtype == dtype
-        # assert en[0].shape[:-1] == (1, 4, 4)
-        # assert en[1].shape[1:-1] == (16, 16)
-        # assert en[2].shape[1:-1] == (
-        #     c.get_numel(0) + c.degrees[0],
-        #     c.get_numel(0) + c.degrees[0],
-        # )
-        # assert en[3].shape[1:-1] == (
-        #     c.get_numel(1) + c.degrees[1],
-        #     c.get_numel(1) + c.degrees[1],
-        # )
-        # assert en[4].shape[1:] == (xs_server.num_groups, xs_server.num_groups, 1)
-        #
-        # for i in range(len(en) - 1):
-        #     assert en[i].shape[-1] == en[i + 1].shape[0]
+        assert isinstance(op, Operator) and op.is_tt
+        en = op.as_tt()
+        assert len(en) == 6
+        assert en.device == torch.device("cpu")
+        assert en.dtype == dtype
+        assert en[0].shape[:-1] == (1, 8, 8)
+        assert en[1].shape[1:-1] == (16, 16)
+        assert en[2].shape[1:-1] == (
+            c.get_numel(0) + c.degrees[0],
+            c.get_numel(0) + c.degrees[0],
+        )
+        assert en[3].shape[1:-1] == (
+            c.get_numel(1) + c.degrees[1],
+            c.get_numel(1) + c.degrees[1],
+        )
+        assert en[4].shape[1:-1] == (
+            c.get_numel(1) + c.degrees[1],
+            c.get_numel(1) + c.degrees[1],
+        )
+        assert en[5].shape[1:] == (xs_server.num_groups, xs_server.num_groups, 1)
+
+        for i in range(len(en) - 1):
+            assert en[i].shape[-1] == en[i + 1].shape[0]
 
     # Total outflow and inflow boundary operators
-    Bout = sum(Bout).round(config.rounding.eps, config.rounding.max_rank).engine
-    Bin = sum(Bin).round(config.rounding.eps, config.rounding.max_rank).engine
+    Bout = (
+        sum(b for b in Bout if b.defined())
+        .round(config.rounding.eps, config.rounding.max_rank)
+        .as_tt()
+    )
+    Bin = (
+        sum(b for b in Bin if b.defined())
+        .round(config.rounding.eps, config.rounding.max_rank)
+        .as_tt()
+    )
 
     H = (
-        H.engine.contract_rank_dim_(2)
+        H.as_tt()
+        .contract_rank_dim_(2)
         .contract_rank_dim_(2)
         .contract_rank_dim_(2)
         .contract_rank_dim_(2)
     )
     S = (
-        S.engine.contract_rank_dim_(2)
+        S.as_tt()
+        .contract_rank_dim_(2)
         .contract_rank_dim_(2)
         .contract_rank_dim_(2)
         .contract_rank_dim_(2)
     )
     F = (
-        F.engine.contract_rank_dim_(2)
+        F.as_tt()
+        .contract_rank_dim_(2)
         .contract_rank_dim_(2)
         .contract_rank_dim_(2)
         .contract_rank_dim_(2)
@@ -213,24 +225,7 @@ def test_homogeneous_sphere(device, dtype):
     Bout.round_(config.rounding.eps, config.rounding.max_rank)
     Bin.round_(config.rounding.eps, config.rounding.max_rank)
 
-    print("H")
-    for core in H:
-        print(core.shape)
-    print("S")
-    for core in S:
-        print(core.shape)
-    print("F")
-    for core in S:
-        print(core.shape)
-    print("Bout")
-    for core in Bout:
-        print(core.shape)
-    print("Bin")
-    for core in Bin:
-        print(core.shape)
-
     # Compute the total operator on the LHS
-    # A = H.engine - S.engine + Bout - Bin
     A = H - S + Bout - Bin
     A.round_(config.rounding.eps, config.rounding.max_rank)
 
@@ -241,3 +236,4 @@ def test_homogeneous_sphere(device, dtype):
     k, psi = power(A, F)
     psi.round_(config.rounding.eps, config.rounding.max_rank)
     psi.to_(torch.device("cpu"))
+    assert 1e5 * abs(1 - k) < 15

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "ttnte/cad/patch.hpp"
+#include "ttnte/linalg/operator.hpp"
 #include "ttnte/linalg/tt_engine.hpp"
-#include "ttnte/linalg/tt_operator.hpp"
 #include "ttnte/math/quadrature_set.hpp"
 #include "ttnte/physics/assembly_configs.hpp"
 #include "ttnte/physics/boundary_types.hpp"
@@ -24,7 +24,6 @@ struct Return<FormatType::DENSE, NumDim> {
   using Type = torch::Tensor;
   using VectorType = torch::Tensor;
   using MatrixType = torch::Tensor;
-  using OperatorType = linalg::TTOperator::Ptr;
 };
 
 /// @brief Return types for the tensor train format.
@@ -33,7 +32,6 @@ struct Return<FormatType::TENSOR_TRAIN, NumDim> {
   using Type = linalg::TTEngine;
   using VectorType = c10::SmallVector<linalg::TTEngine, NumDim>;
   using MatrixType = std::array<std::array<linalg::TTEngine, NumDim>, 3>;
-  using OperatorType = linalg::TTOperator::Ptr;
 };
 
 // =================================================================
@@ -300,12 +298,17 @@ public:
   const ConfigType& get_config() const noexcept { return *config_; }
 };
 
+/// @brief Primary template for the first-order discontinuous Galerkin transport
+/// backend.
+template<typename BlockType, FormatType Fmt, int64_t NumDim>
+class DGFirstOrderTransportBackend;
+
 /// @brief The backend for assembly of the multigroup discrete ordinates
 /// first-order neutron transport operators with discontinuous IGA. This
 /// assembles the operators into the typed format for a specific number of
 /// dimensions.
 template<FormatType Fmt, int64_t NumDim>
-class DIGAFirstOrderTransportBackend
+class DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim>
   : public DGBackend<cad::Patch, DGTransportAssemblerConfig> {
 public:
   // =================================================================
@@ -331,15 +334,15 @@ protected:
 public:
   // =================================================================
   // Public constructors
-  DIGAFirstOrderTransportBackend(const cad::Patch::Ptr& block,
+  DGFirstOrderTransportBackend(const cad::Patch::Ptr& block,
     const math::QuadratureSet::Ptr& angular_qset,
     const xs::Server::Ptr& xs_server,
     const DGTransportAssemblerConfig& config = DGTransportAssemblerConfig())
-    : DIGAFirstOrderTransportBackend(block, angular_qset,
+    : DGFirstOrderTransportBackend(block, angular_qset,
         xs_server->get_material(block->get_fill_id()), config)
   {}
 
-  DIGAFirstOrderTransportBackend(const cad::Patch::Ptr& block,
+  DGFirstOrderTransportBackend(const cad::Patch::Ptr& block,
     const math::QuadratureSet::Ptr& angular_qset, const xs::Material& material,
     const DGTransportAssemblerConfig& config = DGTransportAssemblerConfig())
     : DGBackend<cad::Patch, DGTransportAssemblerConfig>(block, config),
@@ -392,12 +395,11 @@ public:
   auto assemble_jacobian() -> ReturnMatrixType;
   auto assemble_integral_mapping() -> ReturnType;
   auto assemble_jacobian_inverse() -> ReturnMatrixType;
-  auto assemble_loss_operator() -> Return<Fmt, NumDim>::OperatorType;
-  auto assemble_scatter_operator() -> Return<Fmt, NumDim>::OperatorType;
-  auto assemble_fission_operator() -> Return<Fmt, NumDim>::OperatorType;
-  auto assemble_boundary_operators(size_t dim, bool is_upper)
-    -> std::tuple<typename Return<Fmt, NumDim>::OperatorType,
-      typename Return<Fmt, NumDim>::OperatorType>;
+  linalg::Operator assemble_loss_operator();
+  linalg::Operator assemble_scatter_operator();
+  linalg::Operator assemble_fission_operator();
+  std::tuple<linalg::Operator, linalg::Operator> assemble_boundary_operators(
+    size_t dim, bool is_upper);
   auto assemble_outflow_boundary_operator(const ReturnType& basis,
     const typename Return<Fmt, NumDim>::VectorType& normal,
     const ReturnType& mapping) -> ReturnType;
@@ -462,7 +464,7 @@ public:
   }
 
   /// In-place move object for the data type and device.
-  DIGAFirstOrderTransportBackend& to_(const torch::TensorOptions& options)
+  DGFirstOrderTransportBackend& to_(const torch::TensorOptions& options)
   {
     DGBackend<cad::Patch, DGTransportAssemblerConfig>::to_(options);
 
@@ -475,7 +477,7 @@ public:
     return *this;
   }
 
-  DIGAFirstOrderTransportBackend& to_(
+  DGFirstOrderTransportBackend& to_(
     const torch::Device& device, const torch::ScalarType& dtype)
   {
     return to_(torch::TensorOptions().device(device).dtype(dtype));

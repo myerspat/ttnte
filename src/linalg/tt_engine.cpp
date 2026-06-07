@@ -70,6 +70,14 @@ TTEngine TTEngine::clone_from(const Tensors& cores, bool check_cores)
   return TTEngine(std::move(new_cores), check_cores);
 }
 
+TTEngine TTEngine::to(
+  const torch::TensorOptions& options, bool non_blocking, bool copy) const
+{
+  auto c = *this;
+  c.to_(options, non_blocking, copy);
+  return c;
+}
+
 TTEngine TTEngine::to(const torch::Device& device, const at::ScalarType& dtype,
   bool non_blocking, bool copy,
   std::optional<at::MemoryFormat> memory_format) const
@@ -96,6 +104,15 @@ TTEngine TTEngine::to(const torch::Device& device, bool non_blocking, bool copy,
   return to(device, cores_[0].scalar_type(), non_blocking, copy, memory_format);
 }
 
+TTEngine& TTEngine::to_(
+  const torch::TensorOptions& options, bool non_blocking, bool copy)
+{
+  for (auto& core : cores_) {
+    core = core.to(options, non_blocking, copy);
+  }
+  return *this;
+}
+
 TTEngine& TTEngine::to_(const torch::Device& device,
   const at::ScalarType& dtype, bool non_blocking, bool copy,
   std::optional<at::MemoryFormat> memory_format)
@@ -116,14 +133,6 @@ TTEngine& TTEngine::to_(const torch::Device& device, bool non_blocking,
 {
   return to_(
     device, cores_[0].scalar_type(), non_blocking, copy, memory_format);
-}
-
-TTEngine& TTEngine::to_(const torch::TensorOptions& options)
-{
-  for (auto& core : cores_) {
-    core = core.to(options);
-  }
-  return *this;
 }
 
 double TTEngine::sum() const
@@ -383,15 +392,28 @@ torch::Tensor TTEngine::to_dense(bool interleave) const
   }
 }
 
+void TTEngine::to_buffer(const torch::Tensor& buffer) const
+{
+  assert(buffer.numel() == get_numel() && buffer.ndimension() == 1 &&
+         buffer.device() == get_device() &&
+         buffer.scalar_type() == get_dtype());
+
+  int64_t offset = 0;
+  for (const auto& core : cores_) {
+    buffer.narrow(0, offset, core.numel()).copy_(core.flatten(), true);
+    offset += core.numel();
+  }
+}
+
 void TTEngine::from_buffer(const torch::Tensor& buffer)
 {
   assert(buffer.numel() == get_numel() && buffer.ndimension() == 1);
 
-  int64_t idx = 0;
+  int64_t offset = 0;
   for (auto& core : cores_) {
     const auto& shape = core.sizes();
-    core = buffer.narrow(0, idx, core.numel()).view(shape);
-    idx += core.numel();
+    core = buffer.narrow(0, offset, core.numel()).view(shape);
+    offset += core.numel();
   }
 }
 
@@ -544,6 +566,16 @@ bool TTEngine::is_rank_one() const
 {
   for (size_t i = 0; i < cores_.size() - 1; i++) {
     if (cores_[i].size(-1) != 1) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool TTEngine::is_vector() const
+{
+  for (const auto& core : cores_) {
+    if (core.size(2) != 1) {
       return false;
     }
   }

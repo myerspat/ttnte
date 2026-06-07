@@ -18,7 +18,7 @@ from ttnte.physics import (
 )
 from ttnte.xs import Server, Material
 from ttnte.math import ProductQuadrature, QuadratureSet1D
-from ttnte.linalg import TTOperator, TTEngine, mm
+from ttnte.linalg import TTEngine, mm
 
 test_params = [
     ("cpu", torch.float32),
@@ -201,7 +201,9 @@ def test_1d_line(device, dtype):
     # =================================================================
     # Test assemble_loss_operator() method
 
-    H = tt_assembler.assemble_loss_operator().engine
+    H = tt_assembler.assemble_loss_operator()
+    assert H.is_tt
+    H = H.as_tt()
     assert len(H) == 3
     assert H[0].shape[:-1] == (1, 8, 8)
     assert H[1].shape[1:-1] == (
@@ -215,7 +217,9 @@ def test_1d_line(device, dtype):
     # =================================================================
     # Test assemble_scatter_operator() method
 
-    S = tt_assembler.assemble_scatter_operator().engine
+    S = tt_assembler.assemble_scatter_operator()
+    assert S.is_tt
+    S = S.as_tt()
     assert len(S) == 3
     assert S[0].shape[:-1] == (1, 8, 8)
     assert S[1].shape[1:-1] == (
@@ -230,7 +234,7 @@ def test_1d_line(device, dtype):
     # Test assemble_fission_operator() method
 
     F = tt_assembler.assemble_fission_operator()
-    assert F == None
+    assert not F.defined()
 
 
 @pytest.mark.parametrize("device, dtype", test_params)
@@ -507,7 +511,9 @@ def test_2d_circle(device, dtype):
     # =================================================================
     # Test assemble_loss_operator() method
 
-    H = tt_assembler.assemble_loss_operator().engine
+    H = tt_assembler.assemble_loss_operator()
+    assert H.is_tt
+    H = H.as_tt()
     assert len(H) == 5
     assert H[0].shape[:-1] == (1, 4, 4)
     assert H[1].shape[1:-1] == (16, 16)
@@ -526,7 +532,9 @@ def test_2d_circle(device, dtype):
     # =================================================================
     # Test assemble_scatter_operator() method
 
-    S = tt_assembler.assemble_scatter_operator().engine
+    S = tt_assembler.assemble_scatter_operator()
+    assert S.is_tt
+    S = S.as_tt()
     assert len(S) == 5
     assert S[0].shape[:-1] == (1, 4, 4)
     assert S[1].shape[1:-1] == (16, 16)
@@ -546,7 +554,7 @@ def test_2d_circle(device, dtype):
     # Test assemble_fission_operator() method
 
     F = tt_assembler.assemble_fission_operator()
-    assert F == None
+    assert not F.defined()
 
 
 @pytest.mark.parametrize("device, dtype", test_params)
@@ -754,7 +762,9 @@ def test_3d_cube(device, dtype):
     # =================================================================
     # Test assemble_loss_operator() method
 
-    H = tt_assembler.assemble_loss_operator().engine
+    H = tt_assembler.assemble_loss_operator()
+    assert H.is_tt
+    H = H.as_tt()
     assert len(H) == 6
     assert H[0].shape[:-1] == (1, 8, 8)
     assert H[1].shape[1:-1] == (16, 16)
@@ -777,7 +787,9 @@ def test_3d_cube(device, dtype):
     # =================================================================
     # Test assemble_scatter_operator() method
 
-    S = tt_assembler.assemble_scatter_operator().engine
+    S = tt_assembler.assemble_scatter_operator()
+    assert S.is_tt
+    S = S.as_tt()
     assert len(S) == 6
     assert S[0].shape[:-1] == (1, 8, 8)
     assert S[1].shape[1:-1] == (16, 16)
@@ -801,7 +813,7 @@ def test_3d_cube(device, dtype):
     # Test assemble_fission_operator() method
 
     F = tt_assembler.assemble_fission_operator()
-    assert F == None
+    assert not F.defined()
 
 
 @pytest.mark.parametrize("device, dtype", test_params)
@@ -998,7 +1010,9 @@ def test_3d_cylinder(device, dtype):
     # =================================================================
     # Test assemble_loss_operator() method
 
-    H = tt_assembler.assemble_loss_operator().engine
+    H = tt_assembler.assemble_loss_operator()
+    assert H.is_tt
+    H = H.as_tt()
     assert len(H) == 6
     assert H[0].shape[:-1] == (1, 8, 8)
     assert H[1].shape[1:-1] == (16, 16)
@@ -1021,7 +1035,9 @@ def test_3d_cylinder(device, dtype):
     # =================================================================
     # Test assemble_scatter_operator() method
 
-    S = tt_assembler.assemble_scatter_operator().engine
+    S = tt_assembler.assemble_scatter_operator()
+    assert S.is_tt
+    S = S.as_tt()
     assert len(S) == 6
     assert S[0].shape[:-1] == (1, 8, 8)
     assert S[1].shape[1:-1] == (16, 16)
@@ -1045,4 +1061,4 @@ def test_3d_cylinder(device, dtype):
     # Test assemble_fission_operator() method
 
     F = tt_assembler.assemble_fission_operator()
-    assert F == None
+    assert not F.defined()

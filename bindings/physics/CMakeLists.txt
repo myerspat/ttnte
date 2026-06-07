@@ -1,7 +1,9 @@
 # Define the relative filenames
 set(PHYSICS_SRC_REL dg_first_order_transport_backends.cpp)
-set(PHYSICS_BINDINGS_REL bindings.cpp boundary_types.cpp assembly_configs.cpp
-                         dg_first_order_transport_backends.cpp)
+set(PHYSICS_BINDINGS_REL
+    bindings.cpp boundary_types.cpp assembly_configs.cpp
+    dg_first_order_transport_backends.cpp dg_assembler.cpp
+    dg_first_order_transport_assembler.cpp)
 
 # Define the directory paths (Use local variables here, then push if needed)
 set(PHYSICS_SRC_DIR "${PROJECT_SOURCE_DIR}/src/physics")

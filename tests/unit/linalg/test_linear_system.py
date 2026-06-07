@@ -1,7 +1,7 @@
 import torch
 import pytest
 
-from ttnte.linalg import TTState, TTOperator, TTLinearSystem
+from ttnte.linalg import State, Operator, LinearSystem, TTEngine
 
 test_params = [
     ("cpu", torch.float32),
@@ -23,14 +23,15 @@ def test_initialize(device, dtype):
         )
         for i in range(1, 4)
     ]
-    operator = TTOperator(cores, "operator")
+    operator = Operator(TTEngine(cores), "operator")
 
     cores = [
         2 * torch.ones((i * 10), device=device, dtype=dtype).reshape((1, i * 10, 1))
         for i in range(1, 4)
     ]
-    state = TTState.clone_from(cores, "state")
-    source = TTState.clone_from(cores, "source")
+    state = State(TTEngine.clone_from(cores), "state")
+    source = State(TTEngine.clone_from(cores), "source")
+    assert operator.is_tt and state.is_tt and source.is_tt
 
     assert (
         operator.device == torch.device(device)
@@ -52,7 +53,7 @@ def test_initialize(device, dtype):
     assert source.dtype == dtype
 
     # Create a linear system
-    ls = TTLinearSystem(operator, state, source)
+    ls = LinearSystem(operator, state, source)
 
     new_operator = ls.interior_op
     new_state = ls.state
@@ -78,7 +79,11 @@ def test_initialize(device, dtype):
     assert new_source.dtype == dtype
 
     for j, (op_core, st_core, so_core) in enumerate(
-        zip(new_operator.cores, new_state.cores, new_source.cores)
+        zip(
+            new_operator.as_tt().cores,
+            new_state.as_tt().cores,
+            new_source.as_tt().cores,
+        )
     ):
         i = j + 1
         torch.testing.assert_close(
@@ -110,7 +115,7 @@ def test_to_methods(dtype):
         )
         for i in range(1, 4)
     ]
-    operator = TTOperator(cores, "operator")
+    operator = Operator(TTEngine(cores), "operator")
 
     cores = [
         2
@@ -119,11 +124,13 @@ def test_to_methods(dtype):
         )
         for i in range(1, 4)
     ]
-    state = TTState.clone_from(cores, "state")
-    source = TTState.clone_from(cores, "source")
+    state = State(TTEngine.clone_from(cores), "state")
+    source = State(TTEngine.clone_from(cores), "source")
 
     # Create linear system
-    ls = TTLinearSystem(operator, state, source)
+    ls = LinearSystem(operator)
+    ls.state = state
+    ls.source = source
 
     # Test buffer send
     ls.transfer_buffer(torch.device("cuda", 0), dtype)

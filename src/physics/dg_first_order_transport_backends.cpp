@@ -71,7 +71,7 @@ namespace ttnte::physics::backends {
 
 template<FormatType Fmt, int64_t NumDim>
 typename Return<Fmt, NumDim>::VectorType
-DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_ordinates()
+DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim>::assemble_ordinates()
 {
   if (cache_.has_ordinates()) {
     return cache_.get_ordinates();
@@ -137,7 +137,7 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_ordinates()
 
 template<FormatType Fmt, int64_t NumDim>
 typename Return<Fmt, NumDim>::Type
-DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_basis()
+DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim>::assemble_basis()
 {
   // Check if this has already been calculated
   if (cache_.has_basis()) {
@@ -219,7 +219,7 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_basis()
 
 template<FormatType Fmt, int64_t NumDim>
 typename Return<Fmt, NumDim + 1>::VectorType
-DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_basis_ders()
+DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim>::assemble_basis_ders()
 {
   // Check if this has already been calculated
   if (cache_.has_basis() && cache_.has_ders()) {
@@ -433,9 +433,9 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_basis_ders()
 }
 
 template<FormatType Fmt, int64_t NumDim>
-typename Return<Fmt, NumDim>::Type
-DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_scattering_kernel(
-  std::optional<linalg::TTEngine> spatial) const
+typename Return<Fmt, NumDim>::Type DGFirstOrderTransportBackend<cad::Patch, Fmt,
+  NumDim>::assemble_scattering_kernel(std::optional<linalg::TTEngine> spatial)
+  const
 {
   // Constants
   double one = 1.0;
@@ -602,8 +602,8 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_scattering_kernel(
 }
 
 template<FormatType Fmt, int64_t NumDim>
-typename Return<Fmt, NumDim>::Type
-DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_angular_integral() const
+typename Return<Fmt, NumDim>::Type DGFirstOrderTransportBackend<cad::Patch, Fmt,
+  NumDim>::assemble_angular_integral() const
 {
   if constexpr (Fmt == FormatType::TENSOR_TRAIN && NumDim > 1) {
     // Cast to derived class
@@ -653,7 +653,7 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_angular_integral() const
 
 template<FormatType Fmt, int64_t NumDim>
 typename Return<Fmt, NumDim>::MatrixType
-DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_jacobian()
+DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim>::assemble_jacobian()
 {
   if (cache_.has_jacobian()) {
     return cache_.get_jacobian();
@@ -696,8 +696,8 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_jacobian()
 }
 
 template<FormatType Fmt, int64_t NumDim>
-typename Return<Fmt, NumDim>::Type
-DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_integral_mapping()
+typename Return<Fmt, NumDim>::Type DGFirstOrderTransportBackend<cad::Patch, Fmt,
+  NumDim>::assemble_integral_mapping()
 {
   if (cache_.has_mapping()) {
     return cache_.get_mapping();
@@ -823,8 +823,8 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_integral_mapping()
 }
 
 template<FormatType Fmt, int64_t NumDim>
-typename Return<Fmt, NumDim>::MatrixType
-DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_jacobian_inverse()
+typename Return<Fmt, NumDim>::MatrixType DGFirstOrderTransportBackend<
+  cad::Patch, Fmt, NumDim>::assemble_jacobian_inverse()
 {
   if (cache_.has_jacobian_inverse()) {
     return cache_.get_jacobian_inverse();
@@ -1087,8 +1087,8 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_jacobian_inverse()
 }
 
 template<FormatType Fmt, int64_t NumDim>
-typename Return<Fmt, NumDim>::OperatorType
-DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_loss_operator()
+linalg::Operator
+DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim>::assemble_loss_operator()
 {
   if constexpr (Fmt == FormatType::TENSOR_TRAIN) {
     // Assemble components
@@ -1156,7 +1156,7 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_loss_operator()
       // Diagonalize the angular and energy cores;
       H.diagonalize_({0, 1, H.size() - 1});
 
-      return linalg::TTOperator::create(std::move(H));
+      return linalg::Operator(std::move(H));
 
     } else if constexpr (NumDim == 1) {
       // Total interaction term
@@ -1177,7 +1177,7 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_loss_operator()
       // Diagonalize angle and energy
       H.diagonalize_({0, H.size() - 1});
 
-      return linalg::TTOperator::create(std::move(H));
+      return linalg::Operator(std::move(H));
     }
   }
 
@@ -1187,8 +1187,8 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_loss_operator()
 }
 
 template<FormatType Fmt, int64_t NumDim>
-typename Return<Fmt, NumDim>::OperatorType
-DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_scatter_operator()
+linalg::Operator DGFirstOrderTransportBackend<cad::Patch, Fmt,
+  NumDim>::assemble_scatter_operator()
 {
   if constexpr (Fmt == FormatType::TENSOR_TRAIN) {
     // Get the components for the scattering operator
@@ -1225,7 +1225,7 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_scatter_operator()
       S = apply_angular_weights(S, {0});
     }
 
-    return linalg::TTOperator::create(std::move(S));
+    return linalg::Operator(std::move(S));
   }
 
   throw utils::runtime_error("ttnte::physics::DIGAFirstOrderTransportBackend::"
@@ -1234,11 +1234,11 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_scatter_operator()
 }
 
 template<FormatType Fmt, int64_t NumDim>
-typename Return<Fmt, NumDim>::OperatorType
-DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_fission_operator()
+linalg::Operator DGFirstOrderTransportBackend<cad::Patch, Fmt,
+  NumDim>::assemble_fission_operator()
 {
   if (!material_->is_fissile()) {
-    return nullptr;
+    return linalg::Operator();
   }
 
   if constexpr (Fmt == FormatType::TENSOR_TRAIN) {
@@ -1276,7 +1276,7 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_fission_operator()
     F.kron_(torch::outer(material_->get_chi(), material_->get_nu_fission())
         .reshape({1, num_groups, num_groups, 1}));
 
-    return linalg::TTOperator::create(std::move(F));
+    return linalg::Operator(std::move(F));
   }
 
   throw utils::runtime_error("ttnte::physics::DIGAFirstOrderTransportBackend::"
@@ -1285,15 +1285,14 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_fission_operator()
 }
 
 template<FormatType Fmt, int64_t NumDim>
-std::tuple<typename Return<Fmt, NumDim>::OperatorType,
-  typename Return<Fmt, NumDim>::OperatorType>
-DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_boundary_operators(
-  size_t dim, bool is_upper)
+std::tuple<linalg::Operator, linalg::Operator> DGFirstOrderTransportBackend<
+  cad::Patch, Fmt, NumDim>::assemble_boundary_operators(size_t dim,
+  bool is_upper)
 {
   // Return nothing if the boundary is degenerate
   if (block_->get_boundary_info(dim, is_upper).get_type() ==
       BoundaryType::DEGENERATE) {
-    return std::make_tuple(nullptr, nullptr);
+    return std::make_tuple(linalg::Operator(), linalg::Operator());
   }
 
   if constexpr (Fmt == FormatType::TENSOR_TRAIN && NumDim > 1) {
@@ -1305,7 +1304,7 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_boundary_operators(
     // Create a NumDim - 1 dimensional backend
     // TODO: Pass the decomposition of control points and weights directly to
     // the backend's cache
-    auto backend = DIGAFirstOrderTransportBackend<Fmt, NumDim - 1>(
+    auto backend = DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim - 1>(
       std::move(boundary_block), angular_qset_, *material_, *config_);
 
     // Compute the basis and its derivatives (for cache to compute the Jacobian)
@@ -1428,11 +1427,11 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_boundary_operators(
     };
 
     return std::make_tuple(
-      linalg::TTOperator::create(
+      linalg::Operator(
         inject_basis_and_energy(std::move(B_out)).diagonalize({0, 1})),
       B_in.has_value()
-        ? linalg::TTOperator::create(inject_basis_and_energy(std::move(*B_in)))
-        : nullptr);
+        ? linalg::Operator(inject_basis_and_energy(std::move(*B_in)))
+        : linalg::Operator());
 
   } else if constexpr (Fmt == FormatType::TENSOR_TRAIN && NumDim == 1) {
     const auto& options =
@@ -1473,11 +1472,11 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_boundary_operators(
     };
 
     return std::make_tuple(
-      linalg::TTOperator::create(
+      linalg::Operator(
         inject_basis_and_energy(std::move(B_out)).diagonalize({0})),
       B_in.has_value()
-        ? linalg::TTOperator::create(inject_basis_and_energy(std::move(*B_in)))
-        : nullptr);
+        ? linalg::Operator(inject_basis_and_energy(std::move(*B_in)))
+        : linalg::Operator());
   }
 
   throw utils::runtime_error("ttnte::physics::DIGAFirstOrderTransportBackend::"
@@ -1486,9 +1485,8 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_boundary_operators(
 }
 
 template<FormatType Fmt, int64_t NumDim>
-typename Return<Fmt, NumDim>::Type
-DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_outflow_boundary_operator(
-  const ReturnType& basis,
+typename Return<Fmt, NumDim>::Type DGFirstOrderTransportBackend<cad::Patch, Fmt,
+  NumDim>::assemble_outflow_boundary_operator(const ReturnType& basis,
   const typename Return<Fmt, NumDim>::VectorType& normal,
   const ReturnType& mapping)
 {
@@ -1497,8 +1495,8 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_outflow_boundary_operator(
 
 template<FormatType Fmt, int64_t NumDim>
 std::optional<typename Return<Fmt, NumDim>::Type>
-DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_inflow_boundary_operator(
-  const ReturnType& basis,
+DGFirstOrderTransportBackend<cad::Patch, Fmt,
+  NumDim>::assemble_inflow_boundary_operator(const ReturnType& basis,
   const typename Return<Fmt, NumDim>::VectorType& normal,
   const ReturnType& mapping, const BoundaryType condition)
 {
@@ -1640,7 +1638,7 @@ DIGAFirstOrderTransportBackend<Fmt, NumDim>::assemble_inflow_boundary_operator(
 }
 
 template<FormatType Fmt, int64_t NumDim>
-typename Return<Fmt, NumDim>::Type DIGAFirstOrderTransportBackend<Fmt,
+typename Return<Fmt, NumDim>::Type DGFirstOrderTransportBackend<cad::Patch, Fmt,
   NumDim>::assemble_interface_boundary_operator(const ReturnType& basis,
   const typename Return<Fmt, NumDim>::VectorType& normal,
   const ReturnType& mapping, bool is_outflow)
@@ -1713,11 +1711,14 @@ typename Return<Fmt, NumDim>::Type DIGAFirstOrderTransportBackend<Fmt,
 }
 
 // Explicit template instantiations for targeting configurations
-template class DIGAFirstOrderTransportBackend<FormatType::DENSE, 1>;
-template class DIGAFirstOrderTransportBackend<FormatType::DENSE, 2>;
-template class DIGAFirstOrderTransportBackend<FormatType::DENSE, 3>;
-template class DIGAFirstOrderTransportBackend<FormatType::TENSOR_TRAIN, 1>;
-template class DIGAFirstOrderTransportBackend<FormatType::TENSOR_TRAIN, 2>;
-template class DIGAFirstOrderTransportBackend<FormatType::TENSOR_TRAIN, 3>;
+template class DGFirstOrderTransportBackend<cad::Patch, FormatType::DENSE, 1>;
+template class DGFirstOrderTransportBackend<cad::Patch, FormatType::DENSE, 2>;
+template class DGFirstOrderTransportBackend<cad::Patch, FormatType::DENSE, 3>;
+template class DGFirstOrderTransportBackend<cad::Patch,
+  FormatType::TENSOR_TRAIN, 1>;
+template class DGFirstOrderTransportBackend<cad::Patch,
+  FormatType::TENSOR_TRAIN, 2>;
+template class DGFirstOrderTransportBackend<cad::Patch,
+  FormatType::TENSOR_TRAIN, 3>;
 
 } // namespace ttnte::physics::backends

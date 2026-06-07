@@ -13,8 +13,8 @@ void register_TTEngine(py::module_& m)
     // Public constructors
     .def(py::init([](const std::vector<torch::Tensor>& cores,
                     bool check_cores = true) {
-      return TTEngine(
-        TTEngine::Tensors(cores.cbegin(), cores.cend()), check_cores);
+    return TTEngine(
+      TTEngine::Tensors(cores.cbegin(), cores.cend()), check_cores);
     }),
       py::arg("cores"), py::arg("check_cores") = true)
 
@@ -23,8 +23,8 @@ void register_TTEngine(py::module_& m)
     .def_static(
       "clone_from",
       [](const std::vector<torch::Tensor>& cores, bool check_cores = true) {
-        return TTEngine::clone_from(
-          TTEngine::Tensors(cores.cbegin(), cores.cend()), check_cores);
+    return TTEngine::clone_from(
+      TTEngine::Tensors(cores.cbegin(), cores.cend()), check_cores);
       },
       py::arg("cores"), py::arg("check_cores") = true)
 
@@ -32,8 +32,8 @@ void register_TTEngine(py::module_& m)
     .def_static(
       "tt_svd",
       [](torch::Tensor tensor, double eps, int64_t max_rank) {
-        auto cores = TTEngine::tt_svd(tensor, eps, max_rank);
-        return std::vector<torch::Tensor>(cores.begin(), cores.end());
+    auto cores = TTEngine::tt_svd(tensor, eps, max_rank);
+    return std::vector<torch::Tensor>(cores.begin(), cores.end());
       },
       py::arg("tensor"), py::arg("eps") = 1e-10,
       py::arg("max_rank") = std::numeric_limits<int64_t>::max(),
@@ -53,10 +53,10 @@ void register_TTEngine(py::module_& m)
       [](torch::Tensor tensor, const std::vector<int64_t>& m_modes,
         const std::vector<int64_t>& n_modes, double eps, int64_t max_rank,
         bool is_interleaved) {
-        return TTEngine::from_dense(tensor,
-          c10::SmallVector<int64_t, 6>(m_modes.begin(), m_modes.end()),
-          c10::SmallVector<int64_t, 6>(n_modes.begin(), n_modes.end()), eps,
-          max_rank, is_interleaved);
+    return TTEngine::from_dense(tensor,
+      c10::SmallVector<int64_t, 6>(m_modes.begin(), m_modes.end()),
+      c10::SmallVector<int64_t, 6>(n_modes.begin(), n_modes.end()), eps,
+      max_rank, is_interleaved);
       },
       py::arg("tensor"), py::arg("m_modes"), py::arg("n_modes"),
       py::arg("eps") = 1e-10,
@@ -70,9 +70,9 @@ void register_TTEngine(py::module_& m)
       [](const std::vector<int64_t>& m_modes,
         std::optional<torch::Device> device,
         std::optional<torch::ScalarType> dtype) {
-        return TTEngine::zeros(
-          c10::SmallVector<int64_t, 6>(m_modes.begin(), m_modes.end()), device,
-          dtype);
+    return TTEngine::zeros(
+      c10::SmallVector<int64_t, 6>(m_modes.begin(), m_modes.end()), device,
+      dtype);
       },
       py::arg("m_modes"), py::arg("device") = py::none(),
       py::arg("dtype") = py::none())
@@ -82,10 +82,10 @@ void register_TTEngine(py::module_& m)
         const std::vector<int64_t>& n_modes,
         std::optional<torch::Device> device,
         std::optional<torch::ScalarType> dtype) {
-        return TTEngine::zeros(
-          c10::SmallVector<int64_t, 6>(m_modes.begin(), m_modes.end()),
-          c10::SmallVector<int64_t, 6>(n_modes.begin(), n_modes.end()), device,
-          dtype);
+    return TTEngine::zeros(
+      c10::SmallVector<int64_t, 6>(m_modes.begin(), m_modes.end()),
+      c10::SmallVector<int64_t, 6>(n_modes.begin(), n_modes.end()), device,
+      dtype);
       },
       py::arg("m_modes"), py::arg("n_modes"), py::arg("device") = py::none(),
       py::arg("dtype") = py::none())
@@ -96,9 +96,9 @@ void register_TTEngine(py::module_& m)
       [](const std::vector<int64_t>& m_modes,
         std::optional<torch::Device> device,
         std::optional<torch::ScalarType> dtype) {
-        return TTEngine::ones(
-          c10::SmallVector<int64_t, 6>(m_modes.begin(), m_modes.end()), device,
-          dtype);
+    return TTEngine::ones(
+      c10::SmallVector<int64_t, 6>(m_modes.begin(), m_modes.end()), device,
+      dtype);
       },
       py::arg("m_modes"), py::arg("device") = py::none(),
       py::arg("dtype") = py::none())
@@ -108,18 +108,19 @@ void register_TTEngine(py::module_& m)
         const std::vector<int64_t>& n_modes,
         std::optional<torch::Device> device,
         std::optional<torch::ScalarType> dtype) {
-        return TTEngine::ones(
-          c10::SmallVector<int64_t, 6>(m_modes.begin(), m_modes.end()),
-          c10::SmallVector<int64_t, 6>(n_modes.begin(), n_modes.end()), device,
-          dtype);
+    return TTEngine::ones(
+      c10::SmallVector<int64_t, 6>(m_modes.begin(), m_modes.end()),
+      c10::SmallVector<int64_t, 6>(n_modes.begin(), n_modes.end()), device,
+      dtype);
       },
       py::arg("m_modes"), py::arg("n_modes"), py::arg("device") = py::none(),
       py::arg("dtype") = py::none())
 
     // Meshgrid
     .def_static("meshgrid", [](const std::vector<torch::Tensor>& vecs) {
-        auto result = TTEngine::meshgrid(TTEngine::Tensors(vecs.cbegin(), vecs.cend()));
-        return std::vector<TTEngine>(result.begin(), result.end());
+    auto result =
+      TTEngine::meshgrid(TTEngine::Tensors(vecs.cbegin(), vecs.cend()));
+    return std::vector<TTEngine>(result.begin(), result.end());
     }, py::arg("vecs"), py::call_guard<py::gil_scoped_release>())
 
 
@@ -127,13 +128,15 @@ void register_TTEngine(py::module_& m)
     // Transpose tensors
     .def("transpose_",
       [](TTEngine& self, const std::vector<int64_t>& core_idxs = {}) {
-        return self.transpose_(c10::SmallVector<int64_t, 6>(core_idxs.cbegin(), core_idxs.cend()));
+    return self.transpose_(
+      c10::SmallVector<int64_t, 6>(core_idxs.cbegin(), core_idxs.cend()));
       },
       py::arg("core_idxs") = std::vector<int64_t>{},
       py::return_value_policy::reference_internal)
     .def("transpose",
       [](const TTEngine& self, const std::vector<int64_t>& core_idxs = {}) {
-        return self.transpose(c10::SmallVector<int64_t, 6>(core_idxs.cbegin(), core_idxs.cend()));
+    return self.transpose(
+      c10::SmallVector<int64_t, 6>(core_idxs.cbegin(), core_idxs.cend()));
       },
       py::arg("core_idxs") = std::vector<int64_t>{})
 
@@ -180,8 +183,10 @@ void register_TTEngine(py::module_& m)
       py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
     .def("to_",
-      py::overload_cast<const torch::TensorOptions&>(&TTEngine::to_),
-      py::arg("options"),
+     py::overload_cast<const torch::TensorOptions&, bool, bool>(&TTEngine::to_),
+     py::arg("options"),
+     py::arg("non_blocking") = false,
+     py::arg("copy") = false,
       py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
 
@@ -216,13 +221,15 @@ void register_TTEngine(py::module_& m)
 
     .def("diagonalize_",
       [](TTEngine& self, const std::vector<int64_t>& core_idxs = {}) {
-        return self.diagonalize_(c10::SmallVector<int64_t, 6>(core_idxs.cbegin(), core_idxs.cend()));
+    return self.diagonalize_(
+      c10::SmallVector<int64_t, 6>(core_idxs.cbegin(), core_idxs.cend()));
       },
       py::arg("core_idxs") = std::vector<int64_t>{},
       py::return_value_policy::reference_internal)
     .def("diagonalize",
       [](const TTEngine& self, const std::vector<int64_t>& core_idxs = {}) {
-        return self.diagonalize(c10::SmallVector<int64_t, 6>(core_idxs.cbegin(), core_idxs.cend()));
+    return self.diagonalize(
+      c10::SmallVector<int64_t, 6>(core_idxs.cbegin(), core_idxs.cend()));
       },
       py::arg("core_idxs") = std::vector<int64_t>{})
 
@@ -230,18 +237,18 @@ void register_TTEngine(py::module_& m)
 
     .def("expand_",
       [](TTEngine& self, const std::vector<int64_t>& m_modes, const std::vector<int64_t>& n_modes){
-        return self.expand_(
-            c10::SmallVector<int64_t, 6>(m_modes.cbegin(), m_modes.cend()),
-            c10::SmallVector<int64_t, 6>(n_modes.cbegin(), n_modes.cend()));
+    return self.expand_(
+      c10::SmallVector<int64_t, 6>(m_modes.cbegin(), m_modes.cend()),
+      c10::SmallVector<int64_t, 6>(n_modes.cbegin(), n_modes.cend()));
       },
       py::arg("m_modes"), py::arg("n_modes"),
       py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
     .def("expand",
       [](const TTEngine& self, const std::vector<int64_t>& m_modes, const std::vector<int64_t>& n_modes){
-        return self.expand(
-            c10::SmallVector<int64_t, 6>(m_modes.cbegin(), m_modes.cend()),
-            c10::SmallVector<int64_t, 6>(n_modes.cbegin(), n_modes.cend()));
+    return self.expand(
+      c10::SmallVector<int64_t, 6>(m_modes.cbegin(), m_modes.cend()),
+      c10::SmallVector<int64_t, 6>(n_modes.cbegin(), n_modes.cend()));
       },
       py::arg("m_modes"), py::arg("n_modes"),
       py::call_guard<py::gil_scoped_release>())
@@ -270,142 +277,175 @@ void register_TTEngine(py::module_& m)
       "__neg__", &TTEngine::operator-, py::call_guard<py::gil_scoped_release>())
     // Addition
     .def(
-      "__add__", [](const TTEngine& a, const TTEngine& b) { return a + b; },
+      "__add__", [](const TTEngine& a, const TTEngine& b) {
+    return a + b; },
       py::call_guard<py::gil_scoped_release>())
     .def(
-      "__add__", [](const TTEngine& a, double b) { return a + b; },
+      "__add__", [](const TTEngine& a, double b) {
+    return a + b; },
       py::call_guard<py::gil_scoped_release>())
     .def(
       "__add__",
-      [](const TTEngine& a, const torch::Tensor& b) { return a + b; },
+      [](const TTEngine& a, const torch::Tensor& b) {
+    return a + b; },
       py::call_guard<py::gil_scoped_release>())
     .def(
-      "__radd__", [](const TTEngine& b, double a) { return a + b; },
+      "__radd__", [](const TTEngine& b, double a) {
+    return a + b; },
       py::call_guard<py::gil_scoped_release>())
     .def(
       "__radd__",
-      [](const TTEngine& b, const torch::Tensor& a) { return a + b; },
+      [](const TTEngine& b, const torch::Tensor& a) {
+    return a + b; },
       py::call_guard<py::gil_scoped_release>())
     .def(
       "__iadd__",
-      [](TTEngine& a, const TTEngine& b) -> TTEngine& { return a += b; },
+      [](TTEngine& a, const TTEngine& b) -> TTEngine& {
+    return a += b; },
       py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
     .def(
-      "__iadd__", [](TTEngine& a, double b) -> TTEngine& { return a += b; },
+      "__iadd__", [](TTEngine& a, double b) -> TTEngine& {
+    return a += b; },
       py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
     .def(
       "__iadd__",
-      [](TTEngine& a, const torch::Tensor& b) -> TTEngine& { return a += b; },
+      [](TTEngine& a, const torch::Tensor& b) -> TTEngine& {
+    return a += b; },
       py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
 
     // Subtraction
     .def(
-      "__sub__", [](const TTEngine& a, const TTEngine& b) { return a - b; },
+      "__sub__", [](const TTEngine& a, const TTEngine& b) {
+    return a - b; },
       py::call_guard<py::gil_scoped_release>())
     .def(
-      "__sub__", [](const TTEngine& a, double b) { return a - b; },
+      "__sub__", [](const TTEngine& a, double b) {
+    return a - b; },
       py::call_guard<py::gil_scoped_release>())
     .def(
       "__sub__",
-      [](const TTEngine& a, const torch::Tensor& b) { return a - b; },
+      [](const TTEngine& a, const torch::Tensor& b) {
+    return a - b; },
       py::call_guard<py::gil_scoped_release>())
     .def(
-      "__rsub__", [](const TTEngine& b, double a) { return a - b; },
+      "__rsub__", [](const TTEngine& b, double a) {
+    return a - b; },
       py::call_guard<py::gil_scoped_release>())
     .def(
       "__rsub__",
-      [](const TTEngine& b, const torch::Tensor& a) { return a - b; },
+      [](const TTEngine& b, const torch::Tensor& a) {
+    return a - b; },
       py::call_guard<py::gil_scoped_release>())
     .def(
       "__isub__",
-      [](TTEngine& a, const TTEngine& b) -> TTEngine& { return a -= b; },
+      [](TTEngine& a, const TTEngine& b) -> TTEngine& {
+    return a -= b; },
       py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
     .def(
-      "__isub__", [](TTEngine& a, double b) -> TTEngine& { return a -= b; },
+      "__isub__", [](TTEngine& a, double b) -> TTEngine& {
+    return a -= b; },
       py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
     .def(
       "__isub__",
-      [](TTEngine& a, const torch::Tensor& b) -> TTEngine& { return a -= b; },
+      [](TTEngine& a, const torch::Tensor& b) -> TTEngine& {
+    return a -= b; },
       py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
 
     // Multiplication
     .def("__mul__",
-      [](const TTEngine& a, const TTEngine& b) { return a * b; },
+      [](const TTEngine& a, const TTEngine& b) {
+    return a * b; },
       py::call_guard<py::gil_scoped_release>())
     .def("__mul__",
-      [](const TTEngine& a, double b) { return a * b; },
+      [](const TTEngine& a, double b) {
+    return a * b; },
       py::call_guard<py::gil_scoped_release>())
     .def("__mul__",
-      [](const TTEngine& a, const torch::Tensor& b) { return a * b; },
+      [](const TTEngine& a, const torch::Tensor& b) {
+    return a * b; },
       py::call_guard<py::gil_scoped_release>())
     .def("__rmul__",
-      [](const TTEngine& b, double a) { return a * b; },
+      [](const TTEngine& b, double a) {
+    return a * b; },
       py::call_guard<py::gil_scoped_release>())
     .def("__rmul__",
-      [](const TTEngine& b, const torch::Tensor& a) { return a * b; },
+      [](const TTEngine& b, const torch::Tensor& a) {
+    return a * b; },
       py::call_guard<py::gil_scoped_release>())
     .def("__imul__",
-      [](TTEngine& a, const TTEngine& b) -> TTEngine& { return a *= b; },
+      [](TTEngine& a, const TTEngine& b) -> TTEngine& {
+    return a *= b; },
       py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
     .def("__imul__",
-      [](TTEngine& a, double b) -> TTEngine& { return a *= b; },
+      [](TTEngine& a, double b) -> TTEngine& {
+    return a *= b; },
       py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
     .def("__imul__",
-      [](TTEngine& a, const torch::Tensor& b) -> TTEngine& { return a *= b; },
+      [](TTEngine& a, const torch::Tensor& b) -> TTEngine& {
+    return a *= b; },
       py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
 
     // Division
     .def("__truediv__",
-      [](const TTEngine& a, const TTEngine& b) { return a / b; },
+      [](const TTEngine& a, const TTEngine& b) {
+    return a / b; },
       py::call_guard<py::gil_scoped_release>())
     .def("__truediv__",
-      [](const TTEngine& a, double b) { return a / b; },
+      [](const TTEngine& a, double b) {
+    return a / b; },
       py::call_guard<py::gil_scoped_release>())
     .def("__truediv__",
-      [](const TTEngine& a, const torch::Tensor& b) { return a / b; },
+      [](const TTEngine& a, const torch::Tensor& b) {
+    return a / b; },
       py::call_guard<py::gil_scoped_release>())
     .def("__rtruediv__",
-      [](const TTEngine& b, double a) { return a / b; },
+      [](const TTEngine& b, double a) {
+    return a / b; },
       py::call_guard<py::gil_scoped_release>())
     .def("__rtruediv__",
-      [](const TTEngine& b, const torch::Tensor& a) { return a / b; },
+      [](const TTEngine& b, const torch::Tensor& a) {
+    return a / b; },
       py::call_guard<py::gil_scoped_release>())
     .def("__itruediv__",
-      [](TTEngine& a, const TTEngine& b) -> TTEngine& { return a /= b; },
+      [](TTEngine& a, const TTEngine& b) -> TTEngine& {
+    return a /= b; },
       py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
     .def("__itruediv__",
-      [](TTEngine& a, double b) -> TTEngine& { return a /= b; },
+      [](TTEngine& a, double b) -> TTEngine& {
+    return a /= b; },
       py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
     .def("__itruediv__",
-      [](TTEngine& a, const torch::Tensor& b) -> TTEngine& { return a /= b; },
+      [](TTEngine& a, const torch::Tensor& b) -> TTEngine& {
+    return a /= b; },
       py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
 
     // Iterators and length
     .def("__len__", &TTEngine::size)
     .def("__getitem__", [](const TTEngine& self, size_t i) {
-      size_t len = self.size();
+    size_t len = self.size();
 
-      // Handle negative indices
-      if (i < 0) i += len;
-      if (i < 0 || i >= len) {
-          throw py::index_error("TTState index out of range");
-      }
-      return self[i];
+    // Handle negative indices
+    if (i < 0)
+      i += len;
+    if (i < 0 || i >= len) {
+      throw py::index_error("TTState index out of range");
+    }
+    return self[i];
     })
     .def("__iter__", [](const TTEngine& self) {
-      return py::make_iterator(self.begin(), self.end());
+    return py::make_iterator(self.begin(), self.end());
     }, py::keep_alive<0, 1>())
 
 
@@ -414,29 +454,29 @@ void register_TTEngine(py::module_& m)
     .def_property_readonly("size", &TTEngine::size)
     .def_property_readonly("cores",
       [](const TTEngine& self) {
-        const auto& cores = self.get_cores();
-        return std::vector<torch::Tensor>(cores.begin(), cores.end());
+    const auto& cores = self.get_cores();
+    return std::vector<torch::Tensor>(cores.begin(), cores.end());
       })
     .def_property_readonly("device", &TTEngine::get_device)
     .def_property_readonly("dtype", &TTEngine::get_dtype)
     .def_property_readonly("numel", &TTEngine::get_numel)
     .def_property_readonly("ranks",
       [](const TTEngine& self) {
-        const auto& ranks = self.get_ranks();
-        return std::vector<int64_t>(ranks.begin(), ranks.end());
+    const auto& ranks = self.get_ranks();
+    return std::vector<int64_t>(ranks.begin(), ranks.end());
       })
     .def_property_readonly("free_indices",
       [](const TTEngine& self) {
-        const auto& free_indices = self.get_free_indices();
-        return std::vector<int64_t>(free_indices.begin(), free_indices.end());
+    const auto& free_indices = self.get_free_indices();
+    return std::vector<int64_t>(free_indices.begin(), free_indices.end());
       })
     .def_property_readonly("m_modes",
       [](const TTEngine& self) {
-        const auto& m_modes = self.get_m_modes();
-        return std::vector<int64_t>(m_modes.begin(), m_modes.end());
+    const auto& m_modes = self.get_m_modes();
+    return std::vector<int64_t>(m_modes.begin(), m_modes.end());
       })
     .def_property_readonly("n_modes", [](const TTEngine& self) {
-      const auto& n_modes = self.get_n_modes();
-      return std::vector<int64_t>(n_modes.begin(), n_modes.end());
+    const auto& n_modes = self.get_n_modes();
+    return std::vector<int64_t>(n_modes.begin(), n_modes.end());
     });
 }

@@ -5,13 +5,14 @@
 namespace py = pybind11;
 
 template<ttnte::physics::FormatType Fmt, int64_t NumDim>
-void register_DIGAFirstOrderTransportBackend(
+void register_DGFirstOrderTransportBackend(
   py::module_& m, const std::string& name)
 {
   using Patch = ttnte::cad::Patch;
   using Config = ttnte::physics::DGTransportAssemblerConfig;
   using Backend =
-    ttnte::physics::backends::DIGAFirstOrderTransportBackend<Fmt, NumDim>;
+    ttnte::physics::backends::DGFirstOrderTransportBackend<ttnte::cad::Patch,
+      Fmt, NumDim>;
   using Return = ttnte::physics::backends::Return<Fmt, NumDim>;
   using namespace ttnte::physics;
 
@@ -127,18 +128,18 @@ void register_dg_first_order_transport_backends(py::module_& m)
   using ttnte::physics::FormatType;
 
   // Dense registers
-  register_DIGAFirstOrderTransportBackend<FormatType::DENSE, 1>(
+  register_DGFirstOrderTransportBackend<FormatType::DENSE, 1>(
     m, "DenseDIGAFirstOrderTransportBackend1D");
-  register_DIGAFirstOrderTransportBackend<FormatType::DENSE, 2>(
+  register_DGFirstOrderTransportBackend<FormatType::DENSE, 2>(
     m, "DenseDIGAFirstOrderTransportBackend2D");
-  register_DIGAFirstOrderTransportBackend<FormatType::DENSE, 3>(
+  register_DGFirstOrderTransportBackend<FormatType::DENSE, 3>(
     m, "DenseDIGAFirstOrderTransportBackend3D");
 
   // TT registers
-  register_DIGAFirstOrderTransportBackend<FormatType::TENSOR_TRAIN, 1>(
+  register_DGFirstOrderTransportBackend<FormatType::TENSOR_TRAIN, 1>(
     m, "TTDIGAFirstOrderTransportBackend1D");
-  register_DIGAFirstOrderTransportBackend<FormatType::TENSOR_TRAIN, 2>(
+  register_DGFirstOrderTransportBackend<FormatType::TENSOR_TRAIN, 2>(
     m, "TTDIGAFirstOrderTransportBackend2D");
-  register_DIGAFirstOrderTransportBackend<FormatType::TENSOR_TRAIN, 3>(
+  register_DGFirstOrderTransportBackend<FormatType::TENSOR_TRAIN, 3>(
     m, "TTDIGAFirstOrderTransportBackend3D");
 }

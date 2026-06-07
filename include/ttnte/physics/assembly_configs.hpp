@@ -90,13 +90,15 @@ struct DGTransportAssemblerConfig : public DGAssemblerConfig {
   /// Format of the interior loss operator (streaming + collision).
   FormatType interior_loss_fmt = FormatType::TENSOR_TRAIN;
   /// Format of the scattering operator.
-  FormatType scattering_fmt = FormatType::TENSOR_TRAIN;
-  /// Format for the fission operator or source vector.
-  FormatType source_fmt = FormatType::TENSOR_TRAIN;
+  FormatType scatter_fmt = FormatType::TENSOR_TRAIN;
+  /// Format of the fission operator.
+  FormatType fission_fmt = FormatType::TENSOR_TRAIN;
   /// Outflow boundary operator format.
   FormatType outflow_fmt = FormatType::TENSOR_TRAIN;
   /// Inflow boundary operator format.
   FormatType inflow_fmt = FormatType::TENSOR_TRAIN;
+  /// Format for the source vector.
+  FormatType source_fmt = FormatType::TENSOR_TRAIN;
 };
 
 } // namespace ttnte::physics

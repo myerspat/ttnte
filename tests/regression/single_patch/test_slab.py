@@ -12,10 +12,10 @@ from ttnte.physics import (
     BoundaryType,
     BCPlane,
     DGTransportAssemblerConfig,
-    TTDIGAFirstOrderTransportBackend1D,
+    DIGAFirstOrderTransportAssembler1D,
 )
 from ttnte.math import QuadratureSet1D
-from ttnte.linalg import TTOperator, TTEngine, mm
+from ttnte.linalg import Operator, TTEngine, mm
 
 test_params = [
     ("cpu", torch.float32),
@@ -85,28 +85,25 @@ def test_slab(device, dtype):
     config.cross.eps = config.rounding.eps
     config.max_dense_size = int(1e10) if dtype == torch.float32 else 0
     config.cross_jacobian_inverse = False if dtype == torch.float32 else True
-    backend = TTDIGAFirstOrderTransportBackend1D(c, qset, xs_server, config)
+    assembler = DIGAFirstOrderTransportAssembler1D(c, qset, xs_server, config)
 
     # Assemble individual operators
-    H = backend.assemble_loss_operator()
-    S = backend.assemble_scatter_operator()
-    F = backend.assemble_fission_operator()
+    assembler.assemble()
+    H = assembler.interior_loss_op
+    S = assembler.scatter_op
+    F = assembler.fission_op
+    Bin = assembler.inflow_ops
+    Bout = assembler.outflow_ops
 
-    Bout = []
-    for is_upper in [False, True]:
-        B = backend.assemble_boundary_operators(0, is_upper)
-        Bout.append(B[0])
-
-        # Check there is no inflow boundary operator as we have full
-        # vacuum boundary conditions
-        assert B[1] == None
+    assert all([not b.defined() for b in Bin])
+    assert len(Bin) == 2
     assert len(Bout) == 2
 
     # Check the operators
     for op in [H, S, F] + Bout:
-        assert isinstance(op, TTOperator)
+        assert isinstance(op, Operator) and op.is_tt
 
-        en = op.engine
+        en = op.as_tt()
         assert len(en) == 3
         assert en.device == torch.device("cpu")
         assert en.dtype == dtype
@@ -121,13 +118,13 @@ def test_slab(device, dtype):
             assert en[i].shape[-1] == en[i + 1].shape[0]
 
     # Total outgoing boundary operator
-    Bout = sum(Bout).engine.round(config.rounding.eps, config.rounding.max_rank)
+    Bout = sum(Bout).as_tt().round(config.rounding.eps, config.rounding.max_rank)
 
     # Compute the total operator on the LHS
-    A = (H.engine - S.engine + Bout).round(
+    A = (H.as_tt() - S.as_tt() + Bout).round(
         config.rounding.eps, config.rounding.max_rank
     )
-    F = F.engine
+    F = F.as_tt()
 
     # Send the TT-operators to GPU if needed
     A.to_(torch.device(device, 2))

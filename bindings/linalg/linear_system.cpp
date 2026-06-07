@@ -4,119 +4,102 @@
 
 namespace py = pybind11;
 
-class PyLinearSystem : public ttnte::linalg::LinearSystem {
-public:
-  using LinearSystem::LinearSystem;
-
-  // Trampolines for to_ overloads
-  void to_(const torch::Device& device, const at::ScalarType& dtype,
-    bool non_blocking, bool copy,
-    std::optional<at::MemoryFormat> memory_format) override
-  {
-    PYBIND11_OVERRIDE_PURE(void, LinearSystem, to_, device, dtype, non_blocking,
-      copy, memory_format);
-  }
-  void to_(const torch::Device& device, bool non_blocking, bool copy,
-    std::optional<at::MemoryFormat> memory_format) override
-  {
-    PYBIND11_OVERRIDE_PURE(
-      void, LinearSystem, to_, device, non_blocking, copy, memory_format);
-  }
-  void to_(const at::ScalarType& dtype, bool non_blocking, bool copy,
-    std::optional<at::MemoryFormat> memory_format) override
-  {
-    PYBIND11_OVERRIDE_PURE(
-      void, LinearSystem, to_, dtype, non_blocking, copy, memory_format);
-  }
-
-  // Trampolines for transfer_nonbuffer overloads
-  void transfer_nonbuffer(const torch::Device& device,
-    const at::ScalarType& dtype, bool non_blocking, bool copy,
-    std::optional<at::MemoryFormat> memory_format) override
-  {
-    PYBIND11_OVERRIDE_PURE(void, LinearSystem, transfer_nonbuffer, device,
-      dtype, non_blocking, copy, memory_format);
-  }
-  void transfer_nonbuffer(const torch::Device& device, bool non_blocking,
-    bool copy, std::optional<at::MemoryFormat> memory_format) override
-  {
-    PYBIND11_OVERRIDE_PURE(void, LinearSystem, transfer_nonbuffer, device,
-      non_blocking, copy, memory_format);
-  }
-
-  // Trampolines for Getters
-  OpPtr get_interior_op() const override
-  {
-    PYBIND11_OVERRIDE_PURE(OpPtr, LinearSystem, get_interior_op);
-  }
-  StPtr get_state() const override
-  {
-    PYBIND11_OVERRIDE_PURE(StPtr, LinearSystem, get_state);
-  }
-  StPtr get_source() const override
-  {
-    PYBIND11_OVERRIDE_PURE(StPtr, LinearSystem, get_source);
-  }
-};
-
 void register_LinearSystem(py::module_& m)
 {
   using namespace ttnte::linalg;
 
-  py::class_<LinearSystem, PyLinearSystem, std::shared_ptr<LinearSystem>>(
-    m, "LinearSystem")
-    // =================================================================
-    // Public methods
-    .def("is_finalized", &LinearSystem::is_finalized)
+  register_Label<LinearSystem>(m, "LinearSystem");
+  py::class_<LinearSystem, std::shared_ptr<LinearSystem>> ls(
+    m, "LinearSystem", "ttnte abstract linear system");
 
+  // =================================================================
+  // Constructors (Factory pattern using lambda)
+  ls.def(py::init([](Operator interior_op, State state, State source,
+                    std::optional<std::string> label) {
+    return LinearSystem::create(std::move(interior_op), std::move(state),
+      std::move(source), std::move(label));
+  }),
+    py::arg("interior_op"), py::arg("state") = State(),
+    py::arg("source") = State(), py::arg("label") = py::none(),
+    "Constructs a LinearSystem via the create factory method");
+
+  // =================================================================
+  // Properties & Getters/Setters (Keep GIL: Trivial accesses)
+  ls.def_property_readonly(
+      "label", [](const LinearSystem& l) { return l.get_label().to_string(); })
+    .def_property_readonly("interior_op", &LinearSystem::get_interior_op)
+    .def_property("state", &LinearSystem::get_state, &LinearSystem::set_state)
+    .def_property(
+      "source", &LinearSystem::get_source, &LinearSystem::set_source)
+    .def_property_readonly("dtype", &LinearSystem::get_dtype);
+
+  ls.def("get_buffer", &LinearSystem::get_buffer, py::arg("device"),
+    py::return_value_policy::reference_internal,
+    "Returns the underlying buffer tensor for a given device.");
+
+  // =================================================================
+  // Device & Dtype Transfers (Release GIL: High-latency memory IO)
+
+  // transfer_buffer overloads
+  ls.def("transfer_buffer",
+      py::overload_cast<const torch::TensorOptions&, bool, bool>(
+        &LinearSystem::transfer_buffer),
+      py::arg("options"), py::arg("non_blocking") = false,
+      py::arg("copy") = false, py::call_guard<py::gil_scoped_release>())
+    .def("transfer_buffer",
+      py::overload_cast<const torch::Device&, const at::ScalarType&, bool, bool,
+        std::optional<at::MemoryFormat>>(&LinearSystem::transfer_buffer),
+      py::arg("device"), py::arg("dtype"), py::arg("non_blocking") = false,
+      py::arg("copy") = false, py::arg("memory_format") = py::none(),
+      py::call_guard<py::gil_scoped_release>())
+    .def("transfer_buffer",
+      py::overload_cast<const torch::Device&, bool, bool,
+        std::optional<at::MemoryFormat>>(&LinearSystem::transfer_buffer),
+      py::arg("device"), py::arg("non_blocking") = false,
+      py::arg("copy") = false, py::arg("memory_format") = py::none(),
+      py::call_guard<py::gil_scoped_release>());
+
+  // transfer_nonbuffer overloads
+  ls.def("transfer_nonbuffer",
+      py::overload_cast<const torch::TensorOptions&, bool, bool>(
+        &LinearSystem::transfer_nonbuffer),
+      py::arg("options"), py::arg("non_blocking") = false,
+      py::arg("copy") = false, py::call_guard<py::gil_scoped_release>())
+    .def("transfer_nonbuffer",
+      py::overload_cast<const torch::Device&, const at::ScalarType&, bool, bool,
+        std::optional<at::MemoryFormat>>(&LinearSystem::transfer_nonbuffer),
+      py::arg("device"), py::arg("dtype"), py::arg("non_blocking") = false,
+      py::arg("copy") = false, py::arg("memory_format") = py::none(),
+      py::call_guard<py::gil_scoped_release>())
+    .def("transfer_nonbuffer",
+      py::overload_cast<const torch::Device&, bool, bool,
+        std::optional<at::MemoryFormat>>(&LinearSystem::transfer_nonbuffer),
+      py::arg("device"), py::arg("non_blocking") = false,
+      py::arg("copy") = false, py::arg("memory_format") = py::none(),
+      py::call_guard<py::gil_scoped_release>());
+
+  // to_ overloads (In-place linear system cast)
+  ls.def("to_",
+      py::overload_cast<const torch::TensorOptions&, bool, bool>(
+        &LinearSystem::to_),
+      py::arg("options"), py::arg("non_blocking") = false,
+      py::arg("copy") = false, py::call_guard<py::gil_scoped_release>())
     .def("to_",
       py::overload_cast<const torch::Device&, const at::ScalarType&, bool, bool,
         std::optional<at::MemoryFormat>>(&LinearSystem::to_),
       py::arg("device"), py::arg("dtype"), py::arg("non_blocking") = false,
-      py::arg("copy") = false, py::arg("memory_format") = py::none())
+      py::arg("copy") = false, py::arg("memory_format") = py::none(),
+      py::call_guard<py::gil_scoped_release>())
     .def("to_",
       py::overload_cast<const torch::Device&, bool, bool,
         std::optional<at::MemoryFormat>>(&LinearSystem::to_),
       py::arg("device"), py::arg("non_blocking") = false,
-      py::arg("copy") = false, py::arg("memory_format") = py::none())
+      py::arg("copy") = false, py::arg("memory_format") = py::none(),
+      py::call_guard<py::gil_scoped_release>())
     .def("to_",
       py::overload_cast<const at::ScalarType&, bool, bool,
         std::optional<at::MemoryFormat>>(&LinearSystem::to_),
       py::arg("dtype"), py::arg("non_blocking") = false,
-      py::arg("copy") = false, py::arg("memory_format") = py::none())
-
-    .def("transfer_buffer",
-      py::overload_cast<const torch::Device&, const at::ScalarType&, bool, bool,
-        std::optional<at::MemoryFormat>>(&LinearSystem::transfer_buffer),
-      py::arg("device"), py::arg("dtype"), py::arg("non_blocking") = false,
-      py::arg("copy") = false, py::arg("memory_format") = py::none())
-    .def("transfer_buffer",
-      py::overload_cast<const torch::Device&, bool, bool,
-        std::optional<at::MemoryFormat>>(&LinearSystem::transfer_buffer),
-      py::arg("device"), py::arg("non_blocking") = false,
-      py::arg("copy") = false, py::arg("memory_format") = py::none())
-
-    .def("transfer_nonbuffer",
-      py::overload_cast<const torch::Device&, const at::ScalarType&, bool, bool,
-        std::optional<at::MemoryFormat>>(&LinearSystem::transfer_nonbuffer),
-      py::arg("device"), py::arg("dtype"), py::arg("non_blocking") = false,
-      py::arg("copy") = false, py::arg("memory_format") = py::none())
-    .def("transfer_nonbuffer",
-      py::overload_cast<const torch::Device&, bool, bool,
-        std::optional<at::MemoryFormat>>(&LinearSystem::transfer_nonbuffer),
-      py::arg("device"), py::arg("non_blocking") = false,
-      py::arg("copy") = false, py::arg("memory_format") = py::none())
-
-    .def("get_label", &LinearSystem::get_label,
-      py::return_value_policy::reference_internal)
-    .def("get_buffer", &LinearSystem::get_buffer, py::arg("device"),
-      py::return_value_policy::reference_internal)
-
-    // =================================================================
-    // Public getters / setters
-    .def_property_readonly("label", &LinearSystem::get_label)
-    .def_property_readonly("interior_op", &LinearSystem::get_interior_op)
-    .def_property_readonly("state", &LinearSystem::get_state)
-    .def_property_readonly("source", &LinearSystem::get_source)
-    .def_property_readonly("dtype", &LinearSystem::get_dtype);
+      py::arg("copy") = false, py::arg("memory_format") = py::none(),
+      py::call_guard<py::gil_scoped_release>());
 }

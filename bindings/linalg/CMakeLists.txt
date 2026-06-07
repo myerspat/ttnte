@@ -1,14 +1,6 @@
 # # Relevant files from src
-set(LINALG_SRC_REL
-    linear_system.cpp
-    operator.cpp
-    state.cpp
-    tt_engine.cpp
-    tt_linear_system.cpp
-    tt_operator.cpp
-    tt_state.cpp
-    matrix_ops.cpp
-    tt_ops.cpp)
+set(LINALG_SRC_REL linear_system.cpp operator.cpp state.cpp tt_engine.cpp
+                   matrix_ops.cpp tt_ops.cpp)
 
 # Relevant files from bindings/linalg
 set(LINALG_BINDINGS_REL
@@ -16,11 +8,9 @@ set(LINALG_BINDINGS_REL
     operator.cpp
     state.cpp
     tt_engine.cpp
-    tt_operator.cpp
-    tt_state.cpp
     linear_system.cpp
-    tt_linear_system.cpp
     matrix_ops.cpp
+    ops.cpp
     tt_ops.cpp)
 
 # Define the directory paths (Use local variables here, then push if needed)

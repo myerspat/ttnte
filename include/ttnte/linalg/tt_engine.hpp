@@ -34,6 +34,13 @@ public:
   /// @return A new TTEngine object.
   static TTEngine clone_from(const Tensors& cores, bool check_cores = true);
   /// @brief Send the TT to another device and/or cast it to a different data
+  /// type (in-place).
+  /// @param options Tensor options to apply to each TT-core.
+  /// @param non_blocking Whether to run this method as non-blocking.
+  /// @param copy Whether to copy the TT.
+  TTEngine to(const torch::TensorOptions& options, bool non_blocking = false,
+    bool copy = false) const;
+  /// @brief Send the TT to another device and/or cast it to a different data
   /// type.
   /// @param device The device to send the TT to.
   /// @param dtype The data type to cast the TT to.
@@ -62,6 +69,13 @@ public:
 
   /// @brief Send the TT to another device and/or cast it to a different data
   /// type (in-place).
+  /// @param options Tensor options to apply to each TT-core.
+  /// @param non_blocking Whether to run this method as non-blocking.
+  /// @param copy Whether to copy the TT.
+  TTEngine& to_(const torch::TensorOptions& options, bool non_blocking = false,
+    bool copy = false);
+  /// @brief Send the TT to another device and/or cast it to a different data
+  /// type (in-place).
   /// @param device The device to send the TT to.
   /// @param dtype The data type to cast the TT to.
   /// @param non_blocking Whether to run this method as non-blocking.
@@ -86,11 +100,6 @@ public:
   TTEngine& to_(const torch::Device& device, bool non_blocking = false,
     bool copy = false,
     std::optional<at::MemoryFormat> memory_format = std::nullopt);
-
-  /// @brief Send this TT to another data type or device (in-place).
-  /// @param options The tensor options used for each core.
-  /// @return A reference to this TT after.
-  TTEngine& to_(const torch::TensorOptions& options);
 
   /// @return The sum over all indices.
   double sum() const;
@@ -150,6 +159,10 @@ public:
   /// by (output, input).
   /// @return The dense tensor.
   torch::Tensor to_dense(bool interleave = false) const;
+
+  /// @brief Add the info for the TT to the buffer.
+  /// @param buffer The buffer to append the information.
+  void to_buffer(const torch::Tensor& buffer) const;
 
   /// @brief Update the TT from a buffer.
   /// @param buffer The buffer of data holding all the TT cores.
@@ -219,6 +232,8 @@ public:
 
   /// @return Whether the TT is rank-one.
   bool is_rank_one() const;
+  /// @return Whether the TT is a TT-vector.
+  bool is_vector() const;
 
   /// @brief Expand a core along a given dimension (in-place). The values across
   /// the other dimensions are repeated for the new one.
