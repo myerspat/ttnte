@@ -3,7 +3,7 @@ import pytest
 import torchtt as tntt
 
 from ttnte.solvers import MemoryPolicy, AMEnSolver, BlockJacobiStrategy
-from ttnte.linalg import TTOperator, TTState, TTLinearSystem
+from ttnte.linalg import Operator, State, LinearSystem, TTEngine
 from ttnte.task import TaskGraph, TaskScheduler
 from ttnte.parallel import StreamPool
 
@@ -54,10 +54,10 @@ def test_build_compute_dag(use_gpu, memory_policy, dtype):
     xe = tntt.solvers.amen_solve(A, b, x0=x0, use_cpp=True)
 
     # Create ttnte linear system
-    A = TTOperator(A.cores)
-    x0 = TTState(x0.cores)
-    b = TTState(b.cores)
-    ls = TTLinearSystem(A, x0, b)
+    A = Operator(TTEngine(A.cores))
+    x0 = State(TTEngine(x0.cores))
+    b = State(TTEngine(b.cores))
+    ls = LinearSystem(A, x0, b)
 
     # Create task graph and build the graph for a single local problem
     dag = TaskGraph()

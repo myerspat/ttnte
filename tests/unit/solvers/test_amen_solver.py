@@ -2,7 +2,7 @@ import pytest
 import torch
 import torchtt as tntt
 
-from ttnte.linalg import TTState, TTOperator, TTLinearSystem
+from ttnte.linalg import State, Operator, LinearSystem, TTEngine
 from ttnte.solvers import AMEnSolver
 
 test_params = [
@@ -31,17 +31,18 @@ def test_amen_solver(device, dtype):
     # Run torchTT AMEn solve
     xe = tntt.solvers.amen_solve(A, b, x0=x0, use_cpp=True)
 
-    A = TTOperator(A.cores)
-    x0 = TTState(x0.cores)
-    b = TTState(b.cores)
-    ls = TTLinearSystem(A, x0, b)
+    A = Operator(TTEngine(A.cores))
+    x0 = State(TTEngine(x0.cores))
+    b = State(TTEngine(b.cores))
+    ls = LinearSystem(A, source=b)
+    ls.state = x0
 
     # Run AMEnSolver
     solver = AMEnSolver()
     solver.solve(ls)
 
     # Get the solution vector
-    xa = tntt.TT([core.squeeze(2) for core in ls.state.cores])
+    xa = tntt.TT([core.squeeze(2) for core in ls.state.as_tt().cores])
     assert (
         xa - xe
     ).norm() / xe.norm() < 5e-4  # They won't be the exact same because of random enrichment
