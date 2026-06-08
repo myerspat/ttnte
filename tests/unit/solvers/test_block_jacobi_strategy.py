@@ -57,7 +57,8 @@ def test_build_compute_dag(use_gpu, memory_policy, dtype):
     A = Operator(TTEngine(A.cores))
     x0 = State(TTEngine(x0.cores))
     b = State(TTEngine(b.cores))
-    ls = LinearSystem(A, x0, b)
+    ls = LinearSystem(A, source=b)
+    ls.state = x0
 
     # Create task graph and build the graph for a single local problem
     dag = TaskGraph()
@@ -80,7 +81,7 @@ def test_build_compute_dag(use_gpu, memory_policy, dtype):
             # Only the operators remain on GPU
             ls.transfer_buffer(device)
 
-        h2d_task, solve_task, d2h_task = strategy.build_gpu_compute_dag(
+        h2d_task, _, d2h_task = strategy.build_gpu_compute_dag(
             dag, ls, StreamPool.instance(), True
         )
         assert len(dag) == 3 if strategy.memory_policy != MemoryPolicy.RESIDENT else 1
@@ -90,7 +91,7 @@ def test_build_compute_dag(use_gpu, memory_policy, dtype):
             assert d2h_task == None
 
     else:
-        solve_task = strategy.build_cpu_compute_dag(dag, ls, True)
+        _ = strategy.build_cpu_compute_dag(dag, ls, True)
         assert len(dag) == 1
 
     # Execute the dag
@@ -98,7 +99,7 @@ def test_build_compute_dag(use_gpu, memory_policy, dtype):
     scheduler.execute(dag)
 
     # Get the solution vector
-    xa = tntt.TT([core.squeeze(2) for core in ls.state.cores])
+    xa = tntt.TT([core.squeeze(2) for core in ls.state.as_tt().cores])
     assert (
         xa - xe
     ).norm() / xe.norm() < 5e-4  # They won't be the exact same because of random enrichment

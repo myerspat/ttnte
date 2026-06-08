@@ -10,12 +10,12 @@ namespace ttnte::linalg {
 // Protected constructors
 LinearSystem::LinearSystem(Operator interior_op, State state, State source,
   std::optional<std::string> label)
-  : device_(interior_op_.get_device()), interior_op_(std::move(interior_op)),
-    state_(std::move(state)), source_(std::move(source)),
+  : interior_op_(std::move(interior_op)), state_(std::move(state)),
+    source_(std::move(source)), device_(interior_op_.get_device()),
     label_(label.has_value() ? Label::from_string(label.value())
                              : Label::create_internal())
 {
-  TORCH_CHECK(interior_op.defined(), "The operators must be defined pointers");
+  TORCH_CHECK(interior_op_.defined(), "The operators must be defined pointers");
 
   // Get base configuration
   const auto dtype = interior_op_.get_dtype();
@@ -32,13 +32,13 @@ LinearSystem::LinearSystem(Operator interior_op, State state, State source,
     state_is_static_ = true;
     sizes[1] = state_.get_numel();
 
-    if (state.get_device() != device_ || state.get_dtype() != dtype) {
+    if (state_.get_device() != device_ || state_.get_dtype() != dtype) {
       throw utils::runtime_error(*this, error_context("LinearSystem"),
         "Operators, the state vector (if given), and the source vector (if\n"
         "given) must be on the same device with the same data type");
     }
   }
-  if (source.defined()) {
+  if (source_.defined()) {
     source_is_static_ = true;
     sizes[2] = source_.get_numel();
 
@@ -107,7 +107,8 @@ void LinearSystem::transfer_buffer(
       host_buffer_ =
         device_buffer_.to(options.pinned_memory(true), non_blocking, copy);
     } else {
-      host_buffer_ = host_buffer_.to(options, non_blocking, copy);
+      host_buffer_ =
+        host_buffer_.to(options.pinned_memory(true), non_blocking, copy);
     }
     buffer = host_buffer_;
   }

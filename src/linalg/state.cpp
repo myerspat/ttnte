@@ -12,7 +12,7 @@ void State::to_buffer(const torch::Tensor& buffer) const
 
 void State::from_buffer(const torch::Tensor& buffer)
 {
-  std::visit([&](auto& v) { v.to_buffer(buffer); }, get_variant());
+  std::visit([&](auto& v) { v.from_buffer(buffer); }, get_variant());
 }
 
 State& State::to_(
