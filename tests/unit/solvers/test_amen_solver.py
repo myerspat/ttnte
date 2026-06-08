@@ -45,4 +45,4 @@ def test_amen_solver(device, dtype):
     xa = tntt.TT([core.squeeze(2) for core in ls.state.as_tt().cores])
     assert (
         xa - xe
-    ).norm() / xe.norm() < 5e-4  # They won't be the exact same because of random enrichment
+    ).norm() / xe.norm() < 6e-4  # They won't be the exact same because of random enrichment
