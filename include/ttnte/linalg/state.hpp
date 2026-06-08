@@ -125,6 +125,20 @@ public:
   /// @param buffer The source tensor buffer.
   void from_buffer(const torch::Tensor& buffer);
 
+  /// @brief Serialize the state to a flat CPU tensor suitable for MPI.
+  /// Wire format: [FormatType, K, core0_shape[4], ..., core data].
+  /// @param buffer If defined, pack into this pre-allocated 1D CPU tensor (its
+  ///   dtype is used; core data is cast accordingly). If undefined (default),
+  ///   a new buffer is allocated in the state's native dtype.
+  /// @return The buffer containing the serialized state.
+  torch::Tensor pack(const torch::Tensor& buffer = torch::Tensor()) const;
+
+  /// @brief Deserialize a State from a flat CPU tensor produced by pack().
+  /// The reconstructed State has the same dtype as the buffer.
+  /// @param buffer A 1D CPU tensor produced by pack().
+  /// @return A new State in the format and dtype encoded in the buffer.
+  static State unpack(const torch::Tensor& buffer);
+
   /// @brief In-place conversion of the state's tensor options.
   /// @param options Target torch::TensorOptions.
   /// @param non_blocking If true, tries to perform the transfer asynchronously.
@@ -174,6 +188,21 @@ public:
   /// @brief In-place negation of the state.
   /// @return Reference to the modified State.
   State& neg_();
+
+  /// @brief Restrict a physical dimension to a contiguous sub-range in-place.
+  /// `dim` indexes the layout [m_0, m_1, …, m_{K-1}] (n-modes are always 1
+  /// for State and are never narrowed). `start` may be negative to index
+  /// from the end of the mode.
+  /// @param dim    Physical axis to narrow.
+  /// @param start  First index to keep; negative counts from the end.
+  /// @param length Number of indices to keep.
+  /// @return Reference to the modified State.
+  State& narrow_(size_t dim, int64_t start, int64_t length = 1);
+
+  /// @brief Restrict a physical dimension to a contiguous sub-range
+  /// (out-of-place). See narrow_() for parameter semantics.
+  /// @return A new State with the specified dimension narrowed.
+  State narrow(size_t dim, int64_t start, int64_t length = 1) const;
 
   /// @brief In-place rounding/truncation of the Tensor Train ranks.
   /// @param eps The truncation tolerance.

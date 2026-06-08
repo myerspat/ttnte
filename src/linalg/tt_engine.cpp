@@ -417,6 +417,122 @@ void TTEngine::from_buffer(const torch::Tensor& buffer)
   }
 }
 
+TTEngine& TTEngine::narrow_(
+  size_t dim, int64_t start, int64_t length, bool interleaved)
+{
+  const int64_t K = static_cast<int64_t>(cores_.size());
+
+  size_t core_idx;
+  int64_t mode_axis; // 1 = m-mode, 2 = n-mode within the 4D core [r_l,m,n,r_r]
+
+  if (interleaved) {
+    // Layout [m_0, n_0, m_1, n_1, ...]: even dim -> m, odd dim -> n
+    core_idx = dim / 2;
+    mode_axis = (dim % 2 == 0) ? 1 : 2;
+  } else {
+    // Layout [m_0,...,m_{K-1}, n_0,...,n_{K-1}]: dim < K -> m, else -> n
+    core_idx =
+      (static_cast<int64_t>(dim) < K) ? dim : dim - static_cast<size_t>(K);
+    mode_axis = (static_cast<int64_t>(dim) < K) ? 1 : 2;
+  }
+
+  TORCH_CHECK(core_idx < static_cast<size_t>(K), "TTEngine::narrow_: dim ", dim,
+    " out of range for ", 2 * K, " modes");
+
+  const int64_t mode_size = cores_[core_idx].size(mode_axis);
+  const int64_t actual_start = start < 0 ? mode_size + start : start;
+
+  TORCH_CHECK(actual_start >= 0 && actual_start + length <= mode_size,
+    "TTEngine::narrow_: start ", start, " and length ", length,
+    " out of range for mode size ", mode_size);
+
+  cores_[core_idx] = cores_[core_idx].narrow(mode_axis, actual_start, length);
+  return *this;
+}
+
+TTEngine TTEngine::narrow(
+  size_t dim, int64_t start, int64_t length, bool interleaved) const
+{
+  auto result = *this;
+  result.narrow_(dim, start, length, interleaved);
+  return result;
+}
+
+torch::Tensor TTEngine::pack(const torch::Tensor& buffer) const
+{
+  const int64_t K = static_cast<int64_t>(cores_.size());
+  // Header: [format_id=0, K, core0_shape[4], core1_shape[4], ...]
+  const int64_t header_size = 2 + 4 * K;
+
+  int64_t data_size = 0;
+  for (const auto& c : cores_)
+    data_size += c.numel();
+
+  torch::Tensor buf;
+  if (buffer.defined()) {
+    TORCH_CHECK(buffer.dim() == 1 && buffer.device().is_cpu(),
+      "TTEngine::pack: pre-allocated buffer must be a 1D CPU tensor");
+    TORCH_CHECK(buffer.numel() == header_size + data_size,
+      "TTEngine::pack: pre-allocated buffer has wrong size; expected ",
+      header_size + data_size, ", got ", buffer.numel());
+    buf = buffer;
+  } else {
+    buf = torch::empty({header_size + data_size},
+      torch::TensorOptions().dtype(get_dtype()).device(torch::kCPU));
+  }
+
+  // Write header using element-wise assignment; tensor handles dtype conversion
+  buf[0] = static_cast<int>(FormatType::TENSOR_TRAIN);
+  buf[1] = K;
+  for (int64_t i = 0; i < K; i++) {
+    const auto& s = cores_[i].sizes();
+    buf[2 + 4 * i + 0] = s[0];
+    buf[2 + 4 * i + 1] = s[1];
+    buf[2 + 4 * i + 2] = s[2];
+    buf[2 + 4 * i + 3] = s[3];
+  }
+
+  // copy_ handles CUDA→CPU and cross-dtype casting in one call
+  int64_t offset = header_size;
+  for (const auto& core : cores_) {
+    const int64_t numel = core.numel();
+    buf.narrow(0, offset, numel).copy_(core.reshape({-1}));
+    offset += numel;
+  }
+
+  return buf;
+}
+
+TTEngine TTEngine::unpack(const torch::Tensor& buffer)
+{
+  TORCH_CHECK(buffer.dim() == 1 && buffer.device().is_cpu(),
+    "TTEngine::unpack: buffer must be a 1D CPU tensor");
+
+  // item<int64_t>() works for any float dtype on a CPU scalar tensor
+  const int64_t K = buffer[1].item<int64_t>();
+
+  Tensors cores;
+  cores.reserve(static_cast<size_t>(K));
+
+  int64_t offset = 2 + 4 * K;
+  for (int64_t i = 0; i < K; i++) {
+    const int64_t s0 = buffer[2 + 4 * i + 0].item<int64_t>();
+    const int64_t s1 = buffer[2 + 4 * i + 1].item<int64_t>();
+    const int64_t s2 = buffer[2 + 4 * i + 2].item<int64_t>();
+    const int64_t s3 = buffer[2 + 4 * i + 3].item<int64_t>();
+
+    const int64_t numel = s0 * s1 * s2 * s3;
+    // Clone so the TTEngine owns memory independently of the input buffer.
+    // Caller moves to target device via .to_() if needed.
+    auto core =
+      buffer.narrow(0, offset, numel).reshape({s0, s1, s2, s3}).clone();
+    cores.push_back(std::move(core));
+    offset += numel;
+  }
+
+  return TTEngine(std::move(cores), false);
+}
+
 TTEngine& TTEngine::neg_()
 {
   cores_[0] = cores_[0].neg();

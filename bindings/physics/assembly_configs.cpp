@@ -9,13 +9,6 @@ void register_assembly_configs(py::module_& m)
   using namespace ttnte::physics;
 
   // =================================================================
-  // FormatType Enum
-  py::enum_<FormatType>(m, "FormatType")
-    .value("DENSE", FormatType::DENSE)
-    .value("TENSOR_TRAIN", FormatType::TENSOR_TRAIN)
-    .export_values();
-
-  // =================================================================
   // TTConfig
   py::class_<TTConfig>(m, "TTConfig")
     .def(py::init<double, int>(), py::arg("eps") = 1e-12,

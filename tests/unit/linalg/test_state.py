@@ -270,31 +270,112 @@ def test_orthogonalize_and_round(device, dtype):
     assert all(r <= 2 for r in tt.as_tt().ranks[1:-1])
 
 
-# @pytest.mark.parametrize("device, dtype", test_params)
-# def test_pack_unpack(device, dtype):
-#     if device == "cuda" and not torch.cuda.is_available():
-#         pytest.skip("CUDA not available")
-#
-#     # Create a state
-#     tt = State.ones([2, 3, 2], device=torch.device(device), dtype=dtype)
-#
-#     # Pack to 1D buffer
-#     buffer = tt.pack()
-#
-#     assert isinstance(buffer, torch.Tensor)
-#     assert buffer.dim() == 1
-#     assert buffer.device == (
-#         torch.device(device) if device == "cpu" else torch.device(device, 0)
-#     )
-#     assert buffer.dtype == dtype
-#
-#     # Unpack from 1D buffer
-#     tt_unpacked = State.unpack(buffer, clone=True)
-#
-#     assert isinstance(tt_unpacked, State)
-#     assert tt.m_modes == tt_unpacked.m_modes
-#     assert tt.ranks == tt_unpacked.ranks
-#
-#     # Ensure unpacked cores match the original cores
-#     for core_orig, core_unpacked in zip(tt.cores, tt_unpacked.cores):
-#         torch.testing.assert_close(core_orig, core_unpacked)
+@pytest.mark.parametrize("device, dtype", test_params)
+def test_pack_unpack_roundtrip(device, dtype):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    m_modes = [2, 3, 4]
+    state = State(TTEngine.ones(m_modes, device=torch.device(device), dtype=dtype))
+
+    buf = state.pack()
+
+    assert buf.dim() == 1
+    assert buf.device == torch.device("cpu")
+    assert buf.dtype == dtype
+
+    unpacked = State.unpack(buf)
+
+    assert unpacked.is_tt
+    assert unpacked.as_tt().m_modes == m_modes
+    assert unpacked.as_tt().ranks == state.as_tt().ranks
+    assert unpacked.as_tt().dtype == dtype
+
+    for orig, restored in zip(state.as_tt().cores, unpacked.as_tt().cores):
+        torch.testing.assert_close(orig.cpu(), restored)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_pack_preallocated_buffer(dtype):
+    state = State(TTEngine.ones([3, 4], dtype=dtype))
+    ref_buf = state.pack()
+    pre_buf = torch.empty_like(ref_buf)
+
+    returned = state.pack(pre_buf)
+
+    assert returned.data_ptr() == pre_buf.data_ptr()
+    torch.testing.assert_close(returned, ref_buf)
+
+
+@pytest.mark.parametrize(
+    "src_dtype, dst_dtype",
+    [
+        (torch.float32, torch.float64),
+        (torch.float64, torch.float32),
+    ],
+)
+def test_pack_cross_precision(src_dtype, dst_dtype):
+    state = State(TTEngine.ones([2, 3], dtype=src_dtype))
+    ref_buf = state.pack()
+    cross_buf = torch.empty(ref_buf.numel(), dtype=dst_dtype)
+    state.pack(cross_buf)
+
+    unpacked = State.unpack(cross_buf)
+    m_modes = unpacked.as_tt().m_modes
+    # Strip trailing n-mode dims (all 1 for a vector TT)
+    dense = unpacked.as_tt().to_dense().reshape(m_modes)
+    torch.testing.assert_close(dense, torch.ones_like(dense), atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_narrow_lower_face(dtype):
+    m_modes = [3, 4, 5]
+    dense = torch.arange(3 * 4 * 5, dtype=dtype).reshape(m_modes)
+    state = State(TTEngine.from_dense(dense, eps=0.0))
+    # Use to_dense() of the full TT as reference to avoid from_dense roundoff
+    full_dense = state.as_tt().to_dense().reshape(m_modes)
+
+    for dim in range(len(m_modes)):
+        narrowed = state.narrow(dim, 0, 1)
+        assert narrowed.as_tt().m_modes[dim] == 1
+        # to_dense() returns [m0,...,mK-1, 1,...,1]; reshape to remove n-mode dims
+        narrowed_dense = narrowed.as_tt().to_dense().reshape(narrowed.as_tt().m_modes)
+        torch.testing.assert_close(narrowed_dense, full_dense.narrow(dim, 0, 1))
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_narrow_upper_face(dtype):
+    m_modes = [3, 4, 5]
+    dense = torch.arange(3 * 4 * 5, dtype=dtype).reshape(m_modes)
+    state = State(TTEngine.from_dense(dense, eps=0.0))
+    full_dense = state.as_tt().to_dense().reshape(m_modes)
+
+    for dim, m in enumerate(m_modes):
+        narrowed = state.narrow(dim, -1, 1)
+        assert narrowed.as_tt().m_modes[dim] == 1
+        narrowed_dense = narrowed.as_tt().to_dense().reshape(narrowed.as_tt().m_modes)
+        torch.testing.assert_close(narrowed_dense, full_dense.narrow(dim, m - 1, 1))
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_narrow_inplace(dtype):
+    m_modes = [3, 4, 5]
+    dense = torch.arange(3 * 4 * 5, dtype=dtype).reshape(m_modes)
+    state = State(TTEngine.from_dense(dense, eps=0.0))
+
+    ref = state.narrow(1, -1, 1).as_tt().to_dense()
+    state.narrow_(1, -1, 1)
+
+    assert state.as_tt().m_modes[1] == 1
+    torch.testing.assert_close(state.as_tt().to_dense(), ref)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_narrow_does_not_mutate(dtype):
+    m_modes = [3, 4, 5]
+    state = State(TTEngine.ones(m_modes, dtype=dtype))
+    original_modes = list(state.as_tt().m_modes)
+
+    _ = state.narrow(1, 0, 1)
+
+    assert list(state.as_tt().m_modes) == original_modes

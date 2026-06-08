@@ -1,4 +1,6 @@
 #include "ttnte/linalg/state.hpp"
+#include "ttnte/utils/exception.hpp"
+#include <cstring>
 
 namespace ttnte::linalg {
 
@@ -107,6 +109,21 @@ State& State::neg_()
   return *this;
 }
 
+State& State::narrow_(size_t dim, int64_t start, int64_t length)
+{
+  std::visit([dim, start, length](auto& v) { v.narrow_(dim, start, length); },
+    get_variant());
+  return *this;
+}
+
+State State::narrow(size_t dim, int64_t start, int64_t length) const
+{
+  return std::visit(
+    [dim, start, length](
+      const auto& v) -> State { return State(v.narrow(dim, start, length)); },
+    get_variant());
+}
+
 State& State::round_(double eps, int64_t max_rank)
 {
   std::visit(
@@ -137,6 +154,30 @@ State State::round(double eps, int64_t max_rank) const
       return State(std::move(r));
     },
     get_variant());
+}
+
+torch::Tensor State::pack(const torch::Tensor& buffer) const
+{
+  if (!defined())
+    throw utils::runtime_error(error_context("pack"), "State is undefined");
+  return std::visit(
+    [&buffer](const auto& v) { return v.pack(buffer); }, get_variant());
+}
+
+State State::unpack(const torch::Tensor& buffer)
+{
+  TORCH_CHECK(buffer.dim() == 1 && buffer.device().is_cpu(),
+    "State::unpack: buffer must be a 1D CPU tensor");
+
+  const auto format_id = static_cast<FormatType>(buffer[0].item<int64_t>());
+  switch (format_id) {
+  case FormatType::TENSOR_TRAIN:
+    return State(TTEngine::unpack(buffer));
+  default:
+    throw utils::runtime_error("ttnte::linalg::State::unpack",
+      "Unknown format_id in buffer: " +
+        std::to_string(static_cast<int>(format_id)));
+  }
 }
 
 } // namespace ttnte::linalg

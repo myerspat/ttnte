@@ -1,13 +1,12 @@
 #pragma once
 
-#include <cstdint>
+#include "ttnte/linalg/format_type.hpp"
 #include <optional>
 #include <torch/extension.h>
 
 namespace ttnte::physics {
 
-/// @brief Enum class for which format to construct operators into.
-enum class FormatType : uint8_t { DENSE = 0, TENSOR_TRAIN = 1 };
+using linalg::FormatType;
 
 /// @brief Configuration common among TT methods.
 struct TTConfig {

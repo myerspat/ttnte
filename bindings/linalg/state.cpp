@@ -40,6 +40,24 @@ void register_State(py::module_& m)
       py::call_guard<py::gil_scoped_release>())
     .def("from_buffer", &State::from_buffer, py::arg("buffer"),
       py::call_guard<py::gil_scoped_release>())
+    .def(
+      "pack",
+      [](const State& self, py::object buf_obj) -> torch::Tensor {
+        torch::Tensor buf;
+        if (!buf_obj.is_none())
+          buf = buf_obj.cast<torch::Tensor>();
+        py::gil_scoped_release release;
+        return self.pack(buf);
+      },
+      py::arg("buffer") = py::none())
+    .def_static("unpack", &State::unpack, py::arg("buffer"),
+      py::call_guard<py::gil_scoped_release>())
+    .def("narrow_", &State::narrow_, py::arg("dim"), py::arg("start"),
+      py::arg("length") = 1, py::return_value_policy::reference_internal,
+      py::call_guard<py::gil_scoped_release>())
+    .def("narrow", &State::narrow, py::arg("dim"), py::arg("start"),
+      py::arg("length") = 1, py::call_guard<py::gil_scoped_release>())
+
     .def("neg_", &State::neg_, py::call_guard<py::gil_scoped_release>())
 
     .def("round_", &State::round_, py::arg("eps") = 1e-12,

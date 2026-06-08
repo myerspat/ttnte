@@ -212,6 +212,27 @@ void register_TTEngine(py::module_& m)
 
     .def("from_buffer", &TTEngine::from_buffer, py::arg("buffer"),
       py::call_guard<py::gil_scoped_release>())
+    .def("pack",
+      [](const TTEngine& self, py::object buf_obj) -> torch::Tensor {
+        torch::Tensor buf;
+        if (!buf_obj.is_none())
+          buf = buf_obj.cast<torch::Tensor>();
+        py::gil_scoped_release release;
+        return self.pack(buf);
+      },
+      py::arg("buffer") = py::none())
+    .def_static("unpack", &TTEngine::unpack, py::arg("buffer"),
+      py::call_guard<py::gil_scoped_release>())
+
+    .def("narrow_", &TTEngine::narrow_,
+      py::arg("dim"), py::arg("start"), py::arg("length") = 1,
+      py::arg("interleaved") = false,
+      py::return_value_policy::reference_internal,
+      py::call_guard<py::gil_scoped_release>())
+    .def("narrow", &TTEngine::narrow,
+      py::arg("dim"), py::arg("start"), py::arg("length") = 1,
+      py::arg("interleaved") = false,
+      py::call_guard<py::gil_scoped_release>())
 
     .def("neg_", &TTEngine::neg_, py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())

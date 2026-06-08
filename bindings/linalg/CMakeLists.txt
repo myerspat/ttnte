@@ -5,6 +5,7 @@ set(LINALG_SRC_REL linear_system.cpp operator.cpp state.cpp tt_engine.cpp
 # Relevant files from bindings/linalg
 set(LINALG_BINDINGS_REL
     bindings.cpp
+    format_type.cpp
     operator.cpp
     state.cpp
     tt_engine.cpp

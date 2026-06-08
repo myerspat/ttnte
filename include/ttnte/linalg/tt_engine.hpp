@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ttnte/linalg/format_type.hpp"
 #include <limits>
 #include <torch/extension.h>
 
@@ -168,9 +169,51 @@ public:
   /// @param buffer The buffer of data holding all the TT cores.
   void from_buffer(const torch::Tensor& buffer);
 
+  /// @brief Serialize the TT to a flat CPU tensor suitable for MPI.
+  /// Wire format: [FormatType::TENSOR_TRAIN, K, core0_shape[4], ..., core
+  /// data].
+  /// @param buffer If defined, pack into this pre-allocated 1D CPU tensor (its
+  ///   dtype is used; core data is cast accordingly). If undefined (default),
+  ///   a new buffer is allocated in the TT's native dtype.
+  /// @return The buffer containing the serialized TT.
+  torch::Tensor pack(const torch::Tensor& buffer = torch::Tensor()) const;
+
+  /// @brief Deserialize a TTEngine from a flat CPU tensor produced by pack().
+  /// The reconstructed TT has the same dtype as the buffer.
+  /// @param buffer A 1D CPU tensor produced by pack().
+  /// @return A new TTEngine in the dtype encoded in the buffer.
+  static TTEngine unpack(const torch::Tensor& buffer);
+
   /// @brief Flip the sign (in-place) of this TT.
   /// @return The reference to this TT with its sign flipped.
   TTEngine& neg_();
+
+  /// @brief Restrict a dimension to a contiguous sub-range in-place.
+  /// `dim` is interpreted relative to the layout produced by
+  /// `to_dense(interleaved)`:
+  ///   - `interleaved=false` (default): layout [m_0,…,m_{K-1},n_0,…,n_{K-1}].
+  ///     dim < K narrows the m-mode of core dim; dim >= K narrows the n-mode
+  ///     of core dim-K.
+  ///   - `interleaved=true`: layout [m_0,n_0,m_1,n_1,…].
+  ///     Even dim narrows the m-mode of core dim/2; odd dim narrows the
+  ///     n-mode of core dim/2.
+  /// `start` may be negative to index from the end of the mode.
+  /// @param dim    Axis index in the chosen layout.
+  /// @param start  First index to keep; negative counts from the end.
+  /// @param length Number of indices to keep.
+  /// @param interleaved Whether dim follows the interleaved layout.
+  /// @return Reference to this TT after narrowing.
+  TTEngine& narrow_(
+    size_t dim, int64_t start, int64_t length = 1, bool interleaved = false);
+
+  /// @brief Restrict a dimension to a contiguous sub-range (out-of-place).
+  /// @param dim    Axis index in the chosen layout.
+  /// @param start  First index to keep; negative counts from the end.
+  /// @param length Number of indices to keep.
+  /// @param interleaved Whether dim follows the interleaved layout.
+  /// @return A new TTEngine with the specified dimension narrowed.
+  TTEngine narrow(size_t dim, int64_t start, int64_t length = 1,
+    bool interleaved = false) const;
 
   /// @brief Create a TT-vector of zeros.
   /// @param m_modes The modes for each core.
