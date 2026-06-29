@@ -37,7 +37,8 @@ void register_Mesh(py::module_& m, const std::string& typestr)
     .def("add_block", &Mesh::add_block, py::arg("new_block"))
     .def("connect", &Mesh::connect, py::arg("tol") = 1e-8)
     .def_static("get_boundary_mapping", &Mesh::get_boundary_mapping,
-      py::arg("face_a"), py::arg("face_b"), py::arg("tol") = 1e-8)
+      py::arg("face_a"), py::arg("face_b"), py::arg("dim_a"), py::arg("dim_b"),
+      py::arg("tol") = 1e-8)
     .def("set_axis_aligned_conditions", &Mesh::set_axis_aligned_conditions,
       py::arg("bcplanes"), py::arg("type"), py::arg("tol") = 1e-8)
     .def("build_connectivity_graph", &Mesh::build_connectivity_graph)

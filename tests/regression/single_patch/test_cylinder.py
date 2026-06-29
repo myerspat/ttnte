@@ -83,8 +83,8 @@ def test_infinite_homogeneous_cylinder(device, dtype):
     torch.autograd.set_grad_enabled(False)
 
     # Get XS info
-    fill, xs_server = pu239(num_groups=1, device=torch.device("cpu"), dtype=dtype)
-    assert fill.to_string() == "Pu-239"
+    fills, xs_server = pu239(num_groups=1, device=torch.device("cpu"), dtype=dtype)
+    assert fills[0].to_string() == "Pu-239"
     assert xs_server.num_groups == 1
 
     # Create single-patch geometry (homogeneous circle)
@@ -93,7 +93,7 @@ def test_infinite_homogeneous_cylinder(device, dtype):
         refine(circle(rc), 10, 4),
         device=torch.device("cpu"),
         dtype=dtype,
-        fill=fill,
+        fill=fills[0],
     )
     assert c.is_finalized()
     assert c.is_rational()
@@ -206,7 +206,7 @@ def test_infinite_homogeneous_cylinder(device, dtype):
         [BSplineBasis(b.knotvector.contiguous(), b.degree) for b in c.basis],
         is_rational=True,
     )
-    new_patch.fill = fill
+    new_patch.fill = fills[0]
     new_patch.finalize()
 
     points = evaluate_boundary(new_patch, rc, dtype)

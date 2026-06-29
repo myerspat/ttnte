@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ttnte/linalg/format_type.hpp"
 #include "ttnte/linalg/tt_engine.hpp"
 #include "ttnte/utils/exception.hpp"
 #include "ttnte/utils/label.hpp"
@@ -76,7 +77,7 @@ private:
   /// @brief Generates an error context string for exception throwing.
   /// @param func_name The name of the function where the error occurred.
   /// @return Formatted string representing the function context.
-  [[nodiscard]] std::string error_context(const std::string& func_name) const
+  [[nodiscard]] static std::string error_context(const std::string& func_name)
   {
     return "ttnte::linalg::State::" + func_name;
   }
@@ -138,6 +139,27 @@ public:
   /// @param buffer A 1D CPU tensor produced by pack().
   /// @return A new State in the format and dtype encoded in the buffer.
   static State unpack(const torch::Tensor& buffer);
+
+  /// @brief Create a vector of zeros in a specific format.
+  /// @param fmt The desired format for the vector.
+  /// @param m_modes Vector of mode sizes.
+  /// @param device The device to put this on.
+  /// @param dtype The data type.
+  static State zeros(FormatType fmt,
+    const c10::SmallVector<int64_t, 6>& m_modes,
+    std::optional<torch::Device> device = std::nullopt,
+    std::optional<torch::ScalarType> dtype = std::nullopt,
+    std::optional<std::string> label = std::nullopt);
+
+  /// @brief Create a vector of ones in a specific format.
+  /// @param fmt The desired format for the vector.
+  /// @param m_modes Vector of mode sizes.
+  /// @param device The device to put this on.
+  /// @param dtype The data type.
+  static State ones(FormatType fmt, const c10::SmallVector<int64_t, 6>& m_modes,
+    std::optional<torch::Device> device = std::nullopt,
+    std::optional<torch::ScalarType> dtype = std::nullopt,
+    std::optional<std::string> label = std::nullopt);
 
   /// @brief In-place conversion of the state's tensor options.
   /// @param options Target torch::TensorOptions.
@@ -204,6 +226,37 @@ public:
   /// @return A new State with the specified dimension narrowed.
   State narrow(size_t dim, int64_t start, int64_t length = 1) const;
 
+  /// @brief Reverse the index ordering of one or more modes in-place.
+  /// `dims` follows the same layout convention as TTEngine::flip_().
+  /// @param dims        Axis indices in the chosen layout.
+  /// @param interleaved Whether dims follow the interleaved layout.
+  /// @return Reference to the modified State.
+  State& flip_(at::IntArrayRef dims, bool interleaved = false);
+
+  /// @brief Reverse the index ordering of one or more modes (out-of-place).
+  /// @param dims        Axis indices in the chosen layout.
+  /// @param interleaved Whether dims follow the interleaved layout.
+  /// @return A new State with the specified modes flipped.
+  State flip(at::IntArrayRef dims, bool interleaved = false) const;
+
+  /// @brief Permute the ordering of TT cores in-place.
+  /// @param dims     New order of core indices; dims[k] = source core at
+  /// position k.
+  /// @param eps      SVD truncation tolerance for each adjacent swap.
+  /// @param max_rank Maximum bond dimension after each swap.
+  /// @return Reference to the modified State.
+  State& permute_(at::IntArrayRef dims, double eps = 0.0,
+    int64_t max_rank = std::numeric_limits<int64_t>::max());
+
+  /// @brief Permute the ordering of TT cores (out-of-place).
+  /// @param dims     New order of core indices; dims[k] = source core at
+  /// position k.
+  /// @param eps      SVD truncation tolerance for each adjacent swap.
+  /// @param max_rank Maximum bond dimension after each swap.
+  /// @return A new State with cores in the requested order.
+  State permute(at::IntArrayRef dims, double eps = 0.0,
+    int64_t max_rank = std::numeric_limits<int64_t>::max()) const;
+
   /// @brief In-place rounding/truncation of the Tensor Train ranks.
   /// @param eps The truncation tolerance.
   /// @param max_rank The maximum allowed rank after rounding.
@@ -217,6 +270,18 @@ public:
   /// @return A new State with rounded ranks.
   State round(double eps = 1e-12,
     int64_t max_rank = std::numeric_limits<int64_t>::max()) const;
+
+  /// @brief Sum all elements of the state.
+  double sum() const
+  {
+    return std::visit([](const auto& v) { return v.sum(); }, get_variant());
+  }
+
+  /// @brief Frobenius norm of the state.
+  double norm() const
+  {
+    return std::visit([](const auto& v) { return v.norm(); }, get_variant());
+  }
 
   // =================================================================
   // Public operators
@@ -372,8 +437,17 @@ public:
       [](const auto& v) { return v.get_numel(); }, get_variant());
   }
 
+  /// @return The compression ratio.
+  double get_compression() const;
+
   /// @brief Check if the state is represented by a Tensor Train engine.
   bool is_tt() const { return std::holds_alternative<TTEngine>(get_variant()); }
+
+  /// @return The number of physical (non-trivial) dimensions.
+  /// For TT states: counts modes with size > 1 across all cores, which equals
+  /// K (the number of cores) since n-modes are always 1 for state TTs.
+  /// For dense states: the tensor's ndimension().
+  int64_t ndimension() const;
 
   /// @brief Retrieve the underlying TTEngine.
   /// @throws ttnte::utils::runtime_error If the state does not contain a

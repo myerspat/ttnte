@@ -47,7 +47,23 @@ void register_Operator(py::module_& m)
       py::call_guard<py::gil_scoped_release>())
     .def("round", &Operator::round, py::arg("eps") = 1e-12,
       py::arg("max_rank") = std::numeric_limits<int64_t>::max(),
-      py::call_guard<py::gil_scoped_release>());
+      py::call_guard<py::gil_scoped_release>())
+    .def("narrow_", &Operator::narrow_, py::arg("dim"), py::arg("start"),
+      py::arg("length") = 1, py::arg("interleaved") = false,
+      py::return_value_policy::reference_internal,
+      py::call_guard<py::gil_scoped_release>())
+    .def("narrow", &Operator::narrow, py::arg("dim"), py::arg("start"),
+      py::arg("length") = 1, py::arg("interleaved") = false,
+      py::call_guard<py::gil_scoped_release>())
+
+    .def("flip_", &Operator::flip_, py::arg("dims"),
+      py::arg("interleaved") = false,
+      py::return_value_policy::reference_internal,
+      py::call_guard<py::gil_scoped_release>())
+    .def("flip", &Operator::flip, py::arg("dims"),
+      py::arg("interleaved") = false, py::call_guard<py::gil_scoped_release>())
+
+    .def_property_readonly("ndimension", &Operator::ndimension);
 
   // =================================================================
   // Device & Dtype Transfers (to / to_ with GIL Released)

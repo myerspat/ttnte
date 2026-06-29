@@ -2,6 +2,8 @@
 #include "ttnte/linalg/matrix_ops.hpp"
 #include "ttnte/python/torchtt.hpp"
 #include "ttnte/utils/exception.hpp"
+#include <limits>
+#include <numeric>
 
 namespace ttnte::linalg::torchtt {
 #include "amen_solve.h"
@@ -35,6 +37,45 @@ std::pair<torch::Tensor, torch::Tensor> swap_cores(const torch::Tensor& core_a,
 } // namespace
 
 namespace ttnte::linalg {
+
+TTEngine& TTEngine::permute_(at::IntArrayRef dims, double eps, int64_t max_rank)
+{
+  const int64_t K = static_cast<int64_t>(cores_.size());
+  if (static_cast<int64_t>(dims.size()) != K) {
+    throw utils::runtime_error("ttnte::linalg::TTEngine::permute_",
+      "`dims` length must equal the number of TT cores");
+  }
+
+  // Bubble-sort the cores into the requested order using adjacent SVD-based
+  // swaps.  current[i] = original core index currently at position i.
+  std::vector<size_t> current(static_cast<size_t>(K));
+  std::iota(current.begin(), current.end(), 0);
+
+  const int mr = static_cast<int>(
+    std::min(max_rank, static_cast<int64_t>(std::numeric_limits<int>::max())));
+
+  for (int64_t tgt = 0; tgt < K; ++tgt) {
+    const size_t desired = static_cast<size_t>(dims[tgt]);
+    size_t cur = static_cast<size_t>(tgt);
+    while (current[cur] != desired)
+      ++cur;
+    while (static_cast<int64_t>(cur) > tgt) {
+      auto [l, r] = swap_cores(cores_[cur - 1], cores_[cur], eps, mr);
+      cores_[cur - 1] = std::move(l);
+      cores_[cur] = std::move(r);
+      std::swap(current[cur - 1], current[cur]);
+      --cur;
+    }
+  }
+  return *this;
+}
+
+TTEngine TTEngine::permute(
+  at::IntArrayRef dims, double eps, int64_t max_rank) const
+{
+  auto result = *this;
+  return result.permute_(dims, eps, max_rank);
+}
 
 TTEngine mm(const TTEngine& a, const TTEngine& b)
 {

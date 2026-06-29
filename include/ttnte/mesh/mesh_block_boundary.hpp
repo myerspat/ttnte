@@ -18,8 +18,6 @@ private:
   // Private data
   /// The point in physical space (1-D tensor).
   torch::Tensor point_;
-  /// The tolerance to apply for rounding.
-  double tol_;
 
 public:
   // =================================================================
@@ -27,8 +25,7 @@ public:
   PointKey(const torch::Tensor& point, const double& tol)
   {
     TORCH_CHECK(point.ndimension() == 1, "The point must be 1-dimensional");
-    point_ = point;
-    tol_ = tol;
+    point_ = torch::round(point / tol) * tol;
   }
 
   // =================================================================
@@ -36,7 +33,7 @@ public:
   bool operator==(const PointKey& other) const
   {
     TORCH_CHECK(point_.size(0) == other.point_.size(0));
-    return torch::allclose(point_, other.point_, tol_, tol_);
+    return torch::equal(point_, other.point_);
   }
 
   // =================================================================
@@ -75,10 +72,15 @@ struct BoundaryMapping {
 struct NeighborInfo {
   /// Global (same across MPI ranks) ID
   int64_t gid;
-  /// Index into the boundary vector for each MeshBlock
+  /// Index into the boundary vector for each MeshBlock (opaque face ID used
+  /// for MPI tag generation; do not decompose arithmetically)
   size_t fid;
   /// The rank that owns this MeshBlock
   int mpi_rank;
+  /// Physical dimension of the SOURCE's (neighbor's) face
+  size_t dim = 0;
+  /// Orientation of the SOURCE's (neighbor's) face
+  bool is_upper = false;
   /// Mapping that must be applied to any data passed from
   /// this neighbor
   BoundaryMapping mapping;
@@ -87,8 +89,9 @@ struct NeighborInfo {
   std::string to_string() const
   {
     std::stringstream ss;
-    ss << "BoundaryMapping(gid=" << gid << ", fid=" << fid
-       << ", mpi_rank=" << mpi_rank << ")";
+    ss << "NeighborInfo(gid=" << gid << ", fid=" << fid
+       << ", mpi_rank=" << mpi_rank << ", dim=" << dim
+       << ", is_upper=" << (is_upper ? "true" : "false") << ")";
     return ss.str();
   }
 };
@@ -131,6 +134,7 @@ public:
   {
     return connections_;
   }
+  c10::SmallVector<NeighborInfo, 2>& get_connections() { return connections_; }
 
   void set_type(const physics::BoundaryType& type) { type_ = type; }
 };
@@ -159,8 +163,9 @@ inline std::ostream& operator<<(std::ostream& os, const BoundaryMapping& bm)
 inline std::ostream& operator<<(std::ostream& os, const NeighborInfo& ninfo)
 {
   os << "NeighborInfo(\n  gid=" << ninfo.gid << ",\n  fid=" << ninfo.fid
-     << ",\n  mpi_rank=" << ninfo.mpi_rank << ",\n  mapping=" << ninfo.mapping
-     << "\n)";
+     << ",\n  mpi_rank=" << ninfo.mpi_rank << ",\n  dim=" << ninfo.dim
+     << ",\n  is_upper=" << (ninfo.is_upper ? "true" : "false")
+     << ",\n  mapping=" << ninfo.mapping << "\n)";
 
   return os;
 }

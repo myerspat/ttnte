@@ -3,33 +3,11 @@
 #include "ttnte/cad/bspline_basis.hpp"
 #include "ttnte/mesh/mesh_block.hpp"
 #include "ttnte/utils/label.hpp"
-#include "ttnte/utils/mpi_helpers.hpp"
 #include <optional>
 #include <string>
 #include <torch/extension.h>
 
 namespace ttnte::cad {
-
-// TODO: Methods to implement
-// [ ] Inverse spline evaluation
-// [ ] Basis function method (list of coordinates)
-// [ ] Quadrature basis function method
-// [ ] Gradient Basis function method (list of coordinates)
-// [ ] Quadrature gradient basis function method
-// [ ] Jacobian method (list of coordinates)
-// [ ] Jacobian method on quadrature (out source to torchTT for TT)
-// [ ] Normal evaluation (list of coordinates)
-// [ ] Quadrature normal evaluate
-// [ ] Initialize boundary method
-// [ ] Boundary orientation method
-// [ ] Load from hdf5 method
-// [ ] Save to hdf5 method
-// [ ] Knot insertion
-// [ ] Order elevation
-// [ ] A general refine method that uses knot insertion / order elevation
-// [ ] Split patch method
-// [ ] Functions related to solution fields (support both tensors and TTs)
-// [ ] Functions related to MPI communication
 
 class Patch : public mesh::MeshBlock<Patch> {
   friend class mesh::MeshBlock<Patch>;
@@ -285,7 +263,7 @@ public:
   int64_t get_numel_impl(size_t dim) const;
 
   /// @return Get the coordinates for this mesh (control points)
-  torch::Tensor get_coords_impl() const noexcept { return get_ctrlptsw(); }
+  torch::Tensor get_coords_impl() const noexcept { return get_ctrlpts(); }
   /// @return Get the number of degrees of freedom implementation
   int64_t get_num_dofs_impl() const;
 

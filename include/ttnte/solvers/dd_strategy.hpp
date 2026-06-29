@@ -1,20 +1,15 @@
 #pragma once
 
 #include "ttnte/linalg/linear_system.hpp"
+#include "ttnte/parallel/boundary_communicator.hpp"
+#include "ttnte/parallel/stream_pool.hpp"
 #include "ttnte/solvers/local_solver.hpp"
-#include "ttnte/solvers/memory_policy.hpp"
+#include "ttnte/solvers/solver_configs.hpp"
 #include "ttnte/task/task_graph.hpp"
 #include <memory>
+#include <unordered_map>
 
 namespace ttnte::solvers {
-
-#ifdef USE_CUDA
-inline constexpr bool DEFAULT_USE_GPU = true;
-inline constexpr MemoryPolicy DEFAULT_MEMORY_POLICY = MemoryPolicy::RESIDENT;
-#else
-inline constexpr bool DEFAULT_USE_GPU = false;
-inline constexpr MemoryPolicy DEFAULT_MEMORY_POLICY = MemoryPolicy::OUT_OF_CORE;
-#endif
 
 /// @brief Strategy class for the domain decomposition solver.
 class DDStrategy {
@@ -27,48 +22,62 @@ public:
 protected:
   // =================================================================
   // Protected data
-  /// Boolean for whether to use the GPU or not.
-  bool use_gpu_;
-  /// The memory policy for how the solver is to use GPU VRAM.
-  MemoryPolicy memory_policy_;
   /// A shared pointer to the local system solver.
   LocalSolver::Ptr local_solver_;
+  /// Solver configuration (convergence tolerances, rounding, etc.).
+  DDSolverConfig config_;
+  /// Dynamic low-rank tensor network configuration.
+  std::shared_ptr<linalg::TTConfig> tt_config_;
 
   // =================================================================
   // Protected constructors
-  DDStrategy(bool use_gpu = DEFAULT_USE_GPU,
-    MemoryPolicy memory_policy = DEFAULT_MEMORY_POLICY);
+  DDStrategy(DDSolverConfig config = {});
 
 public:
   virtual ~DDStrategy() = default;
 
   // =================================================================
   // Public methods
-  /// @brief Build the iteration dag for this strategy.
-  /// @param dag The task graph to be filled.
-  /// @param local_systems A vector of local systems for this MPI rank.
-  void build_iteration_dag(
-    task::TaskGraph& dag, const std::vector<SystemPtr>& local_systems) const;
-  /// @brief Build the iteration dag for this strategy with no GPU support.
-  /// @param dag The task graph to be filled.
-  /// @param local_systems A vector of local systems for this MPI rank.
-  virtual void build_cpu_iteration_dag(
-    task::TaskGraph& dag, const std::vector<SystemPtr>& local_systems) const;
-  /// @brief Build the iteration dag for this strategy with GPU support.
-  /// @param dag The task graph to be filled.
-  /// @param local_systems A vector of local systems for this MPI rank.
-  virtual void build_gpu_iteration_dag(
-    task::TaskGraph& dag, const std::vector<SystemPtr>& local_systems) const;
+  /// @brief Build the iteration DAG for this strategy (CPU path).
+  /// Called by DDSolver::build_iteration_dag when use_gpu() is false.
+  /// @param dag             Task graph to populate.
+  /// @param local_systems   Systems local to this MPI rank.
+  /// @param gid_to_local    GID → local_systems index map.
+  /// @param boundary_comms  Per-face MPI communicators.
+  /// @param boundary_cfg    Rounding config for boundary communication tasks.
+  virtual void build_cpu_iteration_dag(task::TaskGraph& dag,
+    const std::vector<SystemPtr>& local_systems,
+    const std::unordered_map<int64_t, size_t>& gid_to_local,
+    const parallel::BoundaryCommunicator& boundary_comms) const;
+
+  /// @brief Build the iteration DAG for this strategy (GPU path).
+  /// Called by DDSolver::build_iteration_dag when use_gpu() is true.
+  /// @param dag             Task graph to populate.
+  /// @param local_systems   Systems local to this MPI rank.
+  /// @param gid_to_local    GID → local_systems index map.
+  /// @param boundary_comms  Per-face MPI communicators.
+  /// @param stream_pool     GPU stream pool.
+  virtual void build_gpu_iteration_dag(task::TaskGraph& dag,
+    const std::vector<SystemPtr>& local_systems,
+    const std::unordered_map<int64_t, size_t>& gid_to_local,
+    const parallel::BoundaryCommunicator& boundary_comms,
+    const parallel::StreamPool::Ptr& stream_pool) const;
+
+  /// @brief Update the truncation tolerance for dynamic tolerance and to avoid
+  /// over-solving.
+  /// @param eps The new truncation tolerance.
+  void update_eps(double eps)
+  {
+    local_solver_->set_eps(eps);
+    tt_config_->eps = eps;
+  }
 
   // =================================================================
   // Public getters / setters
-  /// @return Whether to use GPUs or not.
-  bool use_gpu() const noexcept { return use_gpu_; }
-  /// @return Get the memory policy used by this strategy.
-  const MemoryPolicy& get_memory_policy() const noexcept
-  {
-    return memory_policy_;
-  }
+  /// @return The solver configuration (convergence tolerances, rounding, etc.).
+  const DDSolverConfig& get_config() const noexcept { return config_; }
+  /// @param config The new solver configuration.
+  void set_config(const DDSolverConfig& config) { config_ = config; }
 
   // TODO: Change this to use multiple different types of local solvers for
   // various patches depending on some heuristic such as the maximum solution
@@ -76,6 +85,11 @@ public:
   // particular part of the problem then we can just transform that to a dense
   // vector and use a different solver.
 
+  /// @return The current local linear solver.
+  const LocalSolver::Ptr& get_local_solver() const noexcept
+  {
+    return local_solver_;
+  }
   /// @param local_solver The new local solver for this strategy.
   void set_local_solver(const LocalSolver::Ptr& local_solver)
   {

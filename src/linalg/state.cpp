@@ -109,6 +109,20 @@ State& State::neg_()
   return *this;
 }
 
+int64_t State::ndimension() const
+{
+  return std::visit(
+    [](const auto& v) -> int64_t {
+      using T = std::decay_t<decltype(v)>;
+      if constexpr (std::is_same_v<T, TTEngine>) {
+        return v.ndimension() - v.size();
+      } else {
+        return v.ndimension();
+      }
+    },
+    get_variant());
+}
+
 State& State::narrow_(size_t dim, int64_t start, int64_t length)
 {
   std::visit([dim, start, length](auto& v) { v.narrow_(dim, start, length); },
@@ -121,6 +135,37 @@ State State::narrow(size_t dim, int64_t start, int64_t length) const
   return std::visit(
     [dim, start, length](
       const auto& v) -> State { return State(v.narrow(dim, start, length)); },
+    get_variant());
+}
+
+State& State::flip_(at::IntArrayRef dims, bool interleaved)
+{
+  std::visit([dims, interleaved](auto& v) { v.flip_(dims, interleaved); },
+    get_variant());
+  return *this;
+}
+
+State State::flip(at::IntArrayRef dims, bool interleaved) const
+{
+  return std::visit(
+    [dims, interleaved](
+      const auto& v) -> State { return State(v.flip(dims, interleaved)); },
+    get_variant());
+}
+
+State& State::permute_(at::IntArrayRef dims, double eps, int64_t max_rank)
+{
+  std::visit(
+    [dims, eps, max_rank](auto& v) { v.permute_(dims, eps, max_rank); },
+    get_variant());
+  return *this;
+}
+
+State State::permute(at::IntArrayRef dims, double eps, int64_t max_rank) const
+{
+  return std::visit(
+    [dims, eps, max_rank](
+      const auto& v) -> State { return State(v.permute(dims, eps, max_rank)); },
     get_variant());
 }
 
@@ -166,8 +211,7 @@ torch::Tensor State::pack(const torch::Tensor& buffer) const
 
 State State::unpack(const torch::Tensor& buffer)
 {
-  TORCH_CHECK(buffer.dim() == 1 && buffer.device().is_cpu(),
-    "State::unpack: buffer must be a 1D CPU tensor");
+  TORCH_CHECK(buffer.dim() == 1, "State::unpack: buffer must be a 1D tensor");
 
   const auto format_id = static_cast<FormatType>(buffer[0].item<int64_t>());
   switch (format_id) {
@@ -178,6 +222,43 @@ State State::unpack(const torch::Tensor& buffer)
       "Unknown format_id in buffer: " +
         std::to_string(static_cast<int>(format_id)));
   }
+}
+
+State State::zeros(FormatType fmt, const c10::SmallVector<int64_t, 6>& m_modes,
+  std::optional<torch::Device> device, std::optional<torch::ScalarType> dtype,
+  std::optional<std::string> label)
+{
+  switch (fmt) {
+  case linalg::FormatType::TENSOR_TRAIN:
+    return State(TTEngine::zeros(m_modes, device, dtype), label);
+  default:
+    throw utils::runtime_error(error_context("zeros"), "Format not supported");
+  }
+}
+
+State State::ones(FormatType fmt, const c10::SmallVector<int64_t, 6>& m_modes,
+  std::optional<torch::Device> device, std::optional<torch::ScalarType> dtype,
+  std::optional<std::string> label)
+{
+  switch (fmt) {
+  case linalg::FormatType::TENSOR_TRAIN:
+    return State(TTEngine::ones(m_modes, device, dtype), label);
+  default:
+    throw utils::runtime_error(error_context("ones"), "Format not supported");
+  }
+}
+
+double State::get_compression() const
+{
+  return std::visit(
+    [](const auto& v) {
+      using type = std::decay_t<decltype(v)>;
+      if constexpr (std::is_same_v<type, TTEngine>) {
+        return v.get_compression();
+      }
+      return 1.0;
+    },
+    get_variant());
 }
 
 } // namespace ttnte::linalg

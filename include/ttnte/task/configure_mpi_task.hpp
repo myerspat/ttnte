@@ -90,6 +90,7 @@ Task& configure_iallgather_task(Task& task, const BufferType* send_buffer,
       // Send the buffer if we haven't already
       request =
         comm.iallgather(send_buffer, send_count, recv_buffer, recv_count);
+      initiated = true;
       return TaskStatus::POLLING;
     }
 
@@ -175,11 +176,11 @@ Task& configure_dynamic_isend_task(Task& task, const torch::Tensor* send_tensor,
       packed_tensor = send_tensor->contiguous();
       int count = packed_tensor.numel();
 
-      // DISPATCH: This macro handles the switch/case for all Libtorch types
-      AT_DISPATCH_ALL_TYPES(packed_tensor.scalar_type(), "dynamic_isend", ([&] {
-        request = comm.isend(
-          packed_tensor.data_ptr<scalar_t>(), count, target_rank, tag);
-      }));
+      AT_DISPATCH_FLOATING_TYPES(
+        packed_tensor.scalar_type(), "dynamic_isend", ([&] {
+          request = comm.isend(
+            packed_tensor.data_ptr<scalar_t>(), count, target_rank, tag);
+        }));
 
       initiated = true;
       return TaskStatus::POLLING;
@@ -198,9 +199,13 @@ Task& configure_dynamic_isend_task(Task& task, const torch::Tensor* send_tensor,
 /// @param source_rank The MPI rank sending the information.
 /// @param tag The tag for the data.
 /// @param comm The communicator for access to MPI.
+/// @param target_device Device on which to allocate the receive buffer. Pass a
+/// CUDA device when CUDA-aware MPI is available to receive directly into GPU
+/// memory and avoid a host staging copy.
 template<typename TagType>
 Task& configure_dynamic_irecv_task(Task& task, torch::Tensor* recv_buffer,
-  int source_rank, TagType tag, const parallel::Communicator& comm)
+  int source_rank, TagType tag, const parallel::Communicator& comm,
+  torch::Device target_device = torch::kCPU)
 {
   task.set_target(DeviceTarget::NETWORK_ASYNC);
 
@@ -208,7 +213,7 @@ Task& configure_dynamic_irecv_task(Task& task, torch::Tensor* recv_buffer,
   const auto expected_type = recv_buffer->scalar_type();
 
   task.set_payload([recv_buffer, source_rank, tag, &comm, expected_type,
-                     request = parallel::Request(),
+                     target_device, request = parallel::Request(),
                      probe = parallel::ProbeResult {false, 0, 0},
                      initiated = false]() mutable -> TaskStatus {
     if (!initiated) {
@@ -220,10 +225,10 @@ Task& configure_dynamic_irecv_task(Task& task, torch::Tensor* recv_buffer,
         return TaskStatus::POLLING;
       }
 
-      AT_DISPATCH_ALL_TYPES(expected_type, "dynamic_irecv", [&] {
-        // Allocate tensor at runtime
-        *recv_buffer = torch::empty(
-          {static_cast<int64_t>(probe.count)}, torch::dtype<scalar_t>());
+      AT_DISPATCH_FLOATING_TYPES(expected_type, "dynamic_irecv", [&] {
+        // Allocate tensor at runtime on the target device
+        *recv_buffer = torch::empty({static_cast<int64_t>(probe.count)},
+          torch::dtype<scalar_t>().device(target_device));
 
         // Receive the data in the tensor memory
         request = comm.imrecv(recv_buffer->data_ptr<scalar_t>(), probe.count,

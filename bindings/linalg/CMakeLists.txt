@@ -1,6 +1,12 @@
 # # Relevant files from src
-set(LINALG_SRC_REL linear_system.cpp operator.cpp state.cpp tt_engine.cpp
-                   matrix_ops.cpp tt_ops.cpp)
+set(LINALG_SRC_REL
+    neighbor_coupling.cpp
+    linear_system.cpp
+    operator.cpp
+    state.cpp
+    tt_engine.cpp
+    matrix_ops.cpp
+    tt_ops.cpp)
 
 # Relevant files from bindings/linalg
 set(LINALG_BINDINGS_REL
@@ -9,6 +15,8 @@ set(LINALG_BINDINGS_REL
     operator.cpp
     state.cpp
     tt_engine.cpp
+    neighbor_coupling.cpp
+    source.cpp
     linear_system.cpp
     matrix_ops.cpp
     ops.cpp

@@ -79,3 +79,4 @@ jobs:
       run: |
         # Use mpirun to launch 2 processes for the parallel tests
         mpirun -n 2 pytest --with-mpi tests/unit/parallel
+        mpirun -n 2 pytest --with-mpi tests/regression/multi_patch/test_quarter_cylinder.py tests/regression/multi_patch/test_slab.py

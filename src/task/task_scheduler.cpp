@@ -1,4 +1,6 @@
 #include "ttnte/task/task_scheduler.hpp"
+#include <chrono>
+#include <torch/cuda.h>
 
 namespace ttnte::task {
 
@@ -41,7 +43,17 @@ void TaskScheduler::execute(TaskGraph& graph)
           task.execute();
           assert(task.get_status() == TaskStatus::COMPLETED);
 
-        } else { // All _ASYNC targets
+        } else if (target == DeviceTarget::NETWORK_ASYNC) {
+
+          // Execute MPI tasks inline on the main scheduler thread.
+          // MPI calls (MPI_Improbe, MPI_Imrecv, MPI_Test) are not thread-safe
+          // unless MPI_THREAD_MULTIPLE is available; running them here keeps
+          // all MPI on one thread and avoids data races in OpenMPI internals.
+          // The operations themselves are non-blocking, so the scheduler
+          // continues dispatching and polling other tasks between retries.
+          task.execute();
+
+        } else { // CPU_ASYNC, GPU_ASYNC
 
           // Hand off the initial dispatch to a background worker
           thread_pool_.push_task([&task]() {
@@ -75,7 +87,7 @@ void TaskScheduler::execute(TaskGraph& graph)
     // If a full pass of the DAG resulted in no dependencies met, no dispatches,
     // and no completed polls, yield the CPU time slice to the OS.
     if (!made_progress) {
-      std::this_thread::yield();
+      std::this_thread::sleep_for(std::chrono::microseconds(50));
     }
   }
 }

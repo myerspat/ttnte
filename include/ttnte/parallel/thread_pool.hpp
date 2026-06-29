@@ -2,6 +2,7 @@
 
 #include <condition_variable>
 #include <functional>
+#include <latch>
 #include <mutex>
 #include <queue>
 #include <thread>
@@ -27,6 +28,10 @@ private:
   /// Boolean to terminate the thread pool.
   bool stop_;
 
+  /// Counts down to zero once every worker thread has finished its one-time
+  /// startup work (CUDA device init, etc.).
+  std::latch init_latch_;
+
 public:
   // =================================================================
   // Public constructors
@@ -39,6 +44,9 @@ public:
 
   // =================================================================
   // Public methods
+  /// @brief Block until every worker thread has completed its init_fn.
+  void wait_for_init() { init_latch_.wait(); }
+
   /// @brief Push a new task to the queue.
   /// @param f The function that needs to be executed.
   template<class FuncType>

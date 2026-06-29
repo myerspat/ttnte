@@ -4,6 +4,7 @@
 #include <c10/util/SmallVector.h>
 #include <memory>
 #include <optional>
+#include <torch/extension.h>
 
 namespace ttnte::parallel {
 
@@ -19,6 +20,8 @@ private:
   // Private data
   /// Vector of available streams.
   c10::SmallVector<StreamHandle, 16> streams_;
+  /// GPU device for the streams.
+  torch::Device device_;
   /// Mutex of the class for thread safety.
   std::mutex mutex_;
 
@@ -45,6 +48,11 @@ public:
   /// @brief Return the stream to the stream pool.
   /// @param stream The returning stream.
   void release(const StreamHandle& stream);
+
+  // =================================================================
+  // Public getters
+  /// @return The device for these streams.
+  torch::Device get_device() const noexcept { return device_; }
 };
 
 } // namespace ttnte::parallel

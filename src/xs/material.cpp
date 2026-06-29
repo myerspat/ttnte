@@ -101,7 +101,7 @@ void Material::finalize()
 
 void Material::set_chi(torch::Tensor chi)
 {
-  if (chi.is_nonzero()) {
+  if (chi.any().item<bool>()) {
     check_finalize("set_chi");
     chi_ = std::move(chi);
     is_fissile_ = true;
@@ -124,7 +124,7 @@ void Material::set_kappa_fission(torch::Tensor kappa_fission)
 }
 void Material::set_fission(torch::Tensor fission)
 {
-  if (fission.is_nonzero()) {
+  if (fission.any().item<bool>()) {
     check_finalize("set_fission");
     fission_ = std::move(fission);
     is_fissile_ = true;
@@ -132,7 +132,7 @@ void Material::set_fission(torch::Tensor fission)
 }
 void Material::set_nu_fission(torch::Tensor nu_fission)
 {
-  if (nu_fission.is_nonzero()) {
+  if (nu_fission.any().item<bool>()) {
     check_finalize("set_nu_fission");
     nu_fission_ = std::move(nu_fission);
     is_fissile_ = true;

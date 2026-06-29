@@ -184,6 +184,43 @@ public:
   Operator round(double eps = 1e-12,
     int64_t max_rank = std::numeric_limits<int64_t>::max()) const;
 
+  /// @brief In-place restriction of one mode to a sub-range of length `length`.
+  /// @param dim  With interleaved=false: dim < K narrows the m-mode of core
+  /// dim;
+  ///             dim >= K narrows the n-mode of core (dim-K).
+  ///             With interleaved=true: even dim narrows m-mode, odd narrows
+  ///             n-mode. Negative start values are resolved modulo the mode
+  ///             size.
+  /// @param start  Start index (negative counts from end).
+  /// @param length  Length of the slice (default 1).
+  /// @param interleaved  Dimension convention (default false = uninterleaved).
+  /// @return Reference to the modified Operator.
+  Operator& narrow_(
+    size_t dim, int64_t start, int64_t length = 1, bool interleaved = false);
+
+  /// @brief Out-of-place version of narrow_.
+  /// @param dim  See narrow_ documentation.
+  /// @param start  Start index (negative counts from end).
+  /// @param length  Length of the slice (default 1).
+  /// @param interleaved  Dimension convention (default false = uninterleaved).
+  /// @return A new Operator with the mode narrowed.
+  Operator narrow(size_t dim, int64_t start, int64_t length = 1,
+    bool interleaved = false) const;
+
+  /// @brief Reverse the index ordering of one or more modes in-place.
+  /// Follows the same dim/interleaved convention as narrow_().
+  /// Multiple dims mapping to the same core are grouped into one flip call.
+  /// @param dims        Axis indices in the chosen layout.
+  /// @param interleaved Whether dims follow the interleaved layout.
+  /// @return Reference to the modified Operator.
+  Operator& flip_(at::IntArrayRef dims, bool interleaved = false);
+
+  /// @brief Out-of-place version of flip_().
+  /// @param dims        Axis indices in the chosen layout.
+  /// @param interleaved Whether dims follow the interleaved layout.
+  /// @return A new Operator with the specified modes flipped.
+  Operator flip(at::IntArrayRef dims, bool interleaved = false) const;
+
   // =================================================================
   // Public operators
 
@@ -342,6 +379,10 @@ public:
 
   /// @brief Check if the operator is represented by a Tensor Train engine.
   bool is_tt() const { return std::holds_alternative<TTEngine>(get_variant()); }
+  /// @return The number of logical dimensions: m-modes + n-modes.
+  /// For TT operators: 2 * K (both m and n modes are physical).
+  /// For dense operators: the tensor's ndimension().
+  int64_t ndimension() const;
 
   /// @brief Retrieve the underlying TTEngine.
   /// @throws ttnte::utils::runtime_error If the operator does not contain a

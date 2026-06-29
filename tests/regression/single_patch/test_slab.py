@@ -40,8 +40,8 @@ def test_slab(device, dtype):
     torch.autograd.set_grad_enabled(False)
 
     # Get XS info
-    fill, xs_server = pu239(num_groups=1, device=torch.device("cpu"), dtype=dtype)
-    assert fill.to_string() == "Pu-239"
+    fills, xs_server = pu239(num_groups=1, device=torch.device("cpu"), dtype=dtype)
+    assert fills[0].to_string() == "Pu-239"
     assert xs_server.num_groups == 1
 
     # Create single-patch geometry (homogeneous circle)
@@ -50,7 +50,7 @@ def test_slab(device, dtype):
         refine(line((-rc, 0), (rc, 0)), 10, 3),
         device=torch.device("cpu"),
         dtype=dtype,
-        fill=fill,
+        fill=fills[0],
     )
     assert c.is_finalized()
     assert not c.is_rational()
@@ -74,10 +74,6 @@ def test_slab(device, dtype):
     # Create 1-D angular quadrature
     qset = QuadratureSet1D.gauss_legendre(64)
     qset.to_(torch.device("cpu"), dtype)
-
-    # TODO: Replace the below code with the full solver methods once
-    # that is fully implemented. For now this will test the assembly
-    # for the single patch on a test power iteration method.
 
     # Create assembly backend
     config = DGTransportAssemblerConfig()
@@ -127,8 +123,8 @@ def test_slab(device, dtype):
     F = F.as_tt()
 
     # Send the TT-operators to GPU if needed
-    A.to_(torch.device(device, 2))
-    F.to_(torch.device(device, 2))
+    A.to_(torch.device(device))
+    F.to_(torch.device(device))
 
     # Run solver
     k, psi = power(A, F)

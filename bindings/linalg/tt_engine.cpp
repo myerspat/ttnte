@@ -234,6 +234,14 @@ void register_TTEngine(py::module_& m)
       py::arg("interleaved") = false,
       py::call_guard<py::gil_scoped_release>())
 
+    .def("flip_", &TTEngine::flip_,
+      py::arg("dims"), py::arg("interleaved") = false,
+      py::return_value_policy::reference_internal,
+      py::call_guard<py::gil_scoped_release>())
+    .def("flip", &TTEngine::flip,
+      py::arg("dims"), py::arg("interleaved") = false,
+      py::call_guard<py::gil_scoped_release>())
+
     .def("neg_", &TTEngine::neg_, py::return_value_policy::reference_internal,
       py::call_guard<py::gil_scoped_release>())
 
@@ -473,6 +481,7 @@ void register_TTEngine(py::module_& m)
     // =================================================================
     // Public getters / setters
     .def_property_readonly("size", &TTEngine::size)
+    .def_property_readonly("ndimension", &TTEngine::ndimension)
     .def_property_readonly("cores",
       [](const TTEngine& self) {
     const auto& cores = self.get_cores();

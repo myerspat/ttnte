@@ -87,5 +87,7 @@ void register_MeshBlock(py::class_<DerivedType, Options...>& py_class)
     .def_property_readonly(
       "device", [](const DerivedType& self) { return self.get_device(); })
     .def_property_readonly(
-      "dtype", [](const DerivedType& self) { return self.get_dtype(); });
+      "dtype", [](const DerivedType& self) { return self.get_dtype(); })
+    .def_property_readonly(
+      "gid", [](const DerivedType& self) { return self.get_gid(); });
 }

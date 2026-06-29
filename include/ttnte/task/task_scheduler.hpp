@@ -30,6 +30,8 @@ public:
   // Public constructor
   /// @brief Constructor for the scheduler.
   /// @param num_threads The number of threads for the thread pool.
+  /// @param init_fn Optional function run once on each worker thread before it
+  /// enters its work loop (forwarded to ThreadPool).
   /// @param label The label of the scheduler.
   TaskScheduler(
     size_t num_threads = 4, std::optional<std::string> label = std::nullopt)
@@ -40,6 +42,9 @@ public:
 
   // =================================================================
   // Public methods
+  /// @brief Block until every worker thread has completed its init_fn.
+  void wait_for_init() { thread_pool_.wait_for_init(); }
+
   /// @brief Execute a task graph.
   /// @param The TaskGraph to execute.
   void execute(TaskGraph& graph);

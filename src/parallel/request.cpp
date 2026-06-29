@@ -5,10 +5,13 @@ namespace ttnte::parallel {
 
 void Request::wait()
 {
+  if (f_req_ == 0)
+    return;
   MPI_Request c_req = MPI_Request_f2c(f_req_);
+  if (c_req == MPI_REQUEST_NULL)
+    return;
   MPI_Wait(&c_req, MPI_STATUS_IGNORE);
-  f_req_ = MPI_Request_c2f(
-    c_req); // MPI_Wait sets the request to NULL, so we update our int
+  f_req_ = MPI_Request_c2f(c_req);
 }
 
 void Request::wait_all(std::vector<Request>& requests)
@@ -33,7 +36,11 @@ void Request::wait_all(std::vector<Request>& requests)
 
 bool Request::test()
 {
+  if (f_req_ == 0)
+    return true;
   MPI_Request c_req = MPI_Request_f2c(f_req_);
+  if (c_req == MPI_REQUEST_NULL)
+    return true;
   int flag = 0;
 
   // MPI_Test sets flag to true (non-zero) if the operation has completed

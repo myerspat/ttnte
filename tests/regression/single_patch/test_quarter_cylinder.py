@@ -70,8 +70,8 @@ def test_infinite_homogeneous_cylinder(device, dtype):
     torch.autograd.set_grad_enabled(False)
 
     # Get XS info
-    fill, xs_server = pu239(num_groups=1, device=torch.device("cpu"), dtype=dtype)
-    assert fill.to_string() == "Pu-239"
+    fills, xs_server = pu239(num_groups=1, device=torch.device("cpu"), dtype=dtype)
+    assert fills[0].to_string() == "Pu-239"
     assert xs_server.num_groups == 1
 
     # Create single-patch geometry (homogeneous circle)
@@ -84,7 +84,7 @@ def test_infinite_homogeneous_cylinder(device, dtype):
         refine(coons([[l1, c0], [l0, c1]]), [10, 10], 3),
         device=torch.device("cpu"),
         dtype=dtype,
-        fill=fill,
+        fill=fills[0],
     )
     assert c.is_finalized()
     assert c.is_rational()
@@ -115,7 +115,7 @@ def test_infinite_homogeneous_cylinder(device, dtype):
     mesh.finalize()
 
     # Create angular quadrature
-    qset = ProductQuadrature.gauss_legendre_chebyshev(4, 4, c.ndim)
+    qset = ProductQuadrature.gauss_legendre_chebyshev(4, 8, c.ndim)
     qset.to_(torch.device("cpu"), dtype)
 
     # Create assembly backend
@@ -149,7 +149,7 @@ def test_infinite_homogeneous_cylinder(device, dtype):
         assert en.device == torch.device("cpu")
         assert en.dtype == dtype
         assert en[0].shape[:-1] == (1, 4, 4)
-        assert en[1].shape[1:-1] == (16, 16)
+        assert en[1].shape[1:-1] == (32, 32)
         assert en[2].shape[1:-1] == (
             c.get_numel(0) + c.degrees[0],
             c.get_numel(0) + c.degrees[0],
@@ -208,7 +208,7 @@ def test_infinite_homogeneous_cylinder(device, dtype):
         [BSplineBasis(b.knotvector, b.degree) for b in c.basis],
         is_rational=True,
     )
-    new_patch.fill = fill
+    new_patch.fill = fills[0]
     new_patch.finalize()
 
     points = evaluate_boundary(new_patch, rc, dtype)

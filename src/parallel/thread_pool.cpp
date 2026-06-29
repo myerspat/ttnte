@@ -1,14 +1,42 @@
 #include "ttnte/parallel/thread_pool.hpp"
 
+#ifdef USE_CUDA
+#include "ttnte/parallel/parallel_context.hpp"
+#include <c10/cuda/CUDAFunctions.h>
+#include <torch/cuda.h>
+
+namespace {
+void init_cuda(torch::DeviceIndex device_idx)
+{
+  c10::cuda::set_device(device_idx);
+}
+} // namespace
+
+#else
+
+namespace {
+void init_cuda(torch::DeviceIndex device_idx) {}
+} // namespace
+
+#endif
+
 namespace ttnte::parallel {
 
 // =================================================================
 // Private constructors
-ThreadPool::ThreadPool(size_t num_threads) : stop_(false)
+ThreadPool::ThreadPool(size_t num_threads)
+  : stop_(false), init_latch_(num_threads)
 {
+  auto device_idx = parallel::ParallelContext::instance().device().index();
+
   {
     for (size_t i = 0; i < num_threads; ++i) {
-      workers_.emplace_back([this] {
+      workers_.emplace_back([this, device_idx] {
+        if (torch::cuda::is_available()) {
+          init_cuda(device_idx);
+        }
+        init_latch_.count_down();
+
         while (true) {
           std::function<void()> task;
 

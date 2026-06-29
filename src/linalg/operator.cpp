@@ -140,4 +140,45 @@ Operator Operator::round(double eps, int64_t max_rank) const
     get_variant());
 }
 
+int64_t Operator::ndimension() const
+{
+  return std::visit(
+    [](const auto& v) -> int64_t { return v.ndimension(); }, get_variant());
+}
+
+Operator& Operator::narrow_(
+  size_t dim, int64_t start, int64_t length, bool interleaved)
+{
+  std::visit([dim, start, length, interleaved](
+               auto& v) { v.narrow_(dim, start, length, interleaved); },
+    get_variant());
+  return *this;
+}
+
+Operator Operator::narrow(
+  size_t dim, int64_t start, int64_t length, bool interleaved) const
+{
+  return std::visit(
+    [dim, start, length, interleaved](const auto& v) -> Operator {
+      return Operator(v.narrow(dim, start, length, interleaved));
+    },
+    get_variant());
+}
+
+Operator& Operator::flip_(at::IntArrayRef dims, bool interleaved)
+{
+  std::visit([dims, interleaved](auto& v) { v.flip_(dims, interleaved); },
+    get_variant());
+  return *this;
+}
+
+Operator Operator::flip(at::IntArrayRef dims, bool interleaved) const
+{
+  return std::visit(
+    [dims, interleaved](const auto& v) -> Operator {
+      return Operator(v.flip(dims, interleaved));
+    },
+    get_variant());
+}
+
 } // namespace ttnte::linalg

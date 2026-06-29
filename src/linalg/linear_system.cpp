@@ -1,77 +1,74 @@
 #include "ttnte/linalg/linear_system.hpp"
 #include "ttnte/utils/exception.hpp"
 #include <c10/core/DefaultDtype.h>
-#include <numeric>
 #include <torch/cuda.h>
 
 namespace ttnte::linalg {
 
 // =================================================================
 // Protected constructors
-LinearSystem::LinearSystem(Operator interior_op, State state, State source,
-  std::optional<std::string> label)
-  : interior_op_(std::move(interior_op)), state_(std::move(state)),
-    source_(std::move(source)), device_(interior_op_.get_device()),
+LinearSystem::LinearSystem(Operator interior_op,
+  c10::SmallVector<NeighborCoupling, 6> couplings, State state,
+  Source::Ptr source, std::optional<std::string> label)
+  : interior_op_(std::move(interior_op)), couplings_(std::move(couplings)),
+    state_(std::move(state)), source_(std::move(source)),
+    device_(interior_op_.get_device()),
     label_(label.has_value() ? Label::from_string(label.value())
                              : Label::create_internal())
 {
   TORCH_CHECK(interior_op_.defined(), "The operators must be defined pointers");
 
-  // Get base configuration
   const auto dtype = interior_op_.get_dtype();
   auto options = torch::TensorOptions().dtype(dtype).device(device_);
-
   if (device_.is_cpu() && torch::cuda::is_available()) {
     options = options.pinned_memory(true);
   }
 
-  // Get the size needed for the buffer, only that given to the constructor is
-  // put into the buffer
-  std::array<int64_t, 3> sizes = {interior_op_.get_numel(), 0, 0};
+  // Compute flat buffer size: interior_op + boundary_ops + [state] + [source]
+  int64_t total = interior_op_.get_numel();
+  for (const auto& c : couplings_) {
+    total += c.boundary_op.get_numel();
+  }
   if (state_.defined()) {
     state_is_static_ = true;
-    sizes[1] = state_.get_numel();
-
+    total += state_.get_numel();
     if (state_.get_device() != device_ || state_.get_dtype() != dtype) {
       throw utils::runtime_error(*this, error_context("LinearSystem"),
-        "Operators, the state vector (if given), and the source vector (if\n"
-        "given) must be on the same device with the same data type");
+        "State must share device and dtype with the interior operator");
     }
   }
-  if (source_.defined()) {
-    source_is_static_ = true;
-    sizes[2] = source_.get_numel();
-
-    if (source_.get_device() != device_ || source_.get_dtype() != dtype) {
+  if (source_ && source_->buffer_size() > 0) {
+    total += source_->buffer_size();
+    if (source_->get_device() != device_ || source_->get_dtype() != dtype) {
       throw utils::runtime_error(*this, error_context("LinearSystem"),
-        "Operators, the state vector (if given), and the source vector (if\n"
-        "given) must be on the same device with the same data type");
+        "Source must share device and dtype with the interior operator");
     }
   }
 
-  // Create the buffer and fill it
-  torch::Tensor buffer =
-    torch::empty({std::accumulate(sizes.cbegin(), sizes.cend(), 0)}, options);
-
+  // Allocate contiguous pinned buffer and pack all static data into it
+  torch::Tensor buffer = torch::empty({total}, options);
   int64_t offset = 0;
-  torch::Tensor subbuffer = buffer.narrow(0, offset, sizes[0]);
-  interior_op_.to_buffer(subbuffer);
-  interior_op_.from_buffer(std::move(subbuffer));
-  offset += sizes[0];
-  if (state_.defined()) {
-    subbuffer = buffer.narrow(0, offset, sizes[1]);
-    state_.to_buffer(subbuffer);
-    state_.from_buffer(std::move(subbuffer));
-    offset += sizes[1];
-  }
-  if (source_.defined()) {
-    subbuffer = buffer.narrow(0, offset, sizes[2]);
-    source_.to_buffer(subbuffer);
-    source_.from_buffer(std::move(subbuffer));
-    offset += sizes[2];
+  auto pack = [&](auto& obj) {
+    int64_t len = obj.get_numel();
+    torch::Tensor sub = buffer.narrow(0, offset, len);
+    obj.to_buffer(sub);
+    obj.from_buffer(std::move(sub));
+    offset += len;
+  };
+
+  pack(interior_op_);
+  for (auto& c : couplings_)
+    pack(c.boundary_op);
+  if (state_.defined())
+    pack(state_);
+  if (source_ && source_->buffer_size() > 0) {
+    const int64_t len = source_->buffer_size();
+    torch::Tensor sub = buffer.narrow(0, offset, len);
+    source_->to_buffer(sub);
+    source_->from_buffer(sub);
+    offset += len;
   }
 
-  // Set the buffer
   if (device_.is_cpu()) {
     host_buffer_ = std::move(buffer);
   } else if (device_.is_cuda()) {
@@ -103,31 +100,48 @@ void LinearSystem::transfer_buffer(
     buffer = device_buffer_;
 
   } else {
-    if (!host_buffer_.defined()) {
-      host_buffer_ =
-        device_buffer_.to(options.pinned_memory(true), non_blocking, copy);
+    const auto pinned = [&](torch::TensorOptions o) {
+      return torch::cuda::is_available() ? o.pinned_memory(true) : o;
+    };
+
+    if (!device_buffer_.defined()) {
+      // CPU-only path: no GPU copy exists, apply dtype cast in place.
+      host_buffer_ = host_buffer_.to(pinned(options), non_blocking, copy);
+
+    } else if (!host_buffer_.defined()) {
+      // First d2h from a GPU-constructed system.
+      host_buffer_ = device_buffer_.to(pinned(options), non_blocking, copy);
+      device_buffer_ = torch::Tensor();
+
     } else {
-      host_buffer_ =
-        host_buffer_.to(options.pinned_memory(true), non_blocking, copy);
+      // Subsequent d2h: buffer data (operators) is read-only so host_buffer_
+      // is always in sync with device_buffer_. Only reallocate when dtype
+      // changes; otherwise just free the GPU allocation.
+      if (options.has_dtype() && options.dtype() != host_buffer_.dtype()) {
+        host_buffer_ = device_buffer_.to(pinned(options), non_blocking, copy);
+      }
+      device_buffer_ = torch::Tensor();
     }
     buffer = host_buffer_;
   }
 
   int64_t offset = 0;
-  int64_t length = interior_op_.get_numel();
-  interior_op_.from_buffer(buffer.narrow(0, offset, length));
-  offset += length;
+  auto unpack = [&](auto& obj) {
+    int64_t len = obj.get_numel();
+    obj.from_buffer(buffer.narrow(0, offset, len));
+    offset += len;
+  };
 
-  if (state_is_static_) {
-    length = state_.get_numel();
-    state_.from_buffer(buffer.narrow(0, offset, length));
-    offset += length;
+  unpack(interior_op_);
+  for (auto& c : couplings_) {
+    unpack(c.boundary_op);
   }
-
-  if (source_is_static_) {
-    length = source_.get_numel();
-    source_.from_buffer(buffer.narrow(0, offset, length));
-    offset += length;
+  if (state_is_static_)
+    unpack(state_);
+  if (source_ && source_->buffer_size() > 0) {
+    const int64_t len = source_->buffer_size();
+    source_->from_buffer(buffer.narrow(0, offset, len));
+    offset += len;
   }
 }
 
@@ -154,12 +168,19 @@ void LinearSystem::transfer_buffer(const torch::Device& device,
 void LinearSystem::transfer_nonbuffer(
   const torch::TensorOptions& options, bool non_blocking, bool copy)
 {
-  // Transfer non-static members
   if (state_.defined() && !state_is_static_) {
     state_.to_(options, non_blocking, copy);
   }
-  if (source_.defined() && !source_is_static_) {
-    source_.to_(options, non_blocking, copy);
+  if (source_ && source_->is_eigenvalue()) {
+    source_->transfer_nonbuffer(options, non_blocking, copy);
+  }
+  for (auto& c : couplings_) {
+    if (c.send_buffer.defined()) {
+      c.send_buffer.to_(options, non_blocking, copy);
+    }
+    if (c.recv_buffer.defined()) {
+      c.recv_buffer.to_(options, non_blocking, copy);
+    }
   }
 }
 
@@ -228,17 +249,12 @@ void LinearSystem::set_state(State state)
       *this, error_context("set_state"), "This state vector was marked static");
   }
 
-  state_ = std::move(state);
-}
-
-void LinearSystem::set_source(State source)
-{
-  if (source_is_static_) {
-    throw utils::runtime_error(
-      *this, error_context("set_state"), "This state vector was marked static");
+  // Compute the error between the two
+  if (state_.defined() && state.defined()) {
+    error_ = (state - state_).norm() / state_.norm();
   }
 
-  source_ = std::move(source);
+  state_ = std::move(state);
 }
 
 } // namespace ttnte::linalg

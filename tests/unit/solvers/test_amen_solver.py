@@ -2,7 +2,7 @@ import pytest
 import torch
 import torchtt as tntt
 
-from ttnte.linalg import State, Operator, LinearSystem, TTEngine
+from ttnte.linalg import State, Operator, LinearSystem, TTEngine, Source
 from ttnte.solvers import AMEnSolver
 
 test_params = [
@@ -34,7 +34,7 @@ def test_amen_solver(device, dtype):
     A = Operator(TTEngine(A.cores))
     x0 = State(TTEngine(x0.cores))
     b = State(TTEngine(b.cores))
-    ls = LinearSystem(A, source=b)
+    ls = LinearSystem(A, source=Source(b))
     ls.state = x0
 
     # Run AMEnSolver

@@ -95,8 +95,8 @@ def test_homogeneous_sphere(device, dtype):
     torch.autograd.set_grad_enabled(False)
 
     # Get XS info
-    fill, xs_server = pu239(num_groups=1, device=torch.device("cpu"), dtype=dtype)
-    assert fill.to_string() == "Pu-239"
+    fills, xs_server = pu239(num_groups=1, device=torch.device("cpu"), dtype=dtype)
+    assert fills[0].to_string() == "Pu-239"
     assert xs_server.num_groups == 1
 
     # Create single-patch geometry (homogeneous circle)
@@ -105,7 +105,7 @@ def test_homogeneous_sphere(device, dtype):
         refine(create_solid_octant_sphere(rc), 4, 2),
         device=torch.device("cpu"),
         dtype=dtype,
-        fill=fill,
+        fill=fills[0],
     )
 
     mesh = IGAMesh(mpi_context)
@@ -230,8 +230,8 @@ def test_homogeneous_sphere(device, dtype):
     A.round_(config.rounding.eps, config.rounding.max_rank)
 
     # Send the TT-operators to GPU if needed
-    A.to_(torch.device(device, 2))
-    F.to_(torch.device(device, 2))
+    A.to_(torch.device(device))
+    F.to_(torch.device(device))
 
     k, psi = power(A, F)
     psi.round_(config.rounding.eps, config.rounding.max_rank)

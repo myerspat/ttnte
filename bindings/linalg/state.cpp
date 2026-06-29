@@ -58,6 +58,15 @@ void register_State(py::module_& m)
     .def("narrow", &State::narrow, py::arg("dim"), py::arg("start"),
       py::arg("length") = 1, py::call_guard<py::gil_scoped_release>())
 
+    .def("flip_", &State::flip_, py::arg("dims"),
+      py::arg("interleaved") = false,
+      py::return_value_policy::reference_internal,
+      py::call_guard<py::gil_scoped_release>())
+    .def("flip", &State::flip, py::arg("dims"), py::arg("interleaved") = false,
+      py::call_guard<py::gil_scoped_release>())
+
+    .def_property_readonly("ndimension", &State::ndimension)
+
     .def("neg_", &State::neg_, py::call_guard<py::gil_scoped_release>())
 
     .def("round_", &State::round_, py::arg("eps") = 1e-12,

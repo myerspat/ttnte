@@ -7,6 +7,8 @@ namespace py = pybind11;
 void register_assembly_configs(py::module_& m)
 {
   using namespace ttnte::physics;
+  using ttnte::linalg::CrossConfig;
+  using ttnte::linalg::TTConfig;
 
   // =================================================================
   // TTConfig
@@ -17,7 +19,7 @@ void register_assembly_configs(py::module_& m)
     .def_readwrite("max_rank", &TTConfig::max_rank);
 
   // =================================================================
-  // CrossConfig (Inherits from TTConfig)
+  // CrossConfig (inherits from TTConfig)
   py::class_<CrossConfig, TTConfig>(m, "CrossConfig")
     .def(py::init<double, int, int, int, bool>(), py::arg("eps") = 1e-12,
       py::arg("max_rank") = 500, py::arg("nswp") = 50, py::arg("kick") = 4,
@@ -50,14 +52,21 @@ void register_assembly_configs(py::module_& m)
     .def_readwrite("cross", &DGAssemblerConfig::cross);
 
   // =================================================================
-  // DGTransportAssemblerConfig (Inherits from DGAssemblerConfig)
+  // DGTransportAssemblerConfig (inherits from DGAssemblerConfig)
   py::class_<DGTransportAssemblerConfig, DGAssemblerConfig>(
     m, "DGTransportAssemblerConfig")
     .def(py::init<>())
+    .def(py::init([](const DGAssemblerConfig& base) {
+      DGTransportAssemblerConfig cfg;
+      static_cast<DGAssemblerConfig&>(cfg) = base;
+      return cfg;
+    }),
+      py::arg("base"))
     .def_readwrite(
       "interior_loss_fmt", &DGTransportAssemblerConfig::interior_loss_fmt)
     .def_readwrite("scatter_fmt", &DGTransportAssemblerConfig::scatter_fmt)
-    .def_readwrite("source_fmt", &DGTransportAssemblerConfig::source_fmt)
+    .def_readwrite("fission_fmt", &DGTransportAssemblerConfig::fission_fmt)
     .def_readwrite("outflow_fmt", &DGTransportAssemblerConfig::outflow_fmt)
-    .def_readwrite("inflow_fmt", &DGTransportAssemblerConfig::inflow_fmt);
+    .def_readwrite("inflow_fmt", &DGTransportAssemblerConfig::inflow_fmt)
+    .def_readwrite("source_fmt", &DGTransportAssemblerConfig::source_fmt);
 }

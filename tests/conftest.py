@@ -21,3 +21,7 @@ def mpi_init():
         multiprocessing.cpu_count() // mpi_context.world_size, 16
     )
     torch.set_num_threads(num_threads_per_rank)
+
+    # Initialize CUDA if needed
+    if torch.cuda.is_available():
+        _ = torch.linalg.qr(torch.zeros(2, 2, device="cuda"))

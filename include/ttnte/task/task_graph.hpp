@@ -44,7 +44,7 @@ public:
   /// @brief Create a new task in the DAG.
   /// @param target Target device for the task to execute on.
   /// @param label Label of the task.
-  Task* create_task(std::optional<DeviceTarget> target,
+  Task* create_task(std::optional<DeviceTarget> target = std::nullopt,
     std::optional<std::string> label = std::nullopt);
   /// @brief Add a dependency to a task.
   /// @param dependent The task to add the dependency to.
@@ -52,6 +52,14 @@ public:
   void add_dependency(Task* dependent, Task* dependency);
   /// @brief Clear the task graph.
   void clear();
+  /// @brief Reset all tasks to WAITING so the graph can be re-executed without
+  /// rebuilding.
+  void reset()
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    for (auto& task : tasks_)
+      task.reset();
+  }
 
   // =================================================================
   // Public getters / setters

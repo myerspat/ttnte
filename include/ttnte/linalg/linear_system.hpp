@@ -1,6 +1,8 @@
 #pragma once
 
+#include "ttnte/linalg/neighbor_coupling.hpp"
 #include "ttnte/linalg/operator.hpp"
+#include "ttnte/linalg/source.hpp"
 #include "ttnte/linalg/state.hpp"
 #include <c10/util/SmallVector.h>
 #include <memory>
@@ -24,20 +26,20 @@ protected:
   // Protected data
   /// Label of the system.
   Label label_;
+  /// Global ID of the mesh block this system belongs to. -1 = unset.
+  int64_t gid_ = -1;
 
   /// Interior operator.
   Operator interior_op_;
   /// State vector.
   State state_;
-  /// Source vector.
-  State source_;
-  /// Whether the state vector is static.
+  /// Source object (null if no source has been set).
+  Source::Ptr source_;
+  /// Whether the state vector is static (packed into the flat buffer).
   bool state_is_static_ = false;
-  /// Whether the source is static.
-  bool source_is_static_ = false;
 
-  // TODO: Once we start looking into the boundary and coupling adjacent patches
-  // we will need to include the operators here somehow.
+  /// Couplings to neighboring patches at INTERNAL boundary faces.
+  c10::SmallVector<NeighborCoupling, 6> couplings_;
 
   /// Buffer for the metadata, linear systems, and source.
   torch::Tensor host_buffer_;
@@ -47,10 +49,15 @@ protected:
   /// The current device of the linear system.
   torch::Device device_;
 
+  /// Error between the original state and that computed after.
+  double error_ = std::numeric_limits<double>::max();
+
   // =================================================================
   // Protected constructor
-  LinearSystem(Operator interior_op, State state = State(),
-    State source = State(), std::optional<std::string> label = std::nullopt);
+  LinearSystem(Operator interior_op,
+    c10::SmallVector<NeighborCoupling, 6> couplings = {}, State state = State(),
+    Source::Ptr source = nullptr,
+    std::optional<std::string> label = std::nullopt);
 
   // =================================================================
   // Protected methods
@@ -152,17 +159,50 @@ public:
   // Public getters / setters
   /// @return The label of the linear system.
   const Label& get_label() const noexcept { return label_; }
+  /// @return The global mesh-block ID (-1 if unset).
+  int64_t get_gid() const noexcept { return gid_; }
+  /// @param gid The global mesh-block ID for this system.
+  void set_gid(int64_t gid) noexcept { gid_ = gid; }
+  /// @return The couplings to neighboring patches at INTERNAL faces.
+  const c10::SmallVector<NeighborCoupling, 6>& get_couplings() const noexcept
+  {
+    return couplings_;
+  }
+  /// @return The couplings to neighboring patches at INTERNAL faces.
+  c10::SmallVector<NeighborCoupling, 6>& get_couplings() noexcept
+  {
+    return couplings_;
+  }
   /// @return The interior operator.
   const Operator& get_interior_op() const noexcept { return interior_op_; };
   /// @return The state vector.
   const State& get_state() const noexcept { return state_; }
-  /// @return The source vector.
-  const State& get_source() const noexcept { return source_; }
+  /// @return The source object (null if no source was provided at
+  /// construction).
+  const Source::Ptr& get_source() const noexcept { return source_; }
 
-  /// @param The new state. Assuming that is not static.
+  /// @brief Register a coupling to a neighboring patch at an INTERNAL face.
+  /// @param coupling The coupling to add.
+  void add_coupling(NeighborCoupling coupling)
+  {
+    couplings_.push_back(std::move(coupling));
+  }
+
+  /// @param state The new state. Assuming that is not static.
   void set_state(State state);
-  /// @param The new source. Assuming that is not static.
-  void set_source(State source);
+
+  /// @brief Update the source state from the current solution iterate.
+  /// For EigenSource this computes state_ = mv(op_, eigvec) and caches the
+  /// sum. No-op for a fixed Source.
+  /// @param eigvec Current solution iterate.
+  /// @param eps TT rounding tolerance.
+  /// @param max_rank Maximum TT rank after rounding.
+  void update_source(const State& eigvec, double eps = 1e-12,
+    int64_t max_rank = std::numeric_limits<int64_t>::max())
+  {
+    if (source_)
+      source_->update(eigvec, eps, max_rank);
+  }
 
   /// @return The buffer tensor for static sized data.
   const torch::Tensor& get_buffer(const torch::Device& device)
@@ -175,6 +215,11 @@ public:
     return device_.is_cuda() ? device_buffer_.scalar_type()
                              : host_buffer_.scalar_type();
   }
+
+  /// @return The error of the linear solver.
+  double get_error() const noexcept { return error_; }
+  /// @param The new error of the linear system.
+  void set_error(double error) { error_ = error; }
 };
 
 } // namespace ttnte::linalg

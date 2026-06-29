@@ -2,8 +2,13 @@ import torch
 import pytest
 import torchtt as tntt
 
-from ttnte.solvers import MemoryPolicy, AMEnSolver, BlockJacobiStrategy
-from ttnte.linalg import Operator, State, LinearSystem, TTEngine
+from ttnte.solvers import (
+    MemoryPolicy,
+    AMEnSolver,
+    BlockJacobiStrategy,
+    DDSolverConfig,
+)
+from ttnte.linalg import Operator, State, LinearSystem, TTEngine, Source
 from ttnte.task import TaskGraph, TaskScheduler
 from ttnte.parallel import StreamPool
 
@@ -25,10 +30,12 @@ def test_initialization(use_gpu, memory_policy, dtype):
     if use_gpu and not torch.cuda.is_available():
         pytest.skip("CUDA not available")
 
-    strategy = BlockJacobiStrategy(use_gpu, memory_policy)
+    strategy = BlockJacobiStrategy(
+        DDSolverConfig(use_gpu=use_gpu, memory_policy=memory_policy)
+    )
 
-    assert strategy.use_gpu == use_gpu
-    assert strategy.memory_policy == memory_policy
+    assert strategy.config.use_gpu == use_gpu
+    assert strategy.config.memory_policy == memory_policy
 
 
 @pytest.mark.parametrize("use_gpu, memory_policy, dtype", test_params)
@@ -40,9 +47,11 @@ def test_build_compute_dag(use_gpu, memory_policy, dtype):
         pytest.skip("CUDA not available")
 
     # Create Block-Jacobi DD strategy
-    strategy = BlockJacobiStrategy(use_gpu, memory_policy)
+    strategy = BlockJacobiStrategy(
+        DDSolverConfig(use_gpu=use_gpu, memory_policy=memory_policy)
+    )
 
-    # Create AMEn solver and give it to the straategy
+    # Create AMEn solver and give it to the strategy
     strategy.set_local_solver(AMEnSolver())
 
     # Create random matrix and solution
@@ -57,7 +66,7 @@ def test_build_compute_dag(use_gpu, memory_policy, dtype):
     A = Operator(TTEngine(A.cores))
     x0 = State(TTEngine(x0.cores))
     b = State(TTEngine(b.cores))
-    ls = LinearSystem(A, source=b)
+    ls = LinearSystem(A, source=Source(b))
     ls.state = x0
 
     # Create task graph and build the graph for a single local problem
@@ -67,31 +76,27 @@ def test_build_compute_dag(use_gpu, memory_policy, dtype):
         device = torch.device("cuda", 0)
 
         # Send info to GPU if needed
-        if strategy.memory_policy == MemoryPolicy.RESIDENT:
+        if strategy.config.memory_policy == MemoryPolicy.RESIDENT:
             # Everything remains on the GPU
             xe = xe.to(device)
             ls.to_(device)
 
-        elif strategy.memory_policy == MemoryPolicy.STATE_RESIDENT:
+        elif strategy.config.memory_policy == MemoryPolicy.STATE_RESIDENT:
             # Only the state vector remains on the GPU
             xe = xe.to(device)
             ls.transfer_nonbuffer(device)
 
-        elif strategy.memory_policy == MemoryPolicy.OPERATOR_RESIDENT:
+        elif strategy.config.memory_policy == MemoryPolicy.OPERATOR_RESIDENT:
             # Only the operators remain on GPU
             ls.transfer_buffer(device)
 
-        h2d_task, _, d2h_task = strategy.build_gpu_compute_dag(
-            dag, ls, StreamPool.instance(), True
+        strategy.build_gpu_compute_dag(dag, ls, StreamPool.instance())
+        assert len(dag) == (
+            1 if strategy.config.memory_policy == MemoryPolicy.RESIDENT else 3
         )
-        assert len(dag) == 3 if strategy.memory_policy != MemoryPolicy.RESIDENT else 1
-
-        if strategy.memory_policy == MemoryPolicy.RESIDENT:
-            assert h2d_task == None
-            assert d2h_task == None
 
     else:
-        _ = strategy.build_cpu_compute_dag(dag, ls, True)
+        strategy.build_cpu_compute_dag(dag, ls)
         assert len(dag) == 1
 
     # Execute the dag

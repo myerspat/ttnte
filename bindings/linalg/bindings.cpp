@@ -10,6 +10,9 @@ void register_tt_ops(py::module_& m);
 void register_State(py::module_& m);
 void register_Operator(py::module_& m);
 void register_TTEngine(py::module_& m);
+void register_NeighborCoupling(py::module_& m);
+void register_Source(py::module_& m);
+void register_EigenSource(py::module_& m);
 void register_LinearSystem(py::module_& m);
 
 // Initialize linear algebra module
@@ -25,5 +28,8 @@ void init_linalg(py::module_& m)
   register_State(m);
   register_Operator(m);
   register_TTEngine(m);
+  register_NeighborCoupling(m);
+  register_Source(m);
+  register_EigenSource(m);
   register_LinearSystem(m);
 }

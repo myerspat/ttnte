@@ -217,8 +217,21 @@ public:
     return boundaries_[dim * static_cast<size_t>(2) +
                        static_cast<size_t>(is_upper)];
   }
+  /// @brief Get the boundary information at the top or bottom of a specific
+  /// dimension (non const).
+  /// @param dim The dimension to take the upper or lower face.
+  /// @param is_upper Whether to take the upper or lower face.
+  /// @return The boundary information for that boundary.
+  BoundaryInfo& get_boundary_info(size_t dim, bool is_upper)
+  {
+    is_finalized_or_error("get_interface");
+    return boundaries_[dim * static_cast<size_t>(2) +
+                       static_cast<size_t>(is_upper)];
+  }
   /// @return The information for all boundaries.
   const Boundaries& get_boundary_info() const noexcept { return boundaries_; }
+  /// @return The information for all boundaries (non const).
+  Boundaries& get_boundary_info() { return boundaries_; }
   /// @return The fill ID.
   const uint64_t& get_fill_id() const noexcept { return fill_id_; }
 

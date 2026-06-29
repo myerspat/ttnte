@@ -14,6 +14,21 @@ enum class MPITag : int {
   ROUTING_TABLE = 102,
 };
 
+enum class MPIOp : int {
+  MAX = 0,
+  MIN = 1,
+  SUM = 2,
+  PROD = 3,
+  LAND = 4,
+  BAND = 5,
+  LOR = 6,
+  BOR = 7,
+  LXOR = 8,
+  BXOR = 9,
+  MAXLOC = 10,
+  MINLOC = 11,
+};
+
 enum class DataType : int8_t { INT32, INT64, FLOAT, DOUBLE, BYTE };
 
 struct ProbeResult {
@@ -152,6 +167,10 @@ public:
   template<typename BufferType>
   Request iallgather(const BufferType* send_buffer, int send_count,
     BufferType* recv_buffer, int recv_count) const;
+
+  template<typename BufferType>
+  Request iallreduce(const BufferType* send_buffer, BufferType* recv_buffer,
+    int count, MPIOp op) const;
 
   template<typename BufferType, typename Tag>
   Request isend(

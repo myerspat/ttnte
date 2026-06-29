@@ -11,8 +11,8 @@ namespace {
 
 template<typename Func>
 ttnte::linalg::TTEngine apply_mult_separable(const ttnte::linalg::TTEngine& tt,
-  Func func, const ttnte::physics::TTConfig& rounding,
-  const ttnte::physics::CrossConfig& cross, int max_dense_size)
+  Func func, const ttnte::linalg::TTConfig& rounding,
+  const ttnte::linalg::CrossConfig& cross, int max_dense_size)
 {
   static_assert(
     std::is_invocable_r_v<torch::Tensor, Func, const torch::Tensor&>,
@@ -1384,28 +1384,40 @@ std::tuple<linalg::Operator, linalg::Operator> DGFirstOrderTransportBackend<
     }
 
     // Get the outflow and inflow boundary operators
+    const auto condition = block_->get_boundary_info(dim, is_upper).get_type();
     auto B_out = assemble_outflow_boundary_operator(basis, normal, mapping);
-    auto B_in = assemble_inflow_boundary_operator(basis, normal, mapping,
-      block_->get_boundary_info(dim, is_upper).get_type());
+    auto B_in =
+      assemble_inflow_boundary_operator(basis, normal, mapping, condition);
 
     // Create a core for the new dimension with a 1.0 in the spot of
     // the interpolatory control point evaluation
     size_t target_idx = 2 + dim;
     int64_t num_ctrlpts = block_->get_ctrlpts_size(dim);
+    int64_t face_idx = is_upper ? num_ctrlpts - 1 : 0;
+
+    // Outflow / reflective inflow: full spatial core (n_mode = num_ctrlpts)
     auto target_core = torch::zeros({num_ctrlpts, num_ctrlpts}, options);
-    if (is_upper) {
-      target_core[-1][-1] = 1.0;
-    } else {
-      target_core[0][0] = 1.0;
-    }
+    target_core[face_idx][face_idx] = 1.0;
     target_core.unsqueeze_(0).unsqueeze_(-1);
+
+    // INTERNAL inflow: face-extraction column (n_mode = 1, m_mode =
+    // num_ctrlpts)
+    torch::Tensor inflow_target_core;
+    if (condition == BoundaryType::INTERNAL) {
+      inflow_target_core = torch::zeros({num_ctrlpts, 1}, options);
+      inflow_target_core[face_idx][0] = 1.0;
+      inflow_target_core.unsqueeze_(0).unsqueeze_(-1);
+    } else {
+      inflow_target_core = target_core;
+    }
 
     // Create an identity core for energy
     auto energy = torch::eye(material_->get_num_groups(), options)
                     .unsqueeze_(0)
                     .unsqueeze_(-1);
 
-    auto inject_basis_and_energy = [&](const linalg::TTEngine& B) {
+    auto inject_basis_and_energy = [&](const linalg::TTEngine& B,
+                                     const torch::Tensor& tc) {
       // Get the cores
       auto B_cores = B.get_cores();
       B_cores.reserve(B_cores.size() + 2);
@@ -1414,10 +1426,10 @@ std::tuple<linalg::Operator, linalg::Operator> DGFirstOrderTransportBackend<
       if (target_idx < NumDim + 1) {
         int64_t r = B_cores[target_idx].size(0);
         B_cores.insert(B_cores.begin() + target_idx,
-          torch::eye(r, options).reshape({r, 1, 1, r}) * target_core);
+          torch::eye(r, options).reshape({r, 1, 1, r}) * tc);
 
       } else {
-        B_cores.push_back(target_core);
+        B_cores.push_back(tc);
       }
 
       // Append an energy core
@@ -1426,12 +1438,22 @@ std::tuple<linalg::Operator, linalg::Operator> DGFirstOrderTransportBackend<
       return linalg::TTEngine(std::move(B_cores), false);
     };
 
+    // Make final trains
+    B_out = inject_basis_and_energy(std::move(B_out), target_core)
+              .diagonalize({0, 1});
+
+    if (condition != BoundaryType::VACUUM) {
+      B_in = inject_basis_and_energy(std::move(*B_in), inflow_target_core);
+
+      if (condition == BoundaryType::INTERNAL) {
+        B_in->diagonalize_({0, 1});
+      }
+      return std::make_tuple(
+        linalg::Operator(std::move(B_out)), linalg::Operator(std::move(*B_in)));
+    }
+
     return std::make_tuple(
-      linalg::Operator(
-        inject_basis_and_energy(std::move(B_out)).diagonalize({0, 1})),
-      B_in.has_value()
-        ? linalg::Operator(inject_basis_and_energy(std::move(*B_in)))
-        : linalg::Operator());
+      linalg::Operator(std::move(B_out)), linalg::Operator());
 
   } else if constexpr (Fmt == FormatType::TENSOR_TRAIN && NumDim == 1) {
     const auto& options =
@@ -1441,42 +1463,63 @@ std::tuple<linalg::Operator, linalg::Operator> DGFirstOrderTransportBackend<
     linalg::TTEngine normal(
       {torch::tensor({orientation}, options).reshape({1, 1, 1, 1})});
 
+    const auto condition = block_->get_boundary_info(dim, is_upper).get_type();
     auto B_out = assemble_outflow_boundary_operator({}, {normal}, {});
-    auto B_in = assemble_inflow_boundary_operator(
-      {}, {normal}, {}, block_->get_boundary_info(dim, is_upper).get_type());
+    auto B_in = assemble_inflow_boundary_operator({}, {normal}, {}, condition);
 
     // Create spatial core
     int64_t num_ctrlpts = block_->get_ctrlpts_size(dim);
+    int64_t face_idx = is_upper ? num_ctrlpts - 1 : 0;
+
+    // Outflow / reflective inflow: full spatial core (n_mode = num_ctrlpts)
     auto target_core = torch::zeros({num_ctrlpts, num_ctrlpts}, options);
-    if (is_upper) {
-      target_core[-1][-1] = 1.0;
-    } else {
-      target_core[0][0] = 1.0;
-    }
+    target_core[face_idx][face_idx] = 1.0;
     target_core.unsqueeze_(0).unsqueeze_(-1);
+
+    // INTERNAL inflow: face-extraction column (n_mode = 1, m_mode =
+    // num_ctrlpts)
+    torch::Tensor inflow_target_core;
+    if (condition == BoundaryType::INTERNAL) {
+      inflow_target_core = torch::zeros({num_ctrlpts, 1}, options);
+      inflow_target_core[face_idx][0] = 1.0;
+      inflow_target_core.unsqueeze_(0).unsqueeze_(-1);
+    } else {
+      inflow_target_core = target_core;
+    }
 
     // Create identity core for energy groups
     auto energy = torch::eye(material_->get_num_groups(), options)
                     .unsqueeze_(0)
                     .unsqueeze_(-1);
 
-    auto inject_basis_and_energy = [&](const linalg::TTEngine& B) {
+    auto inject_basis_and_energy = [&](const linalg::TTEngine& B,
+                                     const torch::Tensor& tc) {
       auto B_cores = B.get_cores();
       B_cores.reserve(B_cores.size() + 2);
 
       // Append space and energy cores
-      B_cores.push_back(target_core);
+      B_cores.push_back(tc);
       B_cores.push_back(energy);
 
       return linalg::TTEngine(std::move(B_cores), false);
     };
 
+    // Make final trains
+    B_out =
+      inject_basis_and_energy(std::move(B_out), target_core).diagonalize({0});
+
+    if (condition != BoundaryType::VACUUM) {
+      B_in = inject_basis_and_energy(std::move(*B_in), inflow_target_core);
+
+      if (condition == BoundaryType::INTERNAL) {
+        B_in->diagonalize_({0});
+      }
+      return std::make_tuple(
+        linalg::Operator(std::move(B_out)), linalg::Operator(std::move(*B_in)));
+    }
+
     return std::make_tuple(
-      linalg::Operator(
-        inject_basis_and_energy(std::move(B_out)).diagonalize({0})),
-      B_in.has_value()
-        ? linalg::Operator(inject_basis_and_energy(std::move(*B_in)))
-        : linalg::Operator());
+      linalg::Operator(std::move(B_out)), linalg::Operator());
   }
 
   throw utils::runtime_error("ttnte::physics::DIGAFirstOrderTransportBackend::"
@@ -1625,15 +1668,14 @@ DGFirstOrderTransportBackend<cad::Patch, Fmt,
 
       return linalg::TTEngine({reflected_core}, false);
     }
+  }
 
-    if (condition == BoundaryType::INTERNAL) {
-      return assemble_interface_boundary_operator(
-        basis, normal, mapping, false);
-    }
+  if (condition == BoundaryType::INTERNAL) {
+    return assemble_interface_boundary_operator(basis, normal, mapping, false);
   }
 
   throw utils::runtime_error("ttnte::physics::DIGAFirstOrderTransportBackend::"
-                             "assemble_outflow_boundary_operator",
+                             "assemble_inflow_boundary_operator",
     "This method does not support this format yet");
 }
 

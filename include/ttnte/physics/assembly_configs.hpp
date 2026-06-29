@@ -1,43 +1,14 @@
 #pragma once
 
 #include "ttnte/linalg/format_type.hpp"
+#include "ttnte/linalg/matrix_config.hpp"
+#include "ttnte/linalg/tt_config.hpp"
 #include <optional>
 #include <torch/extension.h>
 
 namespace ttnte::physics {
 
 using linalg::FormatType;
-
-/// @brief Configuration common among TT methods.
-struct TTConfig {
-  /// Truncation tolerance
-  double eps = 1e-12;
-  /// Max rank.
-  int max_rank = 500;
-
-  // =================================================================
-  // Constructors
-  TTConfig(double eps = 1e-12, int max_rank = 500)
-    : eps(eps), max_rank(max_rank)
-  {}
-};
-
-/// @brief Configuration for TT-cross.
-struct CrossConfig : public TTConfig {
-  /// Maximum number of sweeps.
-  int nswp = 50;
-  /// Rank increase each sweep.
-  int kick = 4;
-  /// Print progress to terminal.
-  bool verbose = false;
-
-  // =================================================================
-  // Constructors
-  CrossConfig(double eps = 1e-12, int max_rank = 500, int nswp = 50,
-    int kick = 4, bool verbose = false)
-    : TTConfig(eps, max_rank), nswp(nswp), kick(kick), verbose(verbose)
-  {}
-};
 
 /// @brief General discontinuous Galerkin assembly configuration.
 struct DGAssemblerConfig {
@@ -52,16 +23,13 @@ struct DGAssemblerConfig {
   int64_t max_dense_size = 100000;
   /// Use TT-cross for computing the inverse of the Jacobian.
   bool cross_jacobian_inverse = false;
-  /// Regularization parameter for approximating absolute value kinks
-  /// in TT-cross.
-  double regularization_ = 1e-6;
 
   // =================================================================
   // Algorithm configs
   /// TT-rounding configuration.
-  TTConfig rounding;
+  linalg::TTConfig rounding;
   /// TT-cross interpolation configuration.
-  CrossConfig cross;
+  linalg::CrossConfig cross;
 
   // =================================================================
   // Constructors
@@ -74,8 +42,9 @@ struct DGAssemblerConfig {
       cross_jacobian_inverse(cross_jacobian_inverse), rounding(eps, max_rank),
       cross(eps, max_rank, nswp, kick, verbose)
   {}
-  DGAssemblerConfig(const TTConfig& rounding, const CrossConfig& cross,
-    int64_t max_dense_size = 1e5, bool cross_jacobian_inverse = false,
+  DGAssemblerConfig(const linalg::TTConfig& rounding,
+    const linalg::CrossConfig& cross, int64_t max_dense_size = 1e5,
+    bool cross_jacobian_inverse = false,
     std::optional<torch::Device> device = std::nullopt,
     std::optional<torch::ScalarType> dtype = std::nullopt)
     : device(device), dtype(dtype), max_dense_size(max_dense_size),
@@ -98,6 +67,11 @@ struct DGTransportAssemblerConfig : public DGAssemblerConfig {
   FormatType inflow_fmt = FormatType::TENSOR_TRAIN;
   /// Format for the source vector.
   FormatType source_fmt = FormatType::TENSOR_TRAIN;
+
+  /// Part of the energy group phase space to move to the left hand side of the
+  /// linear system.
+  linalg::MatrixComponent implicit_scatter_component =
+    linalg::MatrixComponent::FULL;
 };
 
 } // namespace ttnte::physics

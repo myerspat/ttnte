@@ -1,4 +1,5 @@
 #include "ttnte/linalg/tt_engine.hpp"
+#include "ttnte/linalg/format_type.hpp"
 #include "ttnte/linalg/matrix_ops.hpp"
 #include "ttnte/linalg/tt_ops.hpp"
 #include "ttnte/utils/exception.hpp"
@@ -458,6 +459,49 @@ TTEngine TTEngine::narrow(
   return result;
 }
 
+TTEngine& TTEngine::flip_(at::IntArrayRef dims, bool interleaved)
+{
+  const int64_t K = static_cast<int64_t>(cores_.size());
+
+  // Accumulate mode axes to flip per core (at most m and n, so 2 per core).
+  c10::SmallVector<c10::SmallVector<int64_t, 2>, 8> axes(K);
+
+  for (const int64_t dim_val : dims) {
+    const size_t dim = static_cast<size_t>(dim_val);
+    size_t core_idx;
+    int64_t mode_axis;
+
+    if (interleaved) {
+      core_idx = dim / 2;
+      mode_axis = (dim % 2 == 0) ? 1 : 2;
+    } else {
+      core_idx =
+        (static_cast<int64_t>(dim) < K) ? dim : dim - static_cast<size_t>(K);
+      mode_axis = (static_cast<int64_t>(dim) < K) ? 1 : 2;
+    }
+
+    TORCH_CHECK(core_idx < static_cast<size_t>(K), "TTEngine::flip_: dim ",
+      dim_val, " out of range for ", 2 * K, " modes");
+
+    axes[core_idx].push_back(mode_axis);
+  }
+
+  for (size_t i = 0; i < static_cast<size_t>(K); ++i) {
+    if (!axes[i].empty()) {
+      cores_[i] = cores_[i].flip(axes[i]);
+    }
+  }
+
+  return *this;
+}
+
+TTEngine TTEngine::flip(at::IntArrayRef dims, bool interleaved) const
+{
+  auto result = *this;
+  result.flip_(dims, interleaved);
+  return result;
+}
+
 torch::Tensor TTEngine::pack(const torch::Tensor& buffer) const
 {
   const int64_t K = static_cast<int64_t>(cores_.size());
@@ -505,8 +549,8 @@ torch::Tensor TTEngine::pack(const torch::Tensor& buffer) const
 
 TTEngine TTEngine::unpack(const torch::Tensor& buffer)
 {
-  TORCH_CHECK(buffer.dim() == 1 && buffer.device().is_cpu(),
-    "TTEngine::unpack: buffer must be a 1D CPU tensor");
+  TORCH_CHECK(
+    buffer.dim() == 1, "TTEngine::unpack: buffer must be a 1D tensor");
 
   // item<int64_t>() works for any float dtype on a CPU scalar tensor
   const int64_t K = buffer[1].item<int64_t>();
@@ -1024,6 +1068,17 @@ int64_t TTEngine::get_numel() const
     total += core.numel();
   }
   return total;
+}
+
+double TTEngine::get_compression() const
+{
+  int64_t size = 1;
+
+  for (const auto& core : cores_) {
+    size *= core.size(1) * core.size(2);
+  }
+
+  return static_cast<double>(size) / static_cast<double>(get_numel());
 }
 
 c10::SmallVector<int64_t, 7> TTEngine::get_ranks() const

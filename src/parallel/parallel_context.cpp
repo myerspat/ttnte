@@ -44,7 +44,12 @@ void ParallelContext::init()
 void ParallelContext::finalize()
 {
   if (managed_mpi_) {
-    MPI_Finalize();
+    int is_finalized = 0;
+    MPI_Finalized(&is_finalized);
+
+    if (!is_finalized) {
+      MPI_Finalize();
+    }
   }
 }
 

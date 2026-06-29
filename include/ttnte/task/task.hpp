@@ -56,11 +56,13 @@ private:
   std::function<TaskStatus()> payload_;
   /// Whether the task's completion has been counted.
   bool is_counted_ = false;
+  /// Whether the task is currently executing
+  std::atomic_flag is_executing_ = ATOMIC_FLAG_INIT;
 
 public:
   // =================================================================
   // Public constructors
-  Task(std::optional<DeviceTarget> target,
+  Task(std::optional<DeviceTarget> target = std::nullopt,
     std::optional<std::string> label = std::nullopt)
     : label_(label.has_value() ? Label::from_string(label.value())
                                : Label::create_internal())
@@ -83,7 +85,7 @@ public:
   bool check_dependencies() const
   {
     for (Task* dependency : dependencies_) {
-      if (dependency->status_.load() != TaskStatus::COMPLETED) {
+      if (dependency->get_status() != TaskStatus::COMPLETED) {
         return false;
       }
     }
@@ -100,20 +102,29 @@ public:
   /// @brief Execute the function that this task wraps.
   void execute()
   {
+    if (is_executing_.test_and_set(std::memory_order_acquire)) {
+      return;
+    }
+
     try {
-      status_.store(payload_());
+      update_status(payload_());
 
     } catch (const c10::Error& e) {
-      ttnte::utils::trigger_global_crash(
-        "LibTorch Error: " + std::string(e.what()));
+      ttnte::utils::trigger_global_crash("LibTorch error on task " +
+                                         label_.to_string() + ": " +
+                                         std::string(e.what()));
 
     } catch (const std::exception& e) {
-      ttnte::utils::trigger_global_crash(
-        "C++ exception: " + std::string(e.what()));
+      ttnte::utils::trigger_global_crash("C++ exception in task " +
+                                         label_.to_string() + ": " +
+                                         std::string(e.what()));
 
     } catch (...) {
       ttnte::utils::trigger_global_crash("Unknown exception in DAG task");
     }
+
+    // Release the executing flag
+    is_executing_.clear(std::memory_order_release);
   }
 
   /// @brief Check if this status has been counted as completed.
@@ -129,7 +140,7 @@ public:
   /// @Brief Reset this task to waiting.
   void reset()
   {
-    status_.store(TaskStatus::WAITING);
+    update_status(TaskStatus::WAITING);
     is_counted_ = false;
   }
 
@@ -140,7 +151,10 @@ public:
   /// @return The target device for this task.
   const DeviceTarget& get_target() const noexcept { return target_; }
   /// @return The status of this task.
-  TaskStatus get_status() const noexcept { return status_.load(); }
+  TaskStatus get_status() const noexcept
+  {
+    return status_.load(std::memory_order_acquire);
+  }
 
   /// @param The new target device for this task.
   void set_target(DeviceTarget new_target) { target_ = new_target; }

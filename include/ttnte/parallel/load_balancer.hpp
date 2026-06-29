@@ -10,6 +10,7 @@
 #include <string>
 #include <torch/types.h>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace ttnte::parallel {
@@ -23,7 +24,6 @@ public:
   // Public types
   using Label = utils::Label<LoadBalancer>;
   using BlockTypeGID = uint64_t;
-  using GIDtoRankMap = std::unordered_map<BlockTypeGID, int>;
   using LoadHeuristicPtr =
     std::shared_ptr<heuristics::LoadHeuristic<BlockType>>;
   using GIDtoNeighborsMap =
@@ -147,8 +147,8 @@ public:
   /// @param root_rank The MPI rank to compute the partition which is
   /// broadcasted to all other ranks.
   /// @return A tensor of global IDs to stay on this MPI rank.
-  torch::Tensor compute_partition(mesh::ConnectivityGraph conn_graph,
-    const parallel::Communicator& comm,
+  std::pair<torch::Tensor, std::unordered_map<int64_t, int>> compute_partition(
+    mesh::ConnectivityGraph conn_graph, const parallel::Communicator& comm,
     const std::vector<LoadHeuristicPtr>& load_heuristics = {},
     int root_rank = 0)
   {
@@ -169,15 +169,21 @@ public:
                   conn_graph.mpi_ranks.is_contiguous(),
       "All tensors in the connectivity graph must be contiguous");
 
-    // Only one MPI rank case
-    if (comm.size() == 1) {
-      return conn_graph.local_gids;
-    }
-
     int64_t num_blocks = conn_graph.local_gids.size(0);
     int my_rank = comm.rank();
     int world_size = comm.size();
     torch::Tensor partition;
+
+    // Only one MPI rank case
+    if (world_size == 1) {
+      std::unordered_map<int64_t, int> gid2rank;
+      gid2rank.reserve(num_blocks);
+      auto gids_acc = conn_graph.local_gids.accessor<int64_t, 1>();
+      for (int64_t i = 0; i < num_blocks; i++) {
+        gid2rank[gids_acc[i]] = my_rank;
+      }
+      return {conn_graph.local_gids, gid2rank};
+    }
 
     if (my_rank == root_rank) {
       // Run METIS
@@ -197,8 +203,18 @@ public:
     // Broadcast the partition to all other ranks
     comm.bcast(partition.template data_ptr<int64_t>(), num_blocks, root_rank);
 
+    // Map GID to MPI rank for updating the coupled faces
+    std::unordered_map<int64_t, int> gid2rank;
+    gid2rank.reserve(num_blocks);
+    auto gids_acc = conn_graph.local_gids.accessor<int64_t, 1>();
+    auto part_acc = partition.accessor<int64_t, 1>();
+    for (int64_t i = 0; i < num_blocks; i++) {
+      gid2rank[gids_acc[i]] = static_cast<int>(part_acc[i]);
+    }
+
     // GIDs to keep on this rank
-    return conn_graph.local_gids.masked_select(partition == my_rank);
+    return {
+      conn_graph.local_gids.masked_select(partition == my_rank), gid2rank};
   }
 
   /// @brief Build the routing table for repartitioning the already distributed

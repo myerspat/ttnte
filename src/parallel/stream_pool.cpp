@@ -1,4 +1,5 @@
 #include "ttnte/parallel/stream_pool.hpp"
+#include "ttnte/parallel/parallel_context.hpp"
 #include <c10/core/impl/DeviceGuardImplInterface.h>
 #include <torch/cuda.h>
 
@@ -7,16 +8,16 @@ namespace ttnte::parallel {
 // =================================================================
 // Private constructors
 StreamPool::StreamPool(int num_streams)
+  : device_(parallel::ParallelContext::instance().device())
 {
   if (torch::cuda::is_available()) {
     // Retrieve the number of streams requested
     auto* guard_impl = c10::impl::getDeviceGuardImpl(c10::DeviceType::CUDA);
-    c10::Device cuda_device(c10::DeviceType::CUDA, 0);
 
     streams_.reserve(num_streams);
     for (int i = 0; i < num_streams; i++) {
       streams_.emplace_back(
-        guard_impl->getStreamFromGlobalPool(cuda_device, false));
+        guard_impl->getStreamFromGlobalPool(device_, false));
     }
   }
 }

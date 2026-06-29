@@ -25,22 +25,45 @@ def pu239(num_groups: Literal[1, 2], device=None, dtype=None):
 
     Returns
     -------
+    ttnte.xs.MaterialLabel or list of ttnte.xs.MaterialLabel
+        The label for the Pu-239 material.
     ttnte.xs.Server
         XS data server object.
     """
     device = torch.get_default_device() if device == None else device
     dtype = torch.get_default_dtype() if dtype == None else dtype
 
+    # XS server
+    server = Server()
+
     # Create material
-    pu239 = Material("Pu-239")
     if num_groups == 1:
+        pu239 = Material("Pu-239")
         pu239.chi = torch.tensor([1.0], dtype=dtype, device=device)
         pu239.total = torch.tensor([0.32640], dtype=dtype, device=device)
         pu239.nu_fission = torch.tensor([2.84 * 0.081600], dtype=dtype, device=device)
         pu239.fission = torch.tensor([0.081600], dtype=dtype, device=device)
         pu239.absorption = torch.tensor([0.101184], dtype=dtype, device=device)
         pu239.scatter_gtg = torch.tensor([[[0.225216]]], dtype=dtype, device=device)
+        pu239.finalize()
+
+        water = Material("Water")
+        water.chi = torch.zeros(1, dtype=dtype, device=device)
+        water.total = torch.tensor([0.32640], dtype=dtype, device=device)
+        water.nu_fission = torch.zeros(1, dtype=dtype, device=device)
+        water.fission = torch.zeros(1, dtype=dtype, device=device)
+        water.absorption = torch.tensor([0.032640], dtype=dtype, device=device)
+        water.scatter_gtg = torch.tensor([[[0.293760]]], dtype=dtype, device=device)
+        water.finalize()
+
+        server.add_material(pu239)
+        server.add_material(water)
+        server.finalize()
+
+        return [pu239.label, water.label], server
+
     else:
+        pu239 = Material("Pu-239")
         pu239.chi = torch.tensor([0.575, 0.425], dtype=dtype, device=device)
         pu239.total = torch.tensor([0.2208, 0.3360], dtype=dtype, device=device)
         pu239.nu_fission = torch.tensor(
@@ -51,86 +74,1103 @@ def pu239(num_groups: Literal[1, 2], device=None, dtype=None):
         pu239.scatter_gtg = torch.tensor(
             [[[0.0792, 0], [0.0432, 0.23616]]], dtype=dtype, device=device
         )
-    pu239.finalize()
+        pu239.finalize()
 
-    # XS server
-    server = Server()
-    server.add_material(pu239)
-    server.finalize()
-    return pu239.label, server
+        server.add_material(pu239)
+        server.finalize()
+        return pu239.label, server
 
 
-# def research_reactor(is_anisotropic: bool = False):
-#     """
-#     Two-group heterogeneous XSs from Tables 40 (a, b) and 41 (a, b) of the `analytical
-#     benchmark test set for criticality code verification <https://www-sciencedirec
-#     t-com.proxy.lib.umich.edu/science/article/pii/S0149197002000987?fr=RR-2&ref=pd
-#     f_download&rr=94263cf04882e830>`_. The XS set includes ``"Research Reactor"`` and
-#     ``Water`` (only if ``is_anisotropic == False``).
-#
-#     Parameters
-#     ----------
-#     is_anisotropic: bool, default=False
-#         Whether to give homogenized linearly anisotropic XSs for the
-#         ``"Research Reactor"``.
-#
-#     Returns
-#     -------
-#     ttnte.xs.Server
-#         XS data server object.
-#     """
-#     xs = (
-#         {
-#             "chi": np.array([1.0, 0.0]),
-#             "Research Reactor": {
-#                 "nu_fission": 2.5 * np.array([0.000836, 0.029564]),  # 1/cm
-#                 "scatter_gtg": np.array(
-#                     [
-#                         [
-#                             [0.83892, 0.000767],
-#                             [0.04635, 2.918300],
-#                         ],
-#                     ]
-#                 ),  # 1/cm
-#                 "total": np.array([0.88721, 2.9727]),  # 1/cm
-#             },
-#             "Water": {
-#                 "nu_fission": np.zeros(2),  # 1/cm
-#                 "scatter_gtg": np.array(
-#                     [
-#                         [
-#                             [0.83975, 0.000336],
-#                             [0.04749, 2.967600],
-#                         ],
-#                     ]
-#                 ),  # 1/cm
-#                 "total": np.array([0.88798, 2.9865]),  # 1/cm
-#             },
-#         }
-#         if not is_anisotropic
-#         else {
-#             "chi": np.array([1.0, 0.0]),
-#             "Research Reactor": {
-#                 "total": np.array([0.65696, 2.52025]),  # 1/cm
-#                 "nu_fission": 2.5 * np.array([0.0010484, 0.050632]),  # 1/cm
-#                 "scatter_gtg": np.array(
-#                     [
-#                         [
-#                             [0.625680, 0.00000],
-#                             [0.029227, 2.44383],
-#                         ],
-#                         [
-#                             [0.2745900, 0.00000],
-#                             [0.0075737, 0.83318],
-#                         ],
-#                     ]
-#                 ),
-#             },
-#         }
-#     )
-#     return Server(xs)
-#
-#
+def research_reactor(is_anisotropic: bool = False, device=None, dtype=None):
+    """
+    Two-group heterogeneous XSs from Tables 40 (a, b) and 41 (a, b) of the `analytical benchmark test set for criticality code verification <https://www-sciencedirec
+    t-com.proxy.lib.umich.edu/science/article/pii/S0149197002000987?fr=RR-2&ref=pd
+    f_download&rr=94263cf04882e830>`_. The XS set includes ``"Fuel"`` and ``Water`` (only if ``is_anisotropic == False``).
+
+    Parameters
+    ----------
+    is_anisotropic: bool, default=False
+        Whether to give homogenized linearly anisotropic XSs for the
+        ``"Research Reactor"``.
+    device: torch.device or None, default=None
+        The device to put the server on. If it is none then we use the default.
+    dtype: torch.dtype or None, default=None
+        The data type for the server. If it is none then we use the default.
+
+    Returns
+    -------
+    ttnte.xs.MaterialLabel or list of ttnte.xs.Material
+        The labels for the materials in the research reactor.
+    ttnte.xs.Server
+        XS data server object.
+    """
+    device = torch.get_default_device() if device == None else device
+    dtype = torch.get_default_dtype() if dtype == None else dtype
+
+    if is_anisotropic:
+        mat = Material("Research Reactor")
+        mat.chi = torch.tensor([1.0, 0.0], dtype=dtype, device=device)
+        mat.total = torch.tensor([0.65696, 2.52025], dtype=dtype, device=device)
+        mat.nu_fission = 2.5 * torch.tensor(
+            [0.0010484, 0.050632], dtype=dtype, device=device
+        )
+        mat.fission = torch.tensor([0.0010484, 0.050632], dtype=dtype, device=device)
+        mat.scatter_gtg = torch.tensor(
+            [
+                [
+                    [0.625680, 0.00000],
+                    [0.029227, 2.44383],
+                ],
+                [
+                    [0.2745900, 0.00000],
+                    [0.0075737, 0.83318],
+                ],
+            ],
+            dtype=dtype,
+            device=device,
+        )
+        mat.finalize()
+
+        xs_server = Server()
+        xs_server.add_material(mat)
+        xs_server.finalize()
+
+        return mat.label, xs_server
+
+    else:
+        fuel = Material("Fuel")
+        fuel.chi = torch.tensor([1.0, 0.0], dtype=dtype, device=device)
+        fuel.total = torch.tensor([0.88721, 2.9727], dtype=dtype, device=device)
+        fuel.nu_fission = 2.5 * torch.tensor(
+            [0.000836, 0.029564], dtype=dtype, device=device
+        )
+        fuel.fission = torch.tensor([0.000836, 0.029564], dtype=dtype, device=device)
+        fuel.scatter_gtg = torch.tensor(
+            [
+                [
+                    [0.83892, 0.000767],
+                    [0.04635, 2.918300],
+                ],
+            ],
+            dtype=dtype,
+            device=device,
+        )
+        fuel.finalize()
+
+        water = Material("Moderator")
+        water.chi = torch.zeros(2, dtype=dtype, device=device)
+        water.total = torch.tensor([0.88798, 2.9865], dtype=dtype, device=device)
+        water.nu_fission = torch.zeros(2, dtype=dtype, device=device)
+        water.fission = torch.zeros(2, dtype=dtype, device=device)
+        water.scatter_gtg = torch.tensor(
+            [
+                [
+                    [0.83975, 0.000336],
+                    [0.04749, 2.967600],
+                ],
+            ],
+            dtype=dtype,
+            device=device,
+        )
+        water.finalize()
+
+        xs_server = Server()
+        xs_server.add_material(fuel)
+        xs_server.add_material(water)
+        xs_server.finalize()
+
+        return [fuel.label, water.label], xs_server
+
+
+def c5g7(device=None, dtype=None):
+    """
+    XSs for the `seven-group C5G7 neutronics benchmark <https://www.oecd-nea.org
+    /jcms/pl_13548/benchmark-on-deterministic-transport-calculations-without-spa
+    tial-homogenisation?details=true>`_. The data includes eight materials:
+    ``"UO2"``, ``"MOX 4.3%"``, ``"MOX 7%"``, ``"MOX 8.7%"``,
+    ``"Fission Chamber"``, ``"Guide Tube"``, ``"Water"``, and ``"Control Rod"``.
+
+    Parameters
+    ----------
+    device: torch.device or None, default=None
+        The device to put the server on. If it is none then we use the default.
+    dtype: torch.dtype or None, default=None
+        The data type for the server. If it is none then we use the default.
+
+    Returns
+    -------
+    ttnte.xs.Server
+        XS data server object.
+    """
+    device = torch.get_default_device() if device == None else device
+    dtype = torch.get_default_dtype() if dtype == None else dtype
+
+    chi = torch.tensor(
+        [
+            5.87910e-01,
+            4.11760e-01,
+            3.39060e-04,
+            1.17610e-07,
+            0.000000e-00,
+            0.000000e-00,
+            0.000000e-00,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    zeros = torch.zeros(7, dtype=dtype, device=device)
+
+    labels = []
+    xs_server = Server()
+
+    uo2 = Material("UO2")
+    uo2.chi = chi
+    uo2.total = torch.tensor(
+        [
+            1.779490e-01,
+            3.298050e-01,
+            4.803880e-01,
+            5.543670e-01,
+            3.118010e-01,
+            3.951680e-01,
+            5.644060e-01,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    uo2.absorption = torch.tensor(
+        [
+            8.02480e-03,
+            3.71740e-03,
+            2.67690e-02,
+            9.62360e-02,
+            3.00200e-02,
+            1.11260e-01,
+            2.82780e-01,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    uo2.nu_fission = torch.tensor(
+        [
+            2.005998e-02,
+            2.027303e-03,
+            1.570599e-02,
+            4.518301e-02,
+            4.334208e-02,
+            2.020901e-01,
+            5.257105e-01,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    uo2.fission = torch.tensor(
+        [
+            7.212060e-03,
+            8.193010e-04,
+            6.453200e-03,
+            1.856480e-02,
+            1.780840e-02,
+            8.303480e-02,
+            2.160040e-01,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    uo2.scatter_gtg = torch.tensor(
+        [
+            [
+                1.275370e-01,
+                4.237800e-02,
+                9.437400e-06,
+                5.516300e-09,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                3.244560e-01,
+                1.631400e-03,
+                3.142700e-09,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                4.509400e-01,
+                2.679200e-03,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                4.525650e-01,
+                5.566400e-03,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                1.252500e-04,
+                2.714010e-01,
+                1.025500e-02,
+                1.002100e-08,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                1.296800e-03,
+                2.658020e-01,
+                1.680900e-02,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                8.545800e-03,
+                2.730800e-01,
+            ],
+        ],
+        dtype=dtype,
+        device=device,
+    ).T.unsqueeze(0)
+    uo2.finalize()
+    labels.append(uo2.label)
+    xs_server.add_material(uo2)
+
+    mox_43 = Material("MOX 4.3%")
+    mox_43.chi = chi
+    mox_43.total = torch.tensor(
+        [
+            1.787310e-01,
+            3.308490e-01,
+            4.837720e-01,
+            5.669220e-01,
+            4.262270e-01,
+            6.789970e-01,
+            6.828520e-01,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    mox_43.absorption = torch.tensor(
+        [
+            8.43390e-03,
+            3.75770e-03,
+            2.79700e-02,
+            1.04210e-01,
+            1.39940e-01,
+            4.09180e-01,
+            4.09350e-01,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    mox_43.nu_fission = torch.tensor(
+        [
+            2.175300e-02,
+            2.535103e-03,
+            1.626799e-02,
+            6.547410e-02,
+            3.072409e-02,
+            6.666510e-01,
+            7.139904e-01,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    mox_43.fission = torch.tensor(
+        [
+            7.62704e-03,
+            8.76898e-04,
+            5.69835e-03,
+            2.28872e-02,
+            1.07635e-02,
+            2.32757e-01,
+            2.48968e-01,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    mox_43.scatter_gtg = torch.tensor(
+        [
+            [
+                1.288760e-01,
+                4.141300e-02,
+                8.229000e-06,
+                5.040500e-09,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                3.254520e-01,
+                1.639500e-03,
+                1.598200e-09,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                4.531880e-01,
+                2.614200e-03,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                4.571730e-01,
+                5.539400e-03,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                1.604600e-04,
+                2.768140e-01,
+                9.312700e-03,
+                9.165600e-09,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                2.005100e-03,
+                2.529620e-01,
+                1.485000e-02,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                8.494800e-03,
+                2.650070e-01,
+            ],
+        ],
+        dtype=dtype,
+        device=device,
+    ).T.unsqueeze(0)
+    mox_43.finalize()
+    labels.append(mox_43.label)
+    xs_server.add_material(mox_43)
+
+    mox_7 = Material("MOX 7%")
+    mox_7.chi = chi
+    mox_7.total = torch.tensor(
+        [
+            1.813230e-01,
+            3.343680e-01,
+            4.937850e-01,
+            5.912160e-01,
+            4.741980e-01,
+            8.336010e-01,
+            8.536030e-01,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    mox_7.absorption = torch.tensor(
+        [
+            9.06570e-03,
+            4.29670e-03,
+            3.28810e-02,
+            1.22030e-01,
+            1.82980e-01,
+            5.68460e-01,
+            5.85210e-01,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    mox_7.nu_fission = torch.tensor(
+        [
+            2.381395e-02,
+            3.858689e-03,
+            2.413400e-02,
+            9.436622e-02,
+            4.576988e-02,
+            9.281814e-01,
+            1.043200e00,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    mox_7.fission = torch.tensor(
+        [
+            8.25446e-03,
+            1.32565e-03,
+            8.42156e-03,
+            3.28730e-02,
+            1.59636e-02,
+            3.23794e-01,
+            3.62803e-01,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    mox_7.scatter_gtg = torch.tensor(
+        [
+            [
+                1.304570e-01,
+                4.179200e-02,
+                8.510500e-06,
+                5.132900e-09,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                3.284280e-01,
+                1.643600e-03,
+                2.201700e-09,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                4.583710e-01,
+                2.533100e-03,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                4.637090e-01,
+                5.476600e-03,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                1.761900e-04,
+                2.823130e-01,
+                8.728900e-03,
+                9.001600e-09,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                2.276000e-03,
+                2.497510e-01,
+                1.311400e-02,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                8.864500e-03,
+                2.595290e-01,
+            ],
+        ],
+        dtype=dtype,
+        device=device,
+    ).T.unsqueeze(0)
+    mox_7.finalize()
+    labels.append(mox_7.label)
+    xs_server.add_material(mox_7)
+
+    mox_87 = Material("MOX 8.7%")
+    mox_87.chi = chi
+    mox_87.total = torch.tensor(
+        [
+            1.830450e-01,
+            3.367050e-01,
+            5.005070e-01,
+            6.061740e-01,
+            5.027540e-01,
+            9.210280e-01,
+            9.552310e-01,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    mox_87.absorption = torch.tensor(
+        [
+            9.48620e-03,
+            4.65560e-03,
+            3.62400e-02,
+            1.32720e-01,
+            2.08400e-01,
+            6.58700e-01,
+            6.90170e-01,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    mox_87.nu_fission = torch.tensor(
+        [
+            2.518600e-02,
+            4.739509e-03,
+            2.947805e-02,
+            1.122500e-01,
+            5.530301e-02,
+            1.074999e00,
+            1.239298e00,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    mox_87.fission = torch.tensor(
+        [
+            8.67209e-03,
+            1.62426e-03,
+            1.02716e-02,
+            3.90447e-02,
+            1.92576e-02,
+            3.74888e-01,
+            4.30599e-01,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    mox_87.scatter_gtg = torch.tensor(
+        [
+            [
+                1.315040e-01,
+                4.204600e-02,
+                8.697200e-06,
+                5.193800e-09,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                3.304030e-01,
+                1.646300e-03,
+                2.600600e-09,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                4.617920e-01,
+                2.474900e-03,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                4.680210e-01,
+                5.433000e-03,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                1.859700e-04,
+                2.857710e-01,
+                8.397300e-03,
+                8.928000e-09,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                2.391600e-03,
+                2.476140e-01,
+                1.232200e-02,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                8.968100e-03,
+                2.560930e-01,
+            ],
+        ],
+        dtype=dtype,
+        device=device,
+    ).T.unsqueeze(0)
+    mox_87.finalize()
+    labels.append(mox_87.label)
+    xs_server.add_material(mox_87)
+
+    fission_chamber = Material("Fission Chamber")
+    fission_chamber.chi = chi
+    fission_chamber.total = torch.tensor(
+        [
+            1.260320e-01,
+            2.931600e-01,
+            2.842500e-01,
+            2.810200e-01,
+            3.344600e-01,
+            5.656400e-01,
+            1.172140e00,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    fission_chamber.absorption = torch.tensor(
+        [
+            5.11320e-04,
+            7.58130e-05,
+            3.16430e-04,
+            1.16750e-03,
+            3.39770e-03,
+            9.18860e-03,
+            2.32440e-02,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    fission_chamber.nu_fission = torch.tensor(
+        [
+            1.323401e-08,
+            1.434500e-08,
+            1.128599e-06,
+            1.276299e-05,
+            3.538502e-07,
+            1.740099e-06,
+            5.063302e-06,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    fission_chamber.fission = torch.tensor(
+        [
+            4.79002e-09,
+            5.82564e-09,
+            4.63719e-07,
+            5.24406e-06,
+            1.45390e-07,
+            7.14972e-07,
+            2.08041e-06,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    fission_chamber.scatter_gtg = torch.tensor(
+        [
+            [
+                6.616590e-02,
+                5.907000e-02,
+                2.833400e-04,
+                1.462200e-06,
+                2.064200e-08,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                2.403770e-01,
+                5.243500e-02,
+                2.499000e-04,
+                1.923900e-05,
+                2.987500e-06,
+                4.214000e-07,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                1.834250e-01,
+                9.228800e-02,
+                6.936500e-03,
+                1.079000e-03,
+                2.054300e-04,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                7.907690e-02,
+                1.699900e-01,
+                2.586000e-02,
+                4.925600e-03,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                3.734000e-05,
+                9.975700e-02,
+                2.067900e-01,
+                2.447800e-02,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                9.174200e-04,
+                3.167740e-01,
+                2.387600e-01,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                4.979300e-02,
+                1.09910e00,
+            ],
+        ],
+        dtype=dtype,
+        device=device,
+    ).T.unsqueeze(0)
+    fission_chamber.finalize()
+    labels.append(fission_chamber.label)
+    xs_server.add_material(fission_chamber)
+
+    guide_tube = Material("Guide Tube")
+    guide_tube.chi = zeros
+    guide_tube.total = torch.tensor(
+        [
+            1.260320e-01,
+            2.931600e-01,
+            2.842400e-01,
+            2.809600e-01,
+            3.344400e-01,
+            5.656400e-01,
+            1.172150e00,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    guide_tube.absorption = torch.tensor(
+        [
+            5.11320e-04,
+            7.58010e-05,
+            3.15720e-04,
+            1.15820e-03,
+            3.39750e-03,
+            9.18780e-03,
+            2.32420e-02,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    guide_tube.nu_fission = zeros
+    guide_tube.fission = zeros
+    guide_tube.scatter_gtg = torch.tensor(
+        [
+            [
+                6.616590e-02,
+                5.907000e-02,
+                2.833400e-04,
+                1.462200e-06,
+                2.064200e-08,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                2.403770e-01,
+                5.243500e-02,
+                2.499000e-04,
+                1.923900e-05,
+                2.987500e-06,
+                4.214000e-07,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                1.832970e-01,
+                9.239700e-02,
+                6.944600e-03,
+                1.080300e-03,
+                2.056700e-04,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                7.885110e-02,
+                1.701400e-01,
+                2.588100e-02,
+                4.929700e-03,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                3.733300e-05,
+                9.973720e-02,
+                2.067900e-01,
+                2.447800e-02,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                9.172600e-04,
+                3.167650e-01,
+                2.387700e-01,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                4.979200e-02,
+                1.099120e00,
+            ],
+        ],
+        dtype=dtype,
+        device=device,
+    ).T.unsqueeze(0)
+    guide_tube.finalize()
+    labels.append(guide_tube.label)
+    xs_server.add_material(guide_tube)
+
+    water = Material("Water")
+    water.chi = zeros
+    water.total = torch.tensor(
+        [
+            1.592060e-01,
+            4.129700e-01,
+            5.903100e-01,
+            5.843500e-01,
+            7.180000e-01,
+            1.254450e00,
+            2.650380e00,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    water.absorption = torch.tensor(
+        [
+            6.01050e-04,
+            1.57930e-05,
+            3.37160e-04,
+            1.94060e-03,
+            5.74160e-03,
+            1.50010e-02,
+            3.72390e-02,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    water.nu_fission = zeros
+    water.fission = zeros
+    water.scatter_gtg = torch.tensor(
+        [
+            [
+                4.447770e-02,
+                1.134000e-01,
+                7.234700e-04,
+                3.749900e-06,
+                5.318400e-08,
+                0.000000e-00,
+                0.000000e-00,
+            ],
+            [
+                0.000000e-00,
+                2.823340e-01,
+                1.299400e-01,
+                6.234000e-04,
+                4.800200e-05,
+                7.448600e-06,
+                1.045500e-06,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                3.452560e-01,
+                2.245700e-01,
+                1.699900e-02,
+                2.644300e-03,
+                5.034400e-04,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                9.102840e-02,
+                4.155100e-01,
+                6.373200e-02,
+                1.213900e-02,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                7.143700e-05,
+                1.391380e-01,
+                5.118200e-01,
+                6.122900e-02,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                2.215700e-03,
+                6.999130e-01,
+                5.373200e-01,
+            ],
+            [
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                0.000000e-00,
+                1.324400e-01,
+                2.480700e00,
+            ],
+        ],
+        dtype=dtype,
+        device=device,
+    ).T.unsqueeze(0)
+    water.finalize()
+    labels.append(water.label)
+    xs_server.add_material(water)
+
+    control_rod = Material("Control Rod")
+    control_rod.chi = zeros
+    control_rod.total = torch.tensor(
+        [
+            2.16768e-01,
+            4.80098e-01,
+            8.86369e-01,
+            9.70009e-01,
+            9.10482e-01,
+            1.13775e00,
+            1.84048e00,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    control_rod.absorption = torch.tensor(
+        [
+            1.70490e-03,
+            8.36224e-03,
+            8.37901e-02,
+            3.97797e-01,
+            6.98763e-01,
+            9.29508e-01,
+            1.17836e00,
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    control_rod.nu_fission = zeros
+    control_rod.fission = zeros
+    control_rod.scatter_gtg = torch.tensor(
+        [
+            [
+                1.70563e-01,
+                4.44012e-02,
+                9.83670e-05,
+                1.27786e-07,
+                0.00000e-00,
+                0.00000e-00,
+                0.00000e-00,
+            ],
+            [
+                0.00000e-00,
+                4.71050e-01,
+                6.85480e-04,
+                3.91395e-10,
+                0.00000e-00,
+                0.00000e-00,
+                0.00000e-00,
+            ],
+            [
+                0.00000e-00,
+                0.00000e-00,
+                8.01859e-01,
+                7.20132e-04,
+                0.00000e-00,
+                0.00000e-00,
+                0.00000e-00,
+            ],
+            [
+                0.00000e-00,
+                0.00000e-00,
+                0.00000e-00,
+                5.70752e-01,
+                1.46015e-03,
+                0.00000e-00,
+                0.00000e-00,
+            ],
+            [
+                0.00000e-00,
+                0.00000e-00,
+                0.00000e-00,
+                6.55562e-05,
+                2.07838e-01,
+                3.81486e-03,
+                3.69760e-09,
+            ],
+            [
+                0.00000e-00,
+                0.00000e-00,
+                0.00000e-00,
+                0.00000e-00,
+                1.02427e-03,
+                2.02465e-01,
+                4.75290e-03,
+            ],
+            [
+                0.00000e-00,
+                0.00000e-00,
+                0.00000e-00,
+                0.00000e-00,
+                0.00000e-00,
+                3.53043e-03,
+                6.58597e-01,
+            ],
+        ],
+        dtype=dtype,
+        device=device,
+    ).T.unsqueeze(0)
+    control_rod.finalize()
+    labels.append(control_rod.label)
+    xs_server.add_material(control_rod)
+
+    xs_server.finalize()
+    return labels, xs_server
+
+
 # def c5g7():
 #     """
 #     XSs for the `seven-group C5G7 neutronics benchmark <https://www.oecd-nea.org

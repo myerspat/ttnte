@@ -44,7 +44,7 @@ protected:
     bool verbose = false, int preconditioner = 0)
     : nswp_(nswp), eps_(eps), max_rank_(max_rank), max_full_(max_full),
       kickrank_(kickrank), kick2_(kick2), local_iterations_(local_iterations),
-      resets_(resets), verbose_(verbose)
+      resets_(resets), verbose_(verbose), preconditioner_(preconditioner)
   {
     if (nswp_ < 1 || eps_ < 0 || max_rank_ < 1 || max_full < 0 ||
         kickrank < 0 || kick2 < 0 || local_iterations_ < 1 || resets_ < 1) {
@@ -73,6 +73,17 @@ public:
   /// @brief Solve the local linear system.
   /// @param local_system The local linear system to be solved.
   void solve(const linalg::LinearSystem::Ptr& local_system) override final;
+
+  // =================================================================
+  // Public getters / setters
+  /// @return The current truncation tolerance of the solver.
+  double get_eps() const noexcept override final { return eps_; }
+  /// @param eps The new truncation tolerance of the solver.
+  void set_eps(double eps) override final { eps_ = eps; }
+  /// @return The maximum rank.
+  int get_max_rank() const noexcept final override { return max_rank_; }
+  /// @param max_rank The new maximum rank of the solver.
+  void set_max_rank(int max_rank) final override { max_rank_ = max_rank; }
 };
 
 } // namespace ttnte::solvers

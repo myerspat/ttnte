@@ -18,9 +18,8 @@ public:
 protected:
   // =================================================================
   // Protected constructors
-  BlockJacobiStrategy(bool use_gpu = DEFAULT_USE_GPU,
-    MemoryPolicy memory_policy = DEFAULT_MEMORY_POLICY)
-    : DDStrategy(use_gpu, memory_policy)
+  BlockJacobiStrategy(DDSolverConfig config = {})
+    : DDStrategy(std::move(config))
   {}
 
 public:
@@ -37,16 +36,28 @@ public:
 
   // =================================================================
   // Public methods
-  // /// @brief Build the iteration dag for this strategy with no GPU support.
-  // /// @param dag The task graph to be filled.
-  // /// @param local_systems A vector of local systems for this MPI rank.
-  // void build_cpu_iteration_dag(task::TaskGraph& dag,
-  //   const std::vector<SystemPtr>& local_systems) const override final;
-  // /// @brief Build the iteration dag for this strategy with GPU support.
-  // /// @param dag The task graph to be filled.
-  // /// @param local_systems A vector of local systems for this MPI rank.
-  // void build_gpu_iteration_dag(task::TaskGraph& dag,
-  //   const std::vector<SystemPtr>& local_systems) const override final;
+  /// @brief Build the iteration DAG for one block-Jacobi sweep (CPU path).
+  /// @param dag The DAG to add to.
+  /// @param local_system The local linear system.
+  /// @param gid2local The map between the global linear system ID to the rank
+  /// local one.
+  /// @param boundary_comms The boundary communicators.
+  void build_cpu_iteration_dag(task::TaskGraph& dag,
+    const std::vector<SystemPtr>& local_systems,
+    const std::unordered_map<int64_t, size_t>& gid2local,
+    const parallel::BoundaryCommunicator& boundary_comms) const override final;
+
+  /// @brief Build the iteration DAG for one block-Jacobi sweep (GPU path).
+  /// @param dag The DAG to add to.
+  /// @param local_system The local linear system.
+  /// @param gid2local The map between the global linear system ID to the rank
+  /// local one.
+  /// @param boundary_comms The boundary communicators.
+  void build_gpu_iteration_dag(task::TaskGraph& dag,
+    const std::vector<SystemPtr>& local_systems,
+    const std::unordered_map<int64_t, size_t>& gid2local,
+    const parallel::BoundaryCommunicator& boundary_comms,
+    const parallel::StreamPool::Ptr& stream_pool) const override final;
 
   /// @brief Add the task to solve the linear system for a certain mesh block as
   /// a CPU-based task.
@@ -54,17 +65,21 @@ public:
   /// @param local_system The local linear system.
   /// @param is_async Whether to make the compute task synchronous or
   /// asynchronous.
-  task::Task* build_cpu_compute_dag(
-    task::TaskGraph& dag, const SystemPtr& local_system, bool is_async = true);
+  /// @return The last nodes of the new portion of the DAG (one for each
+  /// coupling).
+  c10::SmallVector<task::Task*, 6> build_cpu_compute_dag(
+    task::TaskGraph& dag, const SystemPtr& local_system) const;
   /// @brief Add the task to solve the linear system for a certain mesh block as
   /// a GPU-based task.
   /// @param dag The dag to add the compute task to.
   /// @param local_system The local linear system.
   /// @param is_async Whether to make the compute task synchronous or
   /// asynchronous.
-  std::tuple<task::Task*, task::Task*, task::Task*> build_gpu_compute_dag(
-    task::TaskGraph& dag, const SystemPtr& local_system,
-    const parallel::StreamPool::Ptr& stream_pool, bool is_async = true);
+  /// @return The last nodes of the new portion of the DAG (one for each
+  /// coupling).
+  c10::SmallVector<task::Task*, 6> build_gpu_compute_dag(task::TaskGraph& dag,
+    const SystemPtr& local_system,
+    const parallel::StreamPool::Ptr& stream_pool) const;
 };
 
 } // namespace ttnte::solvers

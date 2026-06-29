@@ -28,5 +28,15 @@ void register_LocalSolver(py::module_& m)
     // =================================================================
     // Public methods
     .def("solve", &LocalSolver::solve, py::arg("local_system"),
-      py::call_guard<py::gil_scoped_release>());
+      py::call_guard<py::gil_scoped_release>())
+    .def("presolve", &LocalSolver::presolve, py::arg("local_system"),
+      py::call_guard<py::gil_scoped_release>())
+    .def("postsolve", &LocalSolver::postsolve, py::arg("local_system"),
+      py::arg("x"), py::call_guard<py::gil_scoped_release>())
+
+    // =================================================================
+    // Public getters / setters
+    .def_property("eps", &LocalSolver::get_eps, &LocalSolver::set_eps)
+    .def_property(
+      "max_rank", &LocalSolver::get_max_rank, &LocalSolver::set_max_rank);
 }

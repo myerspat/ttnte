@@ -25,6 +25,38 @@ static MPI_Datatype ttnte2mpi(ttnte::parallel::DataType type)
   }
 }
 
+static MPI_Op ttnte2mpi(ttnte::parallel::MPIOp op)
+{
+  using MPIOp = ttnte::parallel::MPIOp;
+
+  switch (op) {
+  case MPIOp::MAX:
+    return MPI_MAX;
+  case MPIOp::MIN:
+    return MPI_MIN;
+  case MPIOp::SUM:
+    return MPI_SUM;
+  case MPIOp::PROD:
+    return MPI_PROD;
+  case MPIOp::LAND:
+    return MPI_LAND;
+  case MPIOp::BAND:
+    return MPI_BAND;
+  case MPIOp::LOR:
+    return MPI_LOR;
+  case MPIOp::BOR:
+    return MPI_BOR;
+  case MPIOp::LXOR:
+    return MPI_LXOR;
+  case MPIOp::BXOR:
+    return MPI_BXOR;
+  case MPIOp::MAXLOC:
+    return MPI_MAXLOC;
+  case MPIOp::MINLOC:
+    return MPI_MINLOC;
+  }
+}
+
 } // namespace
 
 namespace ttnte::parallel {
@@ -146,6 +178,19 @@ Request Communicator::iallgather(const BufferType* send_buffer, int send_count,
   return Request(MPI_Request_c2f(c_req));
 }
 
+template<typename BufferType>
+Request Communicator::iallreduce(const BufferType* send_buffer,
+  BufferType* recv_buffer, int count, MPIOp op) const
+{
+  // Get the MPI type
+  auto type = MPI_Type_f2c(ttnte::parallel::get_mpi_type<BufferType>());
+
+  MPI_Request c_req;
+  MPI_Iallreduce(send_buffer, recv_buffer, count, type, ttnte2mpi(op),
+    MPI_Comm_f2c(f_comm_), &c_req);
+  return Request(MPI_Request_c2f(c_req));
+}
+
 template<typename BufferType, typename Tag>
 Request Communicator::isend(
   const BufferType* send_buffer, int count, int target_rank, Tag tag) const
@@ -208,6 +253,8 @@ Request Communicator::imrecv(
     int send_count, Type* recv_buffer, int recv_count) const;                  \
   template Request Communicator::iallgather<Type>(const Type* send_buffer,     \
     int send_count, Type* recv_buffer, int recv_count) const;                  \
+  template Request Communicator::iallreduce<Type>(                             \
+    const Type* send_buffer, Type* recv_buffer, int count, MPIOp op) const;    \
   template void Communicator::alltoall<Type>(const Type* send_buffer,          \
     int send_count, Type* recv_buffer, int recv_count) const;                  \
   template void Communicator::bcast<Type>(                                     \

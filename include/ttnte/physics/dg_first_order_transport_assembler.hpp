@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ttnte/cad/patch.hpp"
+#include "ttnte/linalg/source.hpp"
 #include "ttnte/physics/assembly_configs.hpp"
 #include "ttnte/physics/dg_assembler.hpp"
 #include "ttnte/physics/dg_first_order_transport_backends.hpp"
@@ -185,8 +186,42 @@ public:
     }
     lhs.round_(this->config_.rounding.eps, this->config_.rounding.max_rank);
 
+    // Build couplings for each INTERNAL face before creating the linear system
+    // so that boundary operators are packed into the contiguous pinned buffer.
+    c10::SmallVector<linalg::NeighborCoupling, 6> couplings;
+    {
+      size_t face_idx = 0;
+      for (int64_t dim = 0; dim < NumDim; dim++) {
+        for (bool is_upper : {false, true}) {
+          if (conditions[face_idx] == BoundaryType::INTERNAL) {
+            for (const auto& conn :
+              this->block_->get_boundary_info(dim, is_upper)
+                .get_connections()) {
+              linalg::NeighborCoupling coupling;
+              coupling.fid = face_idx;
+              coupling.connection = conn;
+              coupling.boundary_op = inflow_ops_[face_idx];
+              coupling.dim = static_cast<size_t>(dim);
+              coupling.is_upper = is_upper;
+              coupling.recv_buffer = linalg::State();
+              couplings.push_back(std::move(coupling));
+            }
+          }
+          ++face_idx;
+        }
+      }
+    }
+
+    // Wrap fission operator in an EigenSource so the flat buffer carries it
+    // to the device in one DMA transfer; nullptr for non-fissile problems.
+    linalg::Source::Ptr source = nullptr;
+    if (fission_op_.defined()) {
+      source = linalg::EigenSource::create(fission_op_);
+    }
+
     // Setup the linear system and return
-    this->linear_system_ = linalg::LinearSystem::create(lhs);
+    this->linear_system_ = linalg::LinearSystem::create(
+      lhs, std::move(couplings), linalg::State(), std::move(source));
     return this->linear_system_;
   }
 

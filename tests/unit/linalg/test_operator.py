@@ -315,3 +315,163 @@ def test_from_dense_to_dense(device, dtype):
 
     # The reconstructed tensor should match the original within the specified truncation tolerance
     torch.testing.assert_close(dense_tensor, dense_reconstructed, rtol=1e-3, atol=1e-4)
+
+
+# =============================================================================
+# narrow — m-modes (uninterleaved and interleaved)
+# =============================================================================
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_operator_narrow_m_mode_uninterleaved(dtype):
+    """Narrow(dim, ..., interleaved=False) for dim < K narrows the m-mode."""
+    m_modes = [3, 4]
+    n_modes = [5, 6]
+    engine = TTEngine.ones(m_modes, n_modes, dtype=dtype)
+    op = Operator(engine)
+    K = len(m_modes)
+    # to_dense(interleave=False) → [m0, m1, n0, n1]
+    dense_full = op.as_tt().to_dense(interleave=False)
+
+    for d in range(K):
+        narrowed = op.narrow(d, 0, 1, interleaved=False)
+        assert narrowed.as_tt().m_modes[d] == 1
+        assert narrowed.as_tt().n_modes == n_modes
+        narrowed_dense = narrowed.as_tt().to_dense(interleave=False)
+        torch.testing.assert_close(narrowed_dense, dense_full.narrow(d, 0, 1))
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_operator_narrow_m_mode_interleaved(dtype):
+    """Narrow(2*dim, ..., interleaved=True) for even dim narrows the m-mode."""
+    m_modes = [3, 4]
+    n_modes = [5, 6]
+    engine = TTEngine.ones(m_modes, n_modes, dtype=dtype)
+    op = Operator(engine)
+    K = len(m_modes)
+    # to_dense(interleave=True) → [m0, n0, m1, n1]
+    dense_full = op.as_tt().to_dense(interleave=True)
+
+    for d in range(K):
+        narrowed = op.narrow(2 * d, 0, 1, interleaved=True)
+        assert narrowed.as_tt().m_modes[d] == 1
+        assert narrowed.as_tt().n_modes == n_modes
+        narrowed_dense = narrowed.as_tt().to_dense(interleave=True)
+        torch.testing.assert_close(narrowed_dense, dense_full.narrow(2 * d, 0, 1))
+
+
+# =============================================================================
+# narrow — n-modes (uninterleaved and interleaved)
+# =============================================================================
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_operator_narrow_n_mode_uninterleaved(dtype):
+    """Narrow(K+dim, ..., interleaved=False) narrows the n-mode of that core."""
+    m_modes = [3, 4]
+    n_modes = [5, 6]
+    engine = TTEngine.ones(m_modes, n_modes, dtype=dtype)
+    op = Operator(engine)
+    K = len(m_modes)
+    dense_full = op.as_tt().to_dense(interleave=False)
+
+    for d in range(K):
+        narrowed = op.narrow(K + d, 0, 1, interleaved=False)
+        assert narrowed.as_tt().n_modes[d] == 1
+        assert narrowed.as_tt().m_modes == m_modes
+        narrowed_dense = narrowed.as_tt().to_dense(interleave=False)
+        torch.testing.assert_close(narrowed_dense, dense_full.narrow(K + d, 0, 1))
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_operator_narrow_n_mode_interleaved(dtype):
+    """Narrow(2*dim+1, ..., interleaved=True) narrows the n-mode of that core."""
+    m_modes = [3, 4]
+    n_modes = [5, 6]
+    engine = TTEngine.ones(m_modes, n_modes, dtype=dtype)
+    op = Operator(engine)
+    # to_dense(interleave=True) → [m0, n0, m1, n1]
+    dense_full = op.as_tt().to_dense(interleave=True)
+
+    for d in range(len(m_modes)):
+        narrowed = op.narrow(2 * d + 1, 0, 1, interleaved=True)
+        assert narrowed.as_tt().n_modes[d] == 1
+        assert narrowed.as_tt().m_modes == m_modes
+        narrowed_dense = narrowed.as_tt().to_dense(interleave=True)
+        torch.testing.assert_close(narrowed_dense, dense_full.narrow(2 * d + 1, 0, 1))
+
+
+# =============================================================================
+# narrow — mathematical consistency
+# =============================================================================
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_operator_narrow_n_mode_apply_consistency(dtype):
+    """mv(op.narrow(n-mode d), x.narrow(d)) == mv(op, x) when x is zero outside slice
+    d=0.
+
+    The narrowed product sums only over j_d=0; if the full state is also zero
+    for j_d>0, both products give the same result.
+    """
+    from ttnte.linalg import State, mv
+
+    m_modes = [3, 4]
+    n_modes = [3, 4]
+    K = len(m_modes)
+
+    torch.manual_seed(42)
+    # State supported only on the first slice of dimension 0
+    state_dense = torch.zeros(*n_modes, dtype=dtype)
+    state_dense[0, :] = torch.randn(n_modes[1], dtype=dtype)
+    op_dense = torch.randn(*m_modes, *n_modes, dtype=dtype)
+
+    state_obj = State(TTEngine.from_dense(state_dense, eps=0.0))
+    op_obj = Operator(
+        TTEngine.from_dense(op_dense, m_modes=m_modes, n_modes=n_modes, eps=0.0)
+    )
+
+    d = 0
+    op_narrowed = op_obj.narrow(K + d, 0, 1, interleaved=False)
+    state_narrowed = state_obj.narrow(d, 0, 1)
+
+    result_full = mv(op_obj, state_obj)
+    result_narrowed = mv(op_narrowed, state_narrowed)
+
+    full_dense = result_full.as_tt().to_dense().reshape(m_modes)
+    narrowed_dense = result_narrowed.as_tt().to_dense().reshape(m_modes)
+    torch.testing.assert_close(narrowed_dense, full_dense, rtol=1e-4, atol=1e-4)
+
+
+# =============================================================================
+# narrow — in-place and mutation safety
+# =============================================================================
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_operator_narrow_inplace(dtype):
+    m_modes = [3, 4]
+    n_modes = [5, 6]
+    op = Operator(TTEngine.ones(m_modes, n_modes, dtype=dtype))
+    K = len(m_modes)
+    ref = op.narrow(K + 0, -1, 1).as_tt().to_dense(interleave=False)
+
+    op.narrow_(K + 0, -1, 1)
+
+    assert op.as_tt().n_modes[0] == 1
+    torch.testing.assert_close(op.as_tt().to_dense(interleave=False), ref)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_operator_narrow_does_not_mutate(dtype):
+    m_modes = [3, 4]
+    n_modes = [5, 6]
+    op = Operator(TTEngine.ones(m_modes, n_modes, dtype=dtype))
+    original_m = list(op.as_tt().m_modes)
+    original_n = list(op.as_tt().n_modes)
+
+    _ = op.narrow(0, 0, 1)
+    _ = op.narrow(len(m_modes) + 0, 0, 1)
+
+    assert list(op.as_tt().m_modes) == original_m
+    assert list(op.as_tt().n_modes) == original_n

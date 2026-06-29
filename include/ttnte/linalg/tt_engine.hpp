@@ -1,6 +1,5 @@
 #pragma once
 
-#include "ttnte/linalg/format_type.hpp"
 #include <limits>
 #include <torch/extension.h>
 
@@ -215,6 +214,24 @@ public:
   TTEngine narrow(size_t dim, int64_t start, int64_t length = 1,
     bool interleaved = false) const;
 
+  /// @brief Reverse the index ordering of one or more modes in-place.
+  /// `dims` follows the same layout convention as narrow_():
+  ///   - `interleaved=false` (default): dim < K flips the m-mode of core dim;
+  ///     dim >= K flips the n-mode of core dim-K.
+  ///   - `interleaved=true`: even dim flips the m-mode of core dim/2;
+  ///     odd dim flips the n-mode of core dim/2.
+  /// Multiple dims mapping to the same core are grouped into one flip call.
+  /// @param dims        Axis indices in the chosen layout.
+  /// @param interleaved Whether dims follow the interleaved layout.
+  /// @return Reference to this TT after flipping.
+  TTEngine& flip_(at::IntArrayRef dims, bool interleaved = false);
+
+  /// @brief Reverse the index ordering of one or more modes (out-of-place).
+  /// @param dims        Axis indices in the chosen layout.
+  /// @param interleaved Whether dims follow the interleaved layout.
+  /// @return A new TTEngine with the specified modes flipped.
+  TTEngine flip(at::IntArrayRef dims, bool interleaved = false) const;
+
   /// @brief Create a TT-vector of zeros.
   /// @param m_modes The modes for each core.
   /// @param device The device to put this on.
@@ -260,6 +277,26 @@ public:
   /// @param cores The indices of which cores to index.
   /// @return The transposed TT.
   TTEngine transpose(const c10::SmallVector<int64_t, 6>& core_idxs = {}) const;
+
+  /// @brief Permute the ordering of TT cores in-place.
+  /// @param dims      New order of core indices; dims[k] = source core at
+  /// position k.
+  /// @param eps       SVD truncation tolerance for each adjacent swap (default
+  /// 0 = lossless).
+  /// @param max_rank  Maximum bond dimension after each swap.
+  /// @return Reference to this TT after permuting.
+  TTEngine& permute_(at::IntArrayRef dims, double eps = 0.0,
+    int64_t max_rank = std::numeric_limits<int64_t>::max());
+
+  /// @brief Permute the ordering of TT cores (out-of-place).
+  /// @param dims      New order of core indices; dims[k] = source core at
+  /// position k.
+  /// @param eps       SVD truncation tolerance for each adjacent swap (default
+  /// 0 = lossless).
+  /// @param max_rank  Maximum bond dimension after each swap.
+  /// @return A new TT with cores in the requested order.
+  TTEngine permute(at::IntArrayRef dims, double eps = 0.0,
+    int64_t max_rank = std::numeric_limits<int64_t>::max()) const;
 
   /// @brief Diagonalize a select set of cores (in-place). This assumes the
   /// cores are already for a TT-vector.
@@ -465,6 +502,14 @@ public:
   // Public getters / setters
   /// @return The number of cores in the TT.
   size_t size() const noexcept { return cores_.size(); }
+  /// @return The total number of logical modes: 2 * size(), since every core
+  /// is 4-D [r_l, m, n, r_r] regardless of whether it represents a state or
+  /// operator. State and Operator correct for trivial (size-1) modes in their
+  /// own ndimension() implementations.
+  int64_t ndimension() const noexcept
+  {
+    return 2 * static_cast<int64_t>(cores_.size());
+  }
   /// @return Get the TT-cores.
   const Tensors& get_cores() const noexcept { return cores_; }
   /// @return Get the device of the TT.
@@ -473,6 +518,8 @@ public:
   at::ScalarType get_dtype() const noexcept { return cores_[0].scalar_type(); }
   /// @return Get the storage size of the TT.
   int64_t get_numel() const;
+  /// @return The compression ratio.
+  double get_compression() const;
   /// @return Get the TT-ranks.
   c10::SmallVector<int64_t, 7> get_ranks() const;
   /// @return Get the size of the free indices.

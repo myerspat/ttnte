@@ -47,10 +47,12 @@ void register_Boundary(py::module_& m)
   // NeighborInfo struct
   py::class_<NeighborInfo>(m, "NeighborInfo")
     .def(py::init([](int64_t global_id, size_t face_id, int mpi_rank,
-                    const BoundaryMapping& mapping) {
-      return NeighborInfo {global_id, face_id, mpi_rank, mapping};
+                    size_t dim, bool is_upper, const BoundaryMapping& mapping) {
+      return NeighborInfo {
+        global_id, face_id, mpi_rank, dim, is_upper, mapping};
     }),
       py::arg("global_id"), py::arg("face_id"), py::arg("mpi_rank"),
+      py::arg("dim") = size_t(0), py::arg("is_upper") = false,
       py::arg("mapping") = BoundaryMapping())
     .def("__repr__", &NeighborInfo::to_string)
     .def("__str__",
@@ -60,10 +62,11 @@ void register_Boundary(py::module_& m)
         return ss.str();
       })
 
-    // The const members must be bound as readonly!
     .def_readwrite("gid", &NeighborInfo::gid)
     .def_readwrite("fid", &NeighborInfo::fid)
     .def_readwrite("mpi_rank", &NeighborInfo::mpi_rank)
+    .def_readwrite("dim", &NeighborInfo::dim)
+    .def_readwrite("is_upper", &NeighborInfo::is_upper)
     .def_readwrite("mapping", &NeighborInfo::mapping);
 
   // Boundary struct

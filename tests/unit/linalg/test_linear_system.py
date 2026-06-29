@@ -1,7 +1,7 @@
 import torch
 import pytest
 
-from ttnte.linalg import State, Operator, LinearSystem, TTEngine
+from ttnte.linalg import State, Operator, LinearSystem, TTEngine, Source
 
 test_params = [
     ("cpu", torch.float32),
@@ -30,8 +30,9 @@ def test_initialize(device, dtype):
         for i in range(1, 4)
     ]
     state = State(TTEngine.clone_from(cores), "state")
-    source = State(TTEngine.clone_from(cores), "source")
-    assert operator.is_tt and state.is_tt and source.is_tt
+    source_state = State(TTEngine.clone_from(cores), "source")
+    source = Source(source_state)
+    assert operator.is_tt and state.is_tt and source_state.is_tt
 
     assert (
         operator.device == torch.device(device)
@@ -53,7 +54,7 @@ def test_initialize(device, dtype):
     assert source.dtype == dtype
 
     # Create a linear system
-    ls = LinearSystem(operator, state, source)
+    ls = LinearSystem(operator, state=state, source=source)
 
     new_operator = ls.interior_op
     new_state = ls.state
@@ -82,7 +83,7 @@ def test_initialize(device, dtype):
         zip(
             new_operator.as_tt().cores,
             new_state.as_tt().cores,
-            new_source.as_tt().cores,
+            new_source.state.as_tt().cores,
         )
     ):
         i = j + 1
@@ -125,14 +126,14 @@ def test_to_methods(dtype):
         for i in range(1, 4)
     ]
     state = State(TTEngine.clone_from(cores), "state")
-    source = State(TTEngine.clone_from(cores), "source")
+    source_state = State(TTEngine.clone_from(cores), "source")
+    source = Source(source_state)
 
-    # Create linear system
-    ls = LinearSystem(operator)
+    # Create linear system: source is in the buffer, state is non-static
+    ls = LinearSystem(operator, source=source)
     ls.state = state
-    ls.source = source
 
-    # Test buffer send
+    # Test buffer send: buffer-backed source moves to device with buffer
     ls.transfer_buffer(torch.device("cuda", 0), dtype)
 
     torch.testing.assert_close(
@@ -141,11 +142,14 @@ def test_to_methods(dtype):
     )
     assert ls.interior_op.device == torch.device("cuda", 0)
     assert ls.interior_op.dtype == dtype
+    # Non-static state stays on CPU until transfer_nonbuffer
     assert ls.state.device == torch.device("cpu")
     assert ls.state.dtype == torch.float64
-    assert ls.source.device == torch.device("cpu")
-    assert ls.source.dtype == torch.float64
+    # Buffer-backed source has moved to GPU with the buffer
+    assert ls.source.device == torch.device("cuda", 0)
+    assert ls.source.dtype == dtype
 
+    # transfer_nonbuffer moves the non-static state; fixed source is already in buffer
     ls.transfer_nonbuffer(torch.device("cuda", 0), dtype)
     assert ls.state.device == torch.device("cuda", 0)
     assert ls.state.dtype == dtype

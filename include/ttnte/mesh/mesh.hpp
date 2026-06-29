@@ -319,7 +319,7 @@ public:
           // Call boundary mapping which is a vector of true/false info
           // For D dimensions:
           const auto& [is_coupled, mapping_a, mapping_b] =
-            get_boundary_mapping(bblock_a, bblock_b, tol);
+            get_boundary_mapping(bblock_a, bblock_b, dim_a, dim_b, tol);
 
           if (is_coupled) {
             const size_t face_a_id =
@@ -329,11 +329,11 @@ public:
 
             // Set the mapping and neighbor information for each boundary
             block_a->add_connection(dim_a, is_upper_a,
-              {static_cast<int64_t>(block_b_idx), face_b_id, my_rank_,
-                mapping_a});
+              {static_cast<int64_t>(block_b_idx), face_b_id, my_rank_, dim_b,
+                is_upper_b, mapping_a});
             block_b->add_connection(dim_b, is_upper_b,
-              {static_cast<int64_t>(block_a_idx), face_a_id, my_rank_,
-                mapping_b});
+              {static_cast<int64_t>(block_a_idx), face_a_id, my_rank_, dim_a,
+                is_upper_a, mapping_b});
 
             // We found a match
             found_match = true;
@@ -384,14 +384,21 @@ public:
 
   /// @brief Check if the two faces match and determine if the dimensions must
   /// permute or flip to make this work.
-  /// @param face_a The first boundary represented as another MeshBlock.
-  /// @param face_b The second boundary represented as another MeshBlock.
+  /// @param face_a  The first boundary represented as another MeshBlock.
+  /// @param face_b  The second boundary represented as another MeshBlock.
+  /// @param dim_a   Parametric dimension of the face in block A (0-based).
+  /// @param dim_b   Parametric dimension of the face in block B (0-based).
   /// @return A tuple where the first element is a Boolean of whether the two
   /// boundaries match, the second is the mapping for data received from face_b
   /// going to face_a, and the third is the opposite of the first mapping.
+  ///
+  /// mapping.perm is the full spatial TT core permutation: perm[i] is the
+  /// SOURCE spatial index whose data belongs at TARGET spatial position i.
+  /// mapping.flip[k] is whether the k-th perpendicular TARGET dimension
+  /// (enumerated by skipping the face dimension in natural order) is reversed.
   static std::tuple<bool, BoundaryMapping, BoundaryMapping>
   get_boundary_mapping(const BlockTypePtr& face_a, const BlockTypePtr& face_b,
-    const double& tol = 1e-8)
+    size_t dim_a, size_t dim_b, const double& tol = 1e-8)
   {
     // Boundary mappings to fill
     BoundaryMapping mapping_a;
@@ -440,21 +447,49 @@ public:
 
         // Check for an exact match
         if (torch::allclose(coords_a, test_b, tol, tol)) {
-          // How face A reads face B's ghost data
-          mapping_a.perm = full_p;
+          // Compute inverse face-coord permutation (used for mapping_b flip)
+          c10::SmallVector<int64_t, 2> p_inv(ndim);
+          c10::SmallVector<bool, 2> f_inv(ndim, false);
+          for (int i = 0; i < ndim; ++i) {
+            p_inv[p[i]] = i;
+            f_inv[p[i]] = current_flips[i];
+          }
+
+          // Build perpendicular spatial dimension lists for each side.
+          // num_dim = ndim + 1 = NumDim (full number of spatial dimensions).
+          const int64_t num_dim = ndim + 1;
+          c10::SmallVector<int64_t, 3> tgt_perp_a, src_perp_a;
+          c10::SmallVector<int64_t, 3> tgt_perp_b, src_perp_b;
+          for (int64_t d = 0; d < num_dim; ++d) {
+            if (d != static_cast<int64_t>(dim_a)) {
+              tgt_perp_a.push_back(d);
+              src_perp_b.push_back(d);
+            }
+            if (d != static_cast<int64_t>(dim_b)) {
+              src_perp_a.push_back(d);
+              tgt_perp_b.push_back(d);
+            }
+          }
+
+          // Full spatial TT core permutation: perm[i] = source spatial index
+          // for target spatial position i.
+          //
+          // How face A reads face B's ghost data (target=A, source=B):
+          c10::SmallVector<int64_t, 3> perm_a(num_dim);
+          perm_a[dim_a] = static_cast<int64_t>(dim_b);
+          for (int64_t i = 0; i < ndim; ++i) {
+            perm_a[tgt_perp_a[i]] = src_perp_a[p[i]];
+          }
+          mapping_a.perm = perm_a;
           mapping_a.flip = current_flips;
 
-          // How face B reads face A's ghost data (inverse)
-          c10::SmallVector<int64_t, 3> p_inv(ndim);
-          c10::SmallVector<bool, 2> f_inv(ndim, false);
-
-          for (int i = 0; i < ndim; ++i) {
-            p_inv[p[i]] = i;                // Inverse permutation
-            f_inv[p[i]] = current_flips[i]; // Inverse flip
+          // How face B reads face A's ghost data (target=B, source=A):
+          c10::SmallVector<int64_t, 3> perm_b(num_dim);
+          perm_b[dim_b] = static_cast<int64_t>(dim_a);
+          for (int64_t i = 0; i < ndim; ++i) {
+            perm_b[tgt_perp_b[i]] = src_perp_b[p_inv[i]];
           }
-          p_inv.push_back(full_p.back());
-
-          mapping_b.perm = p_inv;
+          mapping_b.perm = perm_b;
           mapping_b.flip = f_inv;
 
           return std::make_tuple(true, mapping_a, mapping_b);
@@ -586,7 +621,9 @@ public:
   /// @brief Remove any blocks who's global ID (GID) does not exist in
   /// keep_gids.
   /// @param keep_gids GIDs of the blocks we plan to keep.
-  void cull_blocks(const torch::Tensor& keep_gids)
+  /// @param gid2rank Map from GID to MPI rank destination.
+  void cull_blocks(const torch::Tensor& keep_gids,
+    const std::unordered_map<int64_t, int>& gid2rank)
   {
     TORCH_CHECK(
       keep_gids.ndimension() == 1 && keep_gids.size(0) <= blocks_.size(),
@@ -609,6 +646,18 @@ public:
     // Save the restricted versions
     blocks_ = std::move(new_blocks_);
     index_map_ = std::move(new_index_map_);
+
+    // Iterate through the blocks and update their boundaries to the correct MPI
+    // ranks
+    for (auto& block : blocks_) {
+      for (auto& binfo : block->get_boundary_info()) {
+        if (binfo.get_type() == physics::BoundaryType::INTERNAL) {
+          for (auto& connection : binfo.get_connections()) {
+            connection.mpi_rank = gid2rank.at(connection.gid);
+          }
+        }
+      }
+    }
   }
 
   // =================================================================
