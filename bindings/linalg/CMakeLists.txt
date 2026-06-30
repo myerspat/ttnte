@@ -1,42 +1,45 @@
-# Relevant files from bindings/linalg
-set(LINALG_BINDINGS
-    bindings.cpp
-    tt_operator.cpp
-    contraction_step.cpp
-    sparse_operator.cpp
-    scatter_operator.cpp
-    fission_operator.cpp
+# # Relevant files from src
+set(LINALG_SRC_REL
+    neighbor_coupling.cpp
+    linear_system.cpp
     operator.cpp
-    linear_operator.cpp
-    gmres.cpp
-    utils.cpp
-    eig.cpp)
+    state.cpp
+    tt_engine.cpp
+    matrix_ops.cpp
+    tt_ops.cpp)
 
-# Relevant files from src
+# Relevant files from bindings/linalg
+set(LINALG_BINDINGS_REL
+    bindings.cpp
+    format_type.cpp
+    operator.cpp
+    state.cpp
+    tt_engine.cpp
+    neighbor_coupling.cpp
+    source.cpp
+    linear_system.cpp
+    matrix_ops.cpp
+    ops.cpp
+    tt_ops.cpp)
+
+# Define the directory paths (Use local variables here, then push if needed)
+set(LINALG_SRC_DIR "${PROJECT_SOURCE_DIR}/src/linalg")
+set(LINALG_BINDINGS_DIR "${PROJECT_SOURCE_DIR}/bindings/linalg")
+
+# Transform the lists (Prepend the path to the relative files)
+list(TRANSFORM LINALG_SRC_REL PREPEND "${LINALG_SRC_DIR}/")
+list(TRANSFORM LINALG_BINDINGS_REL PREPEND "${LINALG_BINDINGS_DIR}/")
+
+# Push the finalized lists and paths to the Parent Scope
 set(LINALG_SRC
-    ${PROJECT_SOURCE_DIR}/src/linalg/tt_operator.cpp
-    ${PROJECT_SOURCE_DIR}/src/linalg/contraction_step.cpp
-    ${PROJECT_SOURCE_DIR}/src/linalg/sparse_operator.cpp
-    ${PROJECT_SOURCE_DIR}/src/linalg/scatter_operator.cpp
-    ${PROJECT_SOURCE_DIR}/src/linalg/fission_operator.cpp
-    ${PROJECT_SOURCE_DIR}/src/linalg/operator.cpp
-    ${PROJECT_SOURCE_DIR}/src/linalg/linear_operator.cpp
-    ${PROJECT_SOURCE_DIR}/src/linalg/gmres.cpp
-    ${PROJECT_SOURCE_DIR}/src/linalg/eig.cpp)
-
-add_library(linalg MODULE ${LINALG_BINDINGS} ${LINALG_SRC})
-target_include_directories(
-  linalg
-  PRIVATE ${TORCH_INCLUDE_DIRS} ${PROJECT_SOURCE_DIR}/include
-          ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/bindings/linalg
-          ${Python3_INCLUDE_DIR})
-
-# Link libraries
-target_link_libraries(linalg PRIVATE ${TORCH_LIBRARIES} ${TORCH_PYTHON_LIBRARY})
-
-# Set output name
-set_target_properties(
-  linalg
-  PROPERTIES OUTPUT_NAME "linalg"
-             PREFIX "cpp/"
-             SUFFIX ".so")
+    ${LINALG_SRC_REL}
+    PARENT_SCOPE)
+set(LINALG_BINDINGS
+    ${LINALG_BINDINGS_REL}
+    PARENT_SCOPE)
+set(LINALG_SRC_DIR
+    ${LINALG_SRC_DIR}
+    PARENT_SCOPE)
+set(LINALG_BINDINGS_DIR
+    ${LINALG_BINDINGS_DIR}
+    PARENT_SCOPE)

@@ -21,5 +21,7 @@ warnings.filterwarnings(
 
 tn.set_default_dtype(tn.float64)
 
+from ttnte.parallel import mpi_context
+
 # This should always be the last line of this file
 __version__ = "0.0.0b0"

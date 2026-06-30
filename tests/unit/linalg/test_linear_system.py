@@ -1,0 +1,165 @@
+import torch
+import pytest
+
+from ttnte.linalg import State, Operator, LinearSystem, TTEngine, Source
+
+test_params = [
+    ("cpu", torch.float32),
+    ("cpu", torch.float64),
+    ("cuda", torch.float32),
+    ("cuda", torch.float64),
+]
+
+
+@pytest.mark.parametrize("device, dtype", test_params)
+def test_initialize(device, dtype):
+    # Skip if GPU is requested but not available
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    cores = [
+        torch.ones((i * 10, i * 10), device=device, dtype=dtype).reshape(
+            (1, i * 10, i * 10, 1)
+        )
+        for i in range(1, 4)
+    ]
+    operator = Operator(TTEngine(cores), "operator")
+
+    cores = [
+        2 * torch.ones((i * 10), device=device, dtype=dtype).reshape((1, i * 10, 1))
+        for i in range(1, 4)
+    ]
+    state = State(TTEngine.clone_from(cores), "state")
+    source_state = State(TTEngine.clone_from(cores), "source")
+    source = Source(source_state)
+    assert operator.is_tt and state.is_tt and source_state.is_tt
+
+    assert (
+        operator.device == torch.device(device)
+        if device == "cpu"
+        else torch.device(device, 0)
+    )
+    assert operator.dtype == dtype
+    assert (
+        state.device == torch.device(device)
+        if device == "cpu"
+        else torch.device(device, 0)
+    )
+    assert state.dtype == dtype
+    assert (
+        source.device == torch.device(device)
+        if device == "cpu"
+        else torch.device(device, 0)
+    )
+    assert source.dtype == dtype
+
+    # Create a linear system
+    ls = LinearSystem(operator, state=state, source=source)
+
+    new_operator = ls.interior_op
+    new_state = ls.state
+    new_source = ls.source
+
+    assert (
+        new_operator.device == torch.device(device)
+        if device == "cpu"
+        else torch.device(device, 0)
+    )
+    assert new_operator.dtype == dtype
+    assert (
+        new_state.device == torch.device(device)
+        if device == "cpu"
+        else torch.device(device, 0)
+    )
+    assert new_state.dtype == dtype
+    assert (
+        new_source.device == torch.device(device)
+        if device == "cpu"
+        else torch.device(device, 0)
+    )
+    assert new_source.dtype == dtype
+
+    for j, (op_core, st_core, so_core) in enumerate(
+        zip(
+            new_operator.as_tt().cores,
+            new_state.as_tt().cores,
+            new_source.state.as_tt().cores,
+        )
+    ):
+        i = j + 1
+        torch.testing.assert_close(
+            op_core,
+            torch.ones((i * 10, i * 10), device=device, dtype=dtype).reshape(
+                (1, i * 10, i * 10, 1)
+            ),
+        )
+        torch.testing.assert_close(
+            st_core,
+            2
+            * torch.ones(i * 10, device=device, dtype=dtype).reshape((1, i * 10, 1, 1)),
+        )
+        torch.testing.assert_close(
+            so_core,
+            2
+            * torch.ones(i * 10, device=device, dtype=dtype).reshape((1, i * 10, 1, 1)),
+        )
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_to_methods(dtype):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    cores = [
+        torch.ones((i * 10, i * 10), device="cpu", dtype=torch.float64).reshape(
+            (1, i * 10, i * 10, 1)
+        )
+        for i in range(1, 4)
+    ]
+    operator = Operator(TTEngine(cores), "operator")
+
+    cores = [
+        2
+        * torch.ones((i * 10), device="cpu", dtype=torch.float64).reshape(
+            (1, i * 10, 1)
+        )
+        for i in range(1, 4)
+    ]
+    state = State(TTEngine.clone_from(cores), "state")
+    source_state = State(TTEngine.clone_from(cores), "source")
+    source = Source(source_state)
+
+    # Create linear system: source is in the buffer, state is non-static
+    ls = LinearSystem(operator, source=source)
+    ls.state = state
+
+    # Test buffer send: buffer-backed source moves to device with buffer
+    ls.transfer_buffer(torch.device("cuda", 0), dtype)
+
+    torch.testing.assert_close(
+        ls.get_buffer(torch.device("cpu")).to(torch.device("cuda", 0), dtype),
+        ls.get_buffer(torch.device("cuda", 0)),
+    )
+    assert ls.interior_op.device == torch.device("cuda", 0)
+    assert ls.interior_op.dtype == dtype
+    # Non-static state stays on CPU until transfer_nonbuffer
+    assert ls.state.device == torch.device("cpu")
+    assert ls.state.dtype == torch.float64
+    # Buffer-backed source has moved to GPU with the buffer
+    assert ls.source.device == torch.device("cuda", 0)
+    assert ls.source.dtype == dtype
+
+    # transfer_nonbuffer moves the non-static state; fixed source is already in buffer
+    ls.transfer_nonbuffer(torch.device("cuda", 0), dtype)
+    assert ls.state.device == torch.device("cuda", 0)
+    assert ls.state.dtype == dtype
+    assert ls.source.device == torch.device("cuda", 0)
+    assert ls.source.dtype == dtype
+
+    ls.to_(torch.device("cpu"), torch.float64)
+    assert ls.interior_op.device == torch.device("cpu")
+    assert ls.interior_op.dtype == torch.float64
+    assert ls.state.device == torch.device("cpu")
+    assert ls.state.dtype == torch.float64
+    assert ls.source.device == torch.device("cpu")
+    assert ls.source.dtype == torch.float64

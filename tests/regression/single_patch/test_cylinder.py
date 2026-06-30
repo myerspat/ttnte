@@ -1,0 +1,222 @@
+from itertools import product
+
+from power_iteration import power
+
+import pytest
+import torch
+import numpy as np
+from igakit.cad import refine
+
+from ttnte import mpi_context
+from ttnte.xs.benchmarks import pu239
+from ttnte.cad.surfaces import circle
+from ttnte.cad import Patch, BSplineBasis
+from ttnte.mesh import IGAMesh
+from ttnte.physics import (
+    BoundaryType,
+    BCPlane,
+    DGTransportAssemblerConfig,
+    DIGAFirstOrderTransportAssembler2D,
+)
+from ttnte.math import ProductQuadrature
+from ttnte.linalg import Operator, TTEngine, mm
+
+test_params = [
+    ("cpu", torch.float32),
+    ("cpu", torch.float64),
+    ("cuda", torch.float32),
+    ("cuda", torch.float64),
+]
+
+
+def evaluate_boundary(patch, rc, dtype):
+    # Plot and evaluate boundary flux
+    center_flux = patch(torch.tensor([[0.5, 0.5]], dtype=dtype))[0][-1]
+    points = torch.zeros((400, 2), dtype=dtype)
+    points[:100, 0] = torch.linspace(0, 1, 100, dtype=dtype)
+    points[100:200, 0] = 1
+    points[100:200, 1] = torch.linspace(0, 1, 100, dtype=dtype)
+    points[200:300, 0] = torch.linspace(0, 1, 100, dtype=dtype).flip(0).contiguous()
+    points[200:300, 1] = 1
+    points[300:400, 1] = torch.linspace(0, 1, 100, dtype=dtype).flip(0).contiguous()
+
+    points = patch(points.contiguous())
+    points[:, -1] /= center_flux
+
+    # Convert to angle
+    angular_points = torch.zeros((points.shape[0], 2))
+    angular_points[:, -1] = points[:, -1]
+    angular_points[(points[:, 0] >= 0), 0] = torch.arcsin(
+        points[(points[:, 0] >= 0), 1] / rc
+    )
+    angular_points[(points[:, 0] < 0) & (points[:, 1] >= 0), 0] = (
+        -torch.arcsin(points[(points[:, 0] < 0) & (points[:, 1] >= 0), 1] / rc)
+        + torch.pi
+    )
+    angular_points[(points[:, 0] < 0) & (points[:, 1] < 0), 0] = (
+        -torch.arcsin(points[(points[:, 0] < 0) & (points[:, 1] < 0), 1] / rc)
+        - torch.pi
+    )
+    return angular_points[angular_points[:, 0].argsort()]
+
+
+@pytest.mark.parametrize("device, dtype", test_params)
+def test_infinite_homogeneous_cylinder(device, dtype):
+    """
+    This solves the infinite cylinder problem presented in Section 4.1.1
+    from the Analytical Benchmark Test Set for Critical Code Verification
+    (https://www-sciencedirect-com.proxy.lib.umich.edu/science/article/pii/
+    S0149197002000987?fr=RR-2&ref=pdf_download&rr=94263cf04882e830). We
+    represent the full circle as a NURBS patch, assemble operators in the TT
+    format and solve using the alternating minimal energy method (AMEn) in
+    TT format.
+    """
+    # Skip if GPU is requested but not available
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    # Initialize the context
+    mpi_context.init()
+
+    # Set defaults for PyTorch
+    torch.set_default_dtype(dtype)
+    torch.autograd.set_grad_enabled(False)
+
+    # Get XS info
+    fills, xs_server = pu239(num_groups=1, device=torch.device("cpu"), dtype=dtype)
+    assert fills[0].to_string() == "Pu-239"
+    assert xs_server.num_groups == 1
+
+    # Create single-patch geometry (homogeneous circle)
+    rc = 4.279960
+    c = Patch.from_igakit(
+        refine(circle(rc), 10, 4),
+        device=torch.device("cpu"),
+        dtype=dtype,
+        fill=fills[0],
+    )
+    assert c.is_finalized()
+    assert c.is_rational()
+    assert c.ndim == 2
+    assert c.ctrlptsw.shape == (14, 14, 3)
+    assert c.device == torch.device("cpu")
+    assert c.dtype == dtype
+    assert c.get_numel(0) == 10
+    assert c.get_numel(1) == 10
+    assert c.degrees[0] == 4
+    assert c.degrees[1] == 4
+
+    mesh = IGAMesh(mpi_context)
+    mesh.add_block(c)
+    assert not mesh.is_finalized()
+    assert not mesh.is_connected()
+    assert mesh.num_blocks == 1
+    mesh.connect()
+
+    # Finalize the mesh, note all boundaries will be vacuum
+    mesh.finalize()
+
+    # Create angular quadrature
+    qset = ProductQuadrature.gauss_legendre_chebyshev(4, 4, c.ndim)
+    qset.to_(torch.device("cpu"), dtype)
+
+    # TODO: Replace the below code with the full solver methods once
+    # that is fully implemented. For now this will test the assembly
+    # for the single patch on a test power iteration method.
+
+    # Create assembly backend
+    config = DGTransportAssemblerConfig()
+    config.rounding.eps = 1e-6 if dtype == torch.float32 else 1e-5
+    config.cross.eps = config.rounding.eps
+    config.max_dense_size = int(1e10) if dtype == torch.float32 else 0
+    config.cross_jacobian_inverse = False if dtype == torch.float32 else True
+    assembler = DIGAFirstOrderTransportAssembler2D(c, qset, xs_server, config)
+
+    # Assemble individual operators
+    assembler.assemble()
+    H = assembler.interior_loss_op
+    S = assembler.scatter_op
+    F = assembler.fission_op
+    Bin = assembler.inflow_ops
+    Bout = assembler.outflow_ops
+
+    assert all([not b.defined() for b in Bin])
+    assert len(Bin) == 4
+    assert len(Bout) == 4
+
+    # Check the operators
+    for op in [H, S, F] + Bout:
+        assert isinstance(op, Operator) and op.is_tt
+
+        en = op.as_tt()
+        assert len(en) == 5
+        assert en.device == torch.device("cpu")
+        assert en.dtype == dtype
+        assert en[0].shape[:-1] == (1, 4, 4)
+        assert en[1].shape[1:-1] == (16, 16)
+        assert en[2].shape[1:-1] == (
+            c.get_numel(0) + c.degrees[0],
+            c.get_numel(0) + c.degrees[0],
+        )
+        assert en[3].shape[1:-1] == (
+            c.get_numel(1) + c.degrees[1],
+            c.get_numel(1) + c.degrees[1],
+        )
+        assert en[4].shape[1:] == (xs_server.num_groups, xs_server.num_groups, 1)
+
+        for i in range(len(en) - 1):
+            assert en[i].shape[-1] == en[i + 1].shape[0]
+
+    # Compute the total operator on the LHS
+    A = H.as_tt() - S.as_tt()
+    for B in Bout:
+        A += B.as_tt()
+    A.round_(config.rounding.eps, config.rounding.max_rank)
+    F = F.as_tt()
+
+    # Send the TT-operators to GPU if needed
+    A.to_(torch.device(device))
+    F.to_(torch.device(device))
+
+    k, psi = power(A, F)
+    psi.round_(config.rounding.eps, config.rounding.max_rank)
+    psi.to_(torch.device("cpu"))
+    assert 1e5 * abs(1 - k) < 110
+
+    # Get the angular integral
+    angular = TTEngine(
+        [w.reshape((1, 1, -1, 1)) for w in qset.get_factored_weights()]
+    ).kron(TTEngine.ones(A.n_modes[2:], torch.device("cpu"), dtype).diagonalize())
+
+    # Apply the angular integral to the angular flux
+    phi = mm(angular, psi).contract_rank_dim(0).contract_rank_dim(0)
+    phi.round_(config.rounding.eps, config.rounding.max_rank)
+
+    # Get the dense version and add this to the patch
+    phi = phi.to_dense().squeeze()
+    shape = list(c.ctrlptsw.shape)
+    shape[-1] += 1
+    ctrlptsw = torch.zeros(shape, device=torch.device("cpu"), dtype=dtype)
+    ctrlptsw[..., :-2] = c.ctrlptsw[..., :-1]
+    ctrlptsw[..., -2] = phi * c.ctrlptsw[..., -1]
+    ctrlptsw[..., -1] = c.ctrlptsw[..., -1]
+
+    new_patch = Patch(
+        ctrlptsw,
+        [BSplineBasis(b.knotvector.contiguous(), b.degree) for b in c.basis],
+        is_rational=True,
+    )
+    new_patch.fill = fills[0]
+    new_patch.finalize()
+
+    points = evaluate_boundary(new_patch, rc, dtype)
+    torch.testing.assert_close(
+        points[:, -1], 0.2926 * torch.ones_like(points[:, -1]), rtol=0.02, atol=0.01
+    )
+
+    # Check the relative scalar flux L2 error
+    assert (
+        np.sqrt(np.trapz((points[:, 1] - 0.2926) ** 2, points[:, 0]))
+        / np.sqrt(2 * np.pi * 0.2926**2)
+        < 0.01
+    )
