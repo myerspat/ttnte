@@ -13,6 +13,21 @@ VERBOSE ?= OFF
 EDIT_FLAG = $(if $(filter ON,$(EDITABLE)),-e,)
 VERB_FLAG = $(if $(filter ON,$(VERBOSE)),-v,)
 
+# ==========================================
+# Global Build Configurations
+# ==========================================
+# Default CUDA to ON globally
+USE_CUDA ?= ON
+
+# Dynamically change the defaults if the user runs 'make dev'
+ifeq ($(filter dev,$(MAKECMDGOALS)),dev)
+	BUILD_TYPE ?= Debug
+	TTNTE_OPTIMIZED ?= OFF
+else
+	BUILD_TYPE ?= Release
+	TTNTE_OPTIMIZED ?= ON
+endif
+
 .PHONY: help install dev clean
 
 help:
@@ -21,18 +36,12 @@ help:
 	@echo "  make dev          - Developer install (build type, editable, no isolation, custom CMake)"
 	@echo "  make clean        - Remove build artifacts"
 
-install: BUILD_TYPE ?= Release
-install: TTNTE_OPTIMIZED ?= ON
-install: USE_CUDA ?= ON
 install:
-	@echo "Running Production Install..."
+	@echo "Running Production Install (Type: $(BUILD_TYPE), Optimized: $(TTNTE_OPTIMIZED), CUDA: $(USE_CUDA))..."
 	CMAKE_BUILD_PARALLEL_LEVEL=$(JOBS) \
 	SKBUILD_CMAKE_DEFINE="CMAKE_BUILD_TYPE=$(BUILD_TYPE);TTNTE_OPTIMIZED=$(TTNTE_OPTIMIZED);USE_CUDA=$(USE_CUDA)" \
 	$(PIP) install $(EDIT_FLAG) . $(VERB_FLAG) --no-build-isolation
 
-dev: BUILD_TYPE ?= Debug
-dev: TTNTE_OPTIMIZED ?= OFF
-dev: USE_CUDA ?= ON
 dev:
 	@echo "Installing in $(BUILD_TYPE) mode (Optimized: $(TTNTE_OPTIMIZED), CUDA: $(USE_CUDA))..."
 	CMAKE_BUILD_PARALLEL_LEVEL=$(JOBS) \

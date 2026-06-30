@@ -54,6 +54,8 @@ static MPI_Op ttnte2mpi(ttnte::parallel::MPIOp op)
     return MPI_MAXLOC;
   case MPIOp::MINLOC:
     return MPI_MINLOC;
+  default:
+    return MPI_OP_NULL;
   }
 }
 
