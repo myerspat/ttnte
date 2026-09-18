@@ -26,7 +26,7 @@ def test_pack_unpack_roundtrip(device, dtype):
     buf = engine.pack()
 
     assert buf.dim() == 1
-    assert buf.device == torch.device("cpu")
+    assert buf.device.type == torch.device(device).type
     assert buf.dtype == dtype
 
     restored = TTEngine.unpack(buf)
@@ -37,7 +37,7 @@ def test_pack_unpack_roundtrip(device, dtype):
     assert restored.dtype == dtype
 
     for orig, rest in zip(engine.cores, restored.cores):
-        torch.testing.assert_close(orig.cpu(), rest)
+        torch.testing.assert_close(orig.cpu(), rest.cpu())
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])

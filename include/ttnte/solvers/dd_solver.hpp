@@ -20,6 +20,7 @@
 #ifdef USE_CUDA
 #include <c10/cuda/CUDACachingAllocator.h>
 #endif
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -36,6 +37,7 @@ public:
   using Label = utils::Label<DDSolver>;
   using Ptr = std::shared_ptr<DDSolver>;
   using Mesh = mesh::Mesh<BlockType>;
+  using Callback = std::function<void(const DDSolver&)>;
 
 private:
   // =================================================================
@@ -73,6 +75,12 @@ private:
   /// The Schwarz L2 error at each iteration of the most recent step() call,
   /// in iteration order.
   std::vector<double> last_errors_;
+  /// Optional user callback invoked once per Schwarz sweep -- see
+  /// set_callback().
+  Callback callback_ = nullptr;
+  /// Only invoke callback_ every callback_frequency_-th Schwarz sweep (j %
+  /// callback_frequency_ == 0) -- see set_callback().
+  int callback_frequency_ = 1;
 
   // =================================================================
   // Private constructors
@@ -237,6 +245,17 @@ public:
                 : 0.0;
       last_errors_.push_back(error);
 
+      // Invoke the user callback (if any, and due this sweep per
+      // callback_frequency_) BEFORE tightening the local solver's forcing
+      // below -- callback_ observes this via get_eps(), which must still
+      // reflect the tolerance that produced this sweep's local_systems_
+      // state, not the next sweep's tightened value. The frequency check
+      // happens here, before the (possibly Python-wrapping) callback_ is
+      // even reached, so a skipped sweep never pays for a GIL acquire.
+      if (callback_ && j % callback_frequency_ == 0) {
+        callback_(*this);
+      }
+
       // Tighten TT truncation eps (this step()'s Schwarz tol is fixed --
       // see the snapshot above)
       strategy_->update_convergence_criteria(error, global_sums[2]);
@@ -356,6 +375,24 @@ public:
   void set_local_systems(const Systems& local_systems) override
   {
     init(local_systems);
+  }
+  /// @brief Set a callback invoked every `frequency`-th Schwarz sweep inside
+  /// step(), with this DDSolver passed by const reference -- the callback
+  /// body can pull whatever it needs off it (get_local_systems(), get_eps(),
+  /// last_num_iterations(), last_errors(), ...). Pass nullptr (the default)
+  /// to disable. `frequency` is checked before callback_ is invoked, so a
+  /// skipped sweep (e.g. a Python callback wrapped in a GIL acquire by the
+  /// binding) never pays for the call at all.
+  /// @param frequency Invoke callback every `frequency`-th sweep (1 = every
+  /// sweep, the default). Must be >= 1.
+  void set_callback(Callback callback, int frequency = 1)
+  {
+    if (frequency < 1) {
+      throw utils::runtime_error(*this, error_context("set_callback"),
+        "`frequency` must be greater than or equal to 1");
+    }
+    callback_ = std::move(callback);
+    callback_frequency_ = frequency;
   }
 
   /// @return The state format of the strategy's local solver.

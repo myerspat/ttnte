@@ -204,10 +204,58 @@ def test_homogeneous_slab(device, memory_policy, dtype):
     )
     dd_solver = IGADDSolver(driver.mesh, strategy)
 
+    # DDSolver.set_callback()/TransportDriver.set_callback(): the callback is
+    # handed the solver/driver itself, so it can pull whatever it needs off
+    # their existing getters -- exercised here on a real, MPI-parallel,
+    # multi-Schwarz-iteration DD eigenvalue solve (unlike the single-patch
+    # fixed-source unit test, this actually runs several Schwarz sweeps per
+    # outer iteration and several outer iterations).
+    dd_calls = []
+    dd_solver.set_callback(lambda solver: dd_calls.append(solver.eps))
+
+    outer_calls = []
+
+    def outer_callback(driver_arg, solver_arg):
+        outer_calls.append(
+            {
+                "i": driver_arg.last_num_outer_iterations(),
+                "k": driver_arg.last_k(),
+                "eps": solver_arg.eps,
+            }
+        )
+
+    driver.set_callback(outer_callback)
+
     # Run solver
     result = driver.solve_eigenvalue(dd_solver, tol=outer_tol, max_iter=100)
     k = result.k_eff
     assert 1e5 * abs(1 - k) < 20
+
+    # AMEnSolver initializes eps_ directly to the constructor's `eps`
+    # (== eps_floor_) BEFORE any forcing update has ever run, so the very
+    # first callback observation -- captured before the first Schwarz
+    # sweep's own update_convergence_criteria() call -- is that raw,
+    # artificially tight floor value, not yet the forcing formula's own
+    # output. From the SECOND observation onward, every value has gone
+    # through eps_ = max(eps_floor_, eps_forcing_ * min_error_) with
+    # min_error_ a running minimum (never increases -- see
+    # AMEnSolver::update_convergence_criteria()), so that tail must be a
+    # non-increasing sequence, across the WHOLE run (both Schwarz sweeps
+    # within an outer iteration and across outer iterations). Every observed
+    # eps is strictly positive and every observed patch state defined.
+    assert len(dd_calls) > 0
+    assert all(e > 0 for e in dd_calls)
+    assert all(dd_calls[i] >= dd_calls[i + 1] for i in range(1, len(dd_calls) - 1))
+    assert dd_solver.last_num_iterations() <= len(dd_calls)
+
+    assert len(outer_calls) > 0
+    assert all(c["eps"] > 0 for c in outer_calls)
+    assert all(c["k"] is not None for c in outer_calls)
+    assert [c["i"] for c in outer_calls] == list(range(1, len(outer_calls) + 1))
+    assert driver.last_num_outer_iterations() == len(outer_calls)
+    # The eigenvalue observed on the final outer iteration should already be
+    # close to the fully-converged k_eff the solve settles on.
+    assert 1e5 * abs(outer_calls[-1]["k"] - k) < 20
 
     # TransportSolution should hold exactly this rank's own local systems'
     # states, and compute_scalar_flux() should match the quadrature set's

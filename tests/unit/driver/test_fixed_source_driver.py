@@ -112,8 +112,51 @@ def test_incident_beam_matches_exact_attenuation():
     )
     dd_solver = IGADDSolver(driver.mesh, strategy)
 
+    # DDSolver.set_callback()/TransportDriver.set_callback(): the callback is
+    # handed the solver/driver itself (not a bespoke snapshot struct), so it
+    # can pull whatever it needs off their existing getters.
+    dd_calls = []
+
+    def dd_callback(solver):
+        dd_calls.append(
+            {
+                "j": solver.last_num_iterations(),
+                "eps": solver.eps,
+                "states_defined": all(s.state.defined() for s in solver.local_systems),
+            }
+        )
+
+    dd_solver.set_callback(dd_callback)
+
+    outer_calls = []
+
+    def outer_callback(driver_arg, solver_arg):
+        outer_calls.append(
+            {
+                "i": driver_arg.last_num_outer_iterations(),
+                "k": driver_arg.last_k(),
+                "eps": solver_arg.eps,
+            }
+        )
+
+    driver.set_callback(outer_callback)
+
     result = driver.solve_fixed_source(dd_solver, tol=1e-6, max_iter=50)
     assert result.k_eff is None
+
+    # Both callbacks must have fired, with eps > 0 (the tolerance that
+    # actually produced that iteration's state, not a stale/unset value),
+    # and every observed patch state defined.
+    assert len(dd_calls) > 0
+    assert all(c["eps"] > 0 for c in dd_calls)
+    assert all(c["states_defined"] for c in dd_calls)
+
+    # Fixed-source has no eigenvalue -- last_k() must stay None throughout.
+    assert len(outer_calls) > 0
+    assert all(c["k"] is None for c in outer_calls)
+    assert all(c["eps"] > 0 for c in outer_calls)
+    assert [c["i"] for c in outer_calls] == list(range(1, len(outer_calls) + 1))
+    assert driver.last_num_outer_iterations() == len(outer_calls)
 
     scalar_result = result.compute_scalar_flux()
     gid = patch.gid

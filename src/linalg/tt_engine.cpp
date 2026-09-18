@@ -514,15 +514,19 @@ torch::Tensor TTEngine::pack(const torch::Tensor& buffer) const
 
   torch::Tensor buf;
   if (buffer.defined()) {
-    TORCH_CHECK(buffer.dim() == 1 && buffer.device().is_cpu(),
-      "TTEngine::pack: pre-allocated buffer must be a 1D CPU tensor");
+    TORCH_CHECK(buffer.dim() == 1,
+      "TTEngine::pack: pre-allocated buffer must be a 1D tensor");
     TORCH_CHECK(buffer.numel() == header_size + data_size,
       "TTEngine::pack: pre-allocated buffer has wrong size; expected ",
       header_size + data_size, ", got ", buffer.numel());
     buf = buffer;
   } else {
+    // Allocate on the TT's own device -- CUDA-aware MPI can send/receive a
+    // GPU-resident buffer directly, so a caller holding data on-device
+    // (e.g. under MemoryPolicy::RESIDENT/STATE_RESIDENT) never has to round
+    // -trip it through the host just to pack it.
     buf = torch::empty({header_size + data_size},
-      torch::TensorOptions().dtype(get_dtype()).device(torch::kCPU));
+      torch::TensorOptions().dtype(get_dtype()).device(get_device()));
   }
 
   // Write header using element-wise assignment; tensor handles dtype conversion
