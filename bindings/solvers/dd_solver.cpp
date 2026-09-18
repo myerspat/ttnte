@@ -4,6 +4,7 @@
 #include "ttnte/mesh/mesh.hpp"
 #include "ttnte/solvers/dd_strategy.hpp"
 #include "ttnte/solvers/solver.hpp"
+#include <pybind11/functional.h>
 #include <torch/extension.h>
 
 namespace py = pybind11;
@@ -43,6 +44,22 @@ static void register_DDSolver_impl(py::module_& m, const std::string& typestr)
     .def("is_converged", &DDSolver::is_converged)
     .def("last_num_iterations", &DDSolver::last_num_iterations)
     .def("last_errors", &DDSolver::last_errors)
+    .def(
+      "set_callback",
+      [](DDSolver& self, DDSolver::Callback callback, int frequency) {
+        self.set_callback(
+          [callback = std::move(callback)](const DDSolver& solver) {
+            py::gil_scoped_acquire acquire;
+            callback(solver);
+          },
+          frequency);
+      },
+      py::arg("callback"), py::arg("frequency") = 1,
+      "Set a callback invoked every `frequency`-th Schwarz sweep inside "
+      "step() (1 = every sweep, the default), with this DDSolver passed as "
+      "the sole argument. The frequency check happens before the GIL is "
+      "reacquired to call back into Python, so a skipped sweep costs "
+      "nothing. Pass None to disable.")
 
     // =================================================================
     // Public getters / setters

@@ -126,17 +126,19 @@ public:
   /// @param buffer The source tensor buffer.
   void from_buffer(const torch::Tensor& buffer);
 
-  /// @brief Serialize the state to a flat CPU tensor suitable for MPI.
+  /// @brief Serialize the state to a flat tensor suitable for MPI (CUDA-aware
+  /// MPI can send/receive it directly without a host round-trip).
   /// Wire format: [FormatType, K, core0_shape[4], ..., core data].
-  /// @param buffer If defined, pack into this pre-allocated 1D CPU tensor (its
-  ///   dtype is used; core data is cast accordingly). If undefined (default),
-  ///   a new buffer is allocated in the state's native dtype.
+  /// @param buffer If defined, pack into this pre-allocated 1D tensor (its
+  ///   device and dtype are used; core data is transferred/cast accordingly).
+  ///   If undefined (default), a new buffer is allocated on the state's own
+  ///   device, in its native dtype.
   /// @return The buffer containing the serialized state.
   torch::Tensor pack(const torch::Tensor& buffer = torch::Tensor()) const;
 
-  /// @brief Deserialize a State from a flat CPU tensor produced by pack().
-  /// The reconstructed State has the same dtype as the buffer.
-  /// @param buffer A 1D CPU tensor produced by pack().
+  /// @brief Deserialize a State from a flat tensor produced by pack().
+  /// The reconstructed State has the same device and dtype as the buffer.
+  /// @param buffer A 1D tensor produced by pack().
   /// @return A new State in the format and dtype encoded in the buffer.
   static State unpack(const torch::Tensor& buffer);
 

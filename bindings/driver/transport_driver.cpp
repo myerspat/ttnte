@@ -2,6 +2,7 @@
 #include "../utils/label.hpp"
 #include "ttnte/cad/patch.hpp"
 #include "ttnte/parallel/parallel_context.hpp"
+#include <pybind11/functional.h>
 #include <pybind11/stl.h>
 #include <torch/extension.h>
 
@@ -87,6 +88,25 @@ static void register_TransportDriver_impl(
       "TransportSolution.compute_patch_balances()/patch_balance_table()/"
       "global_balance() (requires clear_assemblers=False when solving).",
       py::call_guard<py::gil_scoped_release>())
+    .def(
+      "set_callback",
+      [](TransportDriver& self, typename TransportDriver::Callback callback,
+        int frequency) {
+        self.set_callback(
+          [callback = std::move(callback)](const TransportDriver& driver,
+            const ttnte::solvers::Solver& solver) {
+            py::gil_scoped_acquire acquire;
+            callback(driver, solver);
+          },
+          frequency);
+      },
+      py::arg("callback"), py::arg("frequency") = 1,
+      "Set a callback invoked every `frequency`-th outer iteration inside "
+      "solve_eigenvalue()/solve_fixed_source() (1 = every iteration, the "
+      "default), with this driver and the inner_solver passed to that "
+      "call. The frequency check happens before the GIL is reacquired to "
+      "call back into Python, so a skipped iteration costs nothing. Pass "
+      "None to disable.")
 
     // =================================================================
     // Public getters / setters
@@ -94,7 +114,11 @@ static void register_TransportDriver_impl(
       "label", &TransportDriver::get_label, &TransportDriver::set_label)
     .def_property_readonly("mesh", &TransportDriver::get_mesh)
     .def_property_readonly("server", &TransportDriver::get_server)
-    .def_property_readonly("gid2rank", &TransportDriver::get_gid2rank);
+    .def_property_readonly("gid2rank", &TransportDriver::get_gid2rank)
+    .def("last_k", &TransportDriver::last_k)
+    .def(
+      "last_num_outer_iterations", &TransportDriver::last_num_outer_iterations)
+    .def("last_outer_error", &TransportDriver::last_outer_error);
 }
 
 void register_TransportDriver(py::module_& m)

@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <optional>
@@ -38,6 +39,8 @@ public:
   using Ptr = std::shared_ptr<TransportDriver>;
   using Assembler = physics::DGFirstOrderTransportAssembler<BlockType, NumDim>;
   using Solution = TransportSolution<BlockType>;
+  using Callback =
+    std::function<void(const TransportDriver&, const solvers::Solver&)>;
 
   // Communication and load balancing
   using Communicator = parallel::Communicator;
@@ -83,6 +86,25 @@ private:
 
   // States
   bool is_distributed_ = false;
+
+  // Callback / outer-iteration diagnostics
+  /// Optional user callback invoked once per outer iteration -- see
+  /// set_callback().
+  Callback callback_ = nullptr;
+  /// Only invoke callback_ every callback_frequency_-th outer iteration
+  /// (i % callback_frequency_ == 0) -- see set_callback().
+  int callback_frequency_ = 1;
+  /// The eigenvalue as of the most recent outer iteration of the most
+  /// recent solve_eigenvalue() call. nullopt for solve_fixed_source() (no
+  /// eigenvalue) or before the first outer iteration has run.
+  std::optional<double> last_k_ = std::nullopt;
+  /// Number of outer iterations the most recent solve_eigenvalue()/
+  /// solve_fixed_source() call has run so far.
+  int last_num_outer_iterations_ = 0;
+  /// The scalar-flux-shape relative L2 error as of the most recent outer
+  /// iteration of the most recent solve_eigenvalue()/solve_fixed_source()
+  /// call.
+  double last_outer_error_ = std::numeric_limits<double>::max();
 
   // =================================================================
   // Private constructors
@@ -169,6 +191,12 @@ public:
         "ttnte::driver::TransportDriver::solve_eigenvalue",
         "No linear systems assembled. Call assemble() first.");
     }
+
+    // Reset outer-iteration diagnostics exposed to callback_ -- a driver
+    // instance may run solve_eigenvalue() more than once.
+    last_k_ = std::nullopt;
+    last_num_outer_iterations_ = 0;
+    last_outer_error_ = std::numeric_limits<double>::max();
 
     // Initialize the solver
     double k_global = init_solver(inner_solver, clear_assemblers);
@@ -327,11 +355,29 @@ public:
         k_global = k;
       }
 
-      // Wait for allreduce and update outer iteration errors
+      // Wait for both allreduces (independent of each other -- reordered
+      // here, relative to the original single kreq.wait() below the
+      // update_convergence_criteria() call, so k_global is valid before
+      // callback_ fires; see the comment on that call below) and update
+      // outer iteration errors.
       ereq.wait();
+      kreq.wait();
       error = (global_outer_sums[1] > 0.0)
                 ? std::sqrt(global_outer_sums[0] / global_outer_sums[1])
                 : std::numeric_limits<double>::max();
+
+      // Update outer-iteration diagnostics exposed to callback_, and invoke
+      // it (if set) BEFORE update_convergence_criteria() below -- for a bare
+      // LocalSolver, that call tightens eps_ for the NEXT outer iteration,
+      // so the callback must fire first to see the eps that actually
+      // produced this iteration's local_systems state (same rationale as
+      // DDSolver::step()'s callback_ placement).
+      last_k_ = k_global;
+      last_num_outer_iterations_ = num_outer_iterations;
+      last_outer_error_ = error;
+      if (callback_ && i % callback_frequency_ == 0) {
+        callback_(*this, *inner_solver);
+      }
 
       // Feed the outer error to the solver's generic convergence hook. This
       // is a no-op for a DDSolver (its forcing is entirely self-contained,
@@ -341,7 +387,6 @@ public:
       // that ever drives its eps forcing, since nothing else calls this on
       // it.
       inner_solver->update_convergence_criteria(error);
-      kreq.wait();
 
       // Independent k-convergence check -- the flux-shape `error` above can
       // read small even while k is still drifting (see solve_eigenvalue()'s
@@ -450,6 +495,13 @@ public:
     // iteration so cuBLAS context initialization does not produce warnings.
     inner_solver->wait_for_thread_init();
 
+    // Reset outer-iteration diagnostics exposed to callback_ -- a driver
+    // instance may run solve_fixed_source() more than once. last_k_ stays
+    // nullopt: fixed-source problems have no eigenvalue.
+    last_k_ = std::nullopt;
+    last_num_outer_iterations_ = 0;
+    last_outer_error_ = std::numeric_limits<double>::max();
+
     parallel::Request ereq;
     const auto& local_systems = inner_solver->get_local_systems();
     verbose = verbose && comm_.rank() == 0;
@@ -534,6 +586,16 @@ public:
                 ? std::sqrt(global_outer_sums[0] / global_outer_sums[1])
                 : std::numeric_limits<double>::max();
       outer_flux_error_history.push_back(error);
+
+      // Update outer-iteration diagnostics exposed to callback_, and invoke
+      // it (if set) BEFORE update_convergence_criteria() below -- see
+      // solve_eigenvalue()'s identical callback_ placement for the
+      // rationale.
+      last_num_outer_iterations_ = num_outer_iterations;
+      last_outer_error_ = error;
+      if (callback_ && i % callback_frequency_ == 0) {
+        callback_(*this, *inner_solver);
+      }
 
       // Feed the outer error to the solver's generic convergence hook -- see
       // solve_eigenvalue()'s identical call for the rationale.
@@ -726,6 +788,40 @@ public:
   {
     return mesh_->get_gid2rank();
   }
+  /// @brief Set a callback invoked once per outer iteration inside
+  /// solve_eigenvalue()/solve_fixed_source(), with this driver and the
+  /// inner_solver passed to that call, both by const reference -- the
+  /// callback body can pull whatever it needs off either (e.g.
+  /// last_k()/last_num_outer_iterations() from this driver,
+  /// get_local_systems()/get_eps() from the solver). Pass nullptr (the
+  /// default) to disable. `frequency` is checked before callback_ is
+  /// invoked, so a skipped outer iteration (e.g. a Python callback wrapped
+  /// in a GIL acquire by the binding) never pays for the call at all.
+  /// @param frequency Invoke callback every `frequency`-th outer iteration
+  /// (1 = every iteration, the default). Must be >= 1.
+  void set_callback(Callback callback, int frequency = 1)
+  {
+    if (frequency < 1) {
+      throw utils::runtime_error("ttnte::driver::TransportDriver::set_callback",
+        "`frequency` must be greater than or equal to 1");
+    }
+    callback_ = std::move(callback);
+    callback_frequency_ = frequency;
+  }
+  /// @return The eigenvalue as of the most recent outer iteration of the
+  /// most recent solve_eigenvalue() call. nullopt for solve_fixed_source()
+  /// (no eigenvalue) or before the first outer iteration has run.
+  std::optional<double> last_k() const noexcept { return last_k_; }
+  /// @return Number of outer iterations the most recent solve_eigenvalue()/
+  /// solve_fixed_source() call has run so far.
+  int last_num_outer_iterations() const noexcept
+  {
+    return last_num_outer_iterations_;
+  }
+  /// @return The scalar-flux-shape relative L2 error as of the most recent
+  /// outer iteration of the most recent solve_eigenvalue()/
+  /// solve_fixed_source() call.
+  double last_outer_error() const noexcept { return last_outer_error_; }
 
   /// @brief Get the assembler for a specific mesh block GID.
   /// @param gid Global ID of the mesh block.
