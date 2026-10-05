@@ -28,6 +28,12 @@ protected:
   double eps_floor_;
   /// Forcing for truncation tolerance in an inexact solver.
   double eps_forcing_;
+  /// Upper cap on the forced truncation tolerance: eps_ never exceeds this,
+  /// however large eps_forcing_ * min_error_ is. min_error_ starts at 1, so
+  /// without a cap a forcing factor above about 1 asks the first solves for a
+  /// relative truncation tolerance near or above 1, which rounds the solution
+  /// away to rank ~1. Defaults to +infinity (no cap, previous behavior).
+  double eps_max_;
   /// Maximum allowed rank.
   int max_rank_;
   /// The largest size before switching from a direct solver to GMRES.
@@ -75,11 +81,13 @@ protected:
     linalg::AMEnNativeOptions native_opts = linalg::AMEnNativeOptions {},
     EnrichmentPolicy::Ptr enrichment_policy = nullptr,
     bool preserve_moments = false, double moment_remainder_relaxation = 1.0,
-    double moment_eps = -1.0, int64_t moment_max_rank = -1)
-    : nswp_(nswp), eps_(eps), max_rank_(max_rank), max_full_(max_full),
-      kickrank_(kickrank), kick2_(kick2), local_iterations_(local_iterations),
-      resets_(resets), verbose_(verbose), preconditioner_(preconditioner),
-      backend_(backend), native_opts_(native_opts),
+    double moment_eps = -1.0, int64_t moment_max_rank = -1,
+    double eps_max = std::numeric_limits<double>::infinity())
+    : nswp_(nswp), eps_(eps), eps_max_(eps_max), max_rank_(max_rank),
+      max_full_(max_full), kickrank_(kickrank), kick2_(kick2),
+      local_iterations_(local_iterations), resets_(resets), verbose_(verbose),
+      preconditioner_(preconditioner), backend_(backend),
+      native_opts_(native_opts),
       enrichment_policy_(std::move(enrichment_policy)),
       base_kickrank_(kickrank), base_kick2_(kick2),
       base_als_residual_rank_(native_opts.als_residual_rank)
@@ -114,6 +122,12 @@ protected:
         "the torchTT backend has no zero-enrichment code path");
     }
 
+    if (!(eps_max_ >= eps)) {
+      throw utils::runtime_error("ttnte::solvers::AMEnSolver::AMEnSolver",
+        "`eps_max` must be greater than or equal to `eps` -- it caps the "
+        "forced truncation tolerance from above, while `eps` is its floor");
+    }
+
     if (moment_remainder_relaxation_ <= 0) {
       throw utils::runtime_error("ttnte::solvers::AMEnSolver::AMEnSolver",
         "`moment_remainder_relaxation` must be strictly positive -- it "
@@ -140,10 +154,10 @@ public:
   void solve(const linalg::LinearSystem::Ptr& local_system) override final;
 
   /// @brief Update min_error_ (via LocalSolver), then force eps_ toward
-  /// eps_floor_ as min_error_ improves: eps_ = max(eps_floor_, eps_forcing_ *
-  /// min_error_). If an `enrichment_policy_` is set, asks it (given eps_,
-  /// error, and rank_metric) whether enrichment should be active for the
-  /// next solve() call and toggles kickrank_/kick2_/
+  /// eps_floor_ as min_error_ improves: eps_ = max(eps_floor_, min(eps_max_,
+  /// eps_forcing_ * min_error_)). If an `enrichment_policy_` is set, asks it
+  /// (given eps_, error, and rank_metric) whether enrichment should be active
+  /// for the next solve() call and toggles kickrank_/kick2_/
   /// native_opts_.als_residual_rank between 0 and their original (base_*)
   /// values accordingly -- a policy may re-enable enrichment later, unlike
   /// the old sticky-only rank_freeze_eps. Since this runs strictly after the
@@ -154,7 +168,7 @@ public:
     double error, double rank_metric = 0.0) override
   {
     LocalSolver::update_convergence_criteria(error, rank_metric);
-    eps_ = std::max(eps_floor_, eps_forcing_ * min_error_);
+    eps_ = std::max(eps_floor_, std::min(eps_max_, eps_forcing_ * min_error_));
 
     if (enrichment_policy_) {
       bool enrich = enrichment_policy_->should_enrich(eps_, error, rank_metric);
@@ -169,6 +183,8 @@ public:
   // Public getters / setters
   /// @return The current truncation tolerance of the solver.
   double get_eps() const override final { return eps_; }
+  /// @return The upper cap on the forced truncation tolerance.
+  double get_eps_max() const noexcept { return eps_max_; }
   /// @return The maximum rank.
   int64_t get_max_rank() const final override
   {
