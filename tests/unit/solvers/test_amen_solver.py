@@ -297,6 +297,44 @@ def test_amen_solver_gmres_mixed_precision_default_off_is_unchanged():
     assert (x_default - x_explicit_off).as_tt().norm() < 1e-14
 
 
+def test_amen_solver_eps_max_caps_forced_tolerance():
+    """eps_ = max(eps_floor_, min(eps_max_, eps_forcing_ * min_error_)).
+
+    min_error_ starts at 1, so without a cap a forcing factor above ~1 asks the
+    first solves for a relative truncation tolerance near or above 1, which
+    rounds the solution away. With a cap, a large forcing factor is held at
+    eps_max until eps_forcing * min_error falls below it, and the floor still
+    applies at the bottom.
+    """
+    floor, cap = 1e-6, 0.1
+    solver = AMEnSolver(eps=floor, eps_forcing=10.0, eps_max=cap)
+    assert solver.eps_max == cap
+
+    # (reported error, expected eps after the update)
+    for error, expected in [
+        (0.8, cap),  # 10 * 0.8 = 8, capped at 0.1
+        (2.0, cap),  # min_error_ does not increase, still capped
+        (5e-3, 5e-2),  # 10 * 5e-3 below the cap: forcing applies
+        (1e-9, floor),  # 10 * 1e-9 below the floor: floor applies
+    ]:
+        solver.update_convergence_criteria(error)
+        assert solver.eps == pytest.approx(expected)
+
+
+def test_amen_solver_eps_max_default_is_uncapped():
+    """The default eps_max is +inf, so forcing is unchanged from before."""
+    solver = AMEnSolver(eps=1e-6, eps_forcing=10.0)
+    assert solver.eps_max == float("inf")
+    solver.update_convergence_criteria(0.8)
+    assert solver.eps == pytest.approx(8.0)
+
+
+def test_amen_solver_eps_max_below_floor_rejected():
+    """A cap below the floor is contradictory and must be rejected."""
+    with pytest.raises(RuntimeError):
+        AMEnSolver(eps=1e-3, eps_max=1e-4)
+
+
 def test_amen_solver_enrichment_policy_rejects_torchtt_backend():
     """An EnrichmentPolicy relies on amen_sweep.cpp's `enrichment_disabled` zero-rank
     code path, which only exists for AMEnBackend.NATIVE -- the vendored torchTT backend
