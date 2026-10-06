@@ -1,7 +1,6 @@
 #pragma once
 
 #include "ttnte/driver/transport_solution.hpp"
-#include "ttnte/linalg/banded_lu.hpp"
 #include "ttnte/math/quadrature_set.hpp"
 #include "ttnte/mesh/mesh.hpp"
 #include "ttnte/parallel/communicator.hpp"
@@ -11,10 +10,13 @@
 #include "ttnte/sweep/patch_discretization.hpp"
 #include "ttnte/sweep/sweep_config.hpp"
 #include "ttnte/sweep/sweep_graph.hpp"
+#include "ttnte/sweep/sweep_kernel.hpp"
 #include "ttnte/task/task_graph.hpp"
 #include "ttnte/task/task_scheduler.hpp"
 #include "ttnte/utils/exception.hpp"
 #include "ttnte/xs/server.hpp"
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <iomanip>
@@ -34,11 +36,14 @@ namespace ttnte::sweep {
 /// Each local mesh block is a sweep unit: a whole patch for the patch
 /// discontinuous (PDG) scheme, or a single element for the fully
 /// discontinuous (FDG) scheme (a mesh whose patches were split into Bezier
-/// elements). For every angle set of the SweepGraph and every group set, one
-/// task per patch assembles and solves the patch's per-direction, per-group
-/// systems in one batch and passes its outgoing face traces downstream. The
-/// DAG runs on the existing task scheduler. Source iteration on the flux
-/// moments closes the scattering (and external) source.
+/// elements). For every angle set of the SweepGraph and every group set, the
+/// units are grouped into chunks (one unit, the whole subdomain, or a custom
+/// grouping such as the parent patches of FDG elements; see
+/// SweepGraph::schedule()). One scheduler task per chunk sweeps its units in
+/// upwind order with the raw-array kernel sweep_unit() and passes outgoing
+/// face traces downstream, so the DAG on the existing task scheduler has a
+/// few coarse tasks rather than one per element. Source iteration on the
+/// flux moments closes the scattering (and external) source.
 ///
 /// The spatial and angular discretization is the one the TT solver
 /// assembles (same quadratures, scaled normals, upwind masks, reflective
@@ -120,18 +125,28 @@ private:
   torch::Tensor harmonics_;
   torch::Tensor weighted_harmonics_;
   torch::Tensor moment_order_;
+  std::vector<int64_t> moment_order_raw_;
   int64_t num_groups_ = 0;
 
   std::vector<PatchState> patches_;
   std::unordered_map<int64_t, size_t> gid_to_local_;
   SweepGraph::Ptr graph_;
   std::vector<torch::Tensor> group_sets_;
+  /// Directions of each angle set and groups of each group set as plain
+  /// index vectors (read by the kernel).
+  std::vector<std::vector<int64_t>> set_directions_;
+  std::vector<std::vector<int64_t>> group_indices_;
+  /// Chunk id of each local unit, and the task schedule of each angle set.
+  std::vector<int64_t> chunk_of_;
+  std::vector<std::vector<SweepChunk>> schedules_;
 
   task::TaskGraph dag_;
   std::unique_ptr<task::TaskScheduler> scheduler_;
   bool is_setup_ = false;
   /// Whether any local material is fissile.
   bool has_fission_ = false;
+  /// Cumulative time spent inside sweep task bodies (all threads).
+  std::atomic<int64_t> task_nanoseconds_ {0};
 
   /// Convergence history of the last solve.
   std::vector<double> errors_;
@@ -232,142 +247,139 @@ private:
     return index;
   }
 
-  /// @brief One sweep task: assemble, solve and scatter results for one
-  /// (angle set, group set, patch).
-  void solve_task(size_t set_index, size_t group_set, size_t local)
+  /// @brief Inflow of face `f` of unit `local` for an angle set.
+  FaceInflow face_inflow(const AngleSet& set, size_t local, size_t f) const
   {
-    using torch::indexing::Slice;
-    auto& P = patches_[local];
+    const auto& P = patches_[local];
+    const auto& link = P.links[f];
+    FaceInflow in;
+    if (link.type == physics::BoundaryType::INTERNAL) {
+      const EdgeState state = link.is_first ? set.backward[link.interface]
+                                            : set.forward[link.interface];
+      if (state == EdgeState::NONE)
+        return in;
+      const auto& nb = patches_[link.neighbor];
+      const auto& buffer = state == EdgeState::DEPENDENCY
+                             ? nb.trace_current[link.neighbor_face]
+                             : nb.trace_previous[link.neighbor_face];
+      in.kind = FaceInflow::Kind::NEIGHBOR;
+      in.trace = buffer.template data_ptr<double>();
+      in.source_face_dofs = buffer.size(2);
+      in.trace_map = link.trace_map.template data_ptr<int64_t>();
+    } else if (link.type == physics::BoundaryType::REFLECTIVE) {
+      // Reflected directions belong to other angle sets: lag them
+      in.kind = FaceInflow::Kind::REFLECTIVE;
+      in.trace = P.trace_previous[f].template data_ptr<double>();
+      in.source_face_dofs = P.trace_previous[f].size(2);
+      in.reflected = link.reflected.template data_ptr<int64_t>();
+      in.albedo = link.albedo;
+    }
+    return in;
+  }
+
+  /// @brief One sweep task: sweep the units of chunk `c` of angle set
+  /// `set_index` for group set `group_set`, in upwind order.
+  void run_chunk(size_t set_index, size_t group_set, size_t c)
+  {
+    thread_local SweepWorkspace workspace;
+    thread_local std::vector<double> moments;
+
     const auto& set = graph_->angle_sets()[set_index];
-    const auto& dirs = set.directions;
-    const auto& groups = group_sets_[group_set];
-    const auto& disc = *P.disc;
-    const int64_t nd = dirs.size(0);
-    const int64_t ng = groups.size(0);
-    const int64_t N = disc.num_dofs();
+    const auto& dirs = set_directions_[set_index];
+    const auto& groups = group_indices_[group_set];
+    const int64_t M = harmonics_.size(1);
+    const int64_t ng = static_cast<int64_t>(groups.size());
 
-    // Operator values: streaming + outflow per direction, collision per group
-    auto omega = omega_.index_select(0, dirs);
-    auto values = disc.streaming_values(omega); // (nd, P)
-    auto sigma = P.sigma_t.index_select(0, groups);
-    auto full = (values.unsqueeze(1) +
-                 sigma.view({1, ng, 1}) * disc.mass_values().view({1, 1, -1}))
-                  .reshape({nd * ng, -1});
+    SweepBlock block;
+    block.directions = dirs.data();
+    block.num_block_directions = static_cast<int64_t>(dirs.size());
+    block.groups = groups.data();
+    block.num_block_groups = ng;
+    block.num_directions = omega_.size(0);
+    block.num_groups = num_groups_;
+    block.num_moments = M;
+    block.omega = omega_.template data_ptr<double>();
+    block.harmonics = harmonics_.template data_ptr<double>();
+    block.weighted_harmonics = weighted_harmonics_.template data_ptr<double>();
+    block.solver = config_.local_solver;
 
-    // Right-hand side: scattering + external source moments
-    auto Y = harmonics_.index_select(0, dirs); // (nd, M)
-    auto src = P.source_moments.index_select(1, groups);
-    auto b = torch::einsum("dm,mgn->dgn", {Y, src}).contiguous();
+    for (int64_t local : schedules_[set_index][c].units) {
+      auto& P = patches_[local];
+      const int64_t N = P.disc->num_dofs();
 
-    // Upwind inflow across faces
-    for (size_t f = 0; f < P.links.size(); f++) {
-      const auto& link = P.links[f];
-      const auto& face = disc.faces()[f];
-      torch::Tensor trace;
-      torch::Tensor c;
-      if (link.type == physics::BoundaryType::INTERNAL) {
-        const auto& itf_state = link.is_first ? set.backward[link.interface]
-                                              : set.forward[link.interface];
-        if (itf_state == EdgeState::NONE)
-          continue;
-        const auto& nb = patches_[link.neighbor];
-        const auto& buffer = itf_state == EdgeState::DEPENDENCY
-                               ? nb.trace_current[link.neighbor_face]
-                               : nb.trace_previous[link.neighbor_face];
-        trace = buffer.index({dirs.view({-1, 1}), groups.view({1, -1})})
-                  .index_select(2, link.trace_map);
-        c = face.upwind_weights(omega, false);
-      } else if (link.type == physics::BoundaryType::REFLECTIVE) {
-        auto refl = link.reflected.index_select(0, dirs);
-        trace =
-          P.trace_previous[f].index({refl.view({-1, 1}), groups.view({1, -1})});
-        c =
-          link.albedo * face.upwind_weights(omega_.index_select(0, refl), true);
-      } else {
-        continue;
+      UnitSweep unit;
+      unit.disc = P.disc.get();
+      unit.sigma_t = P.sigma_t.template data_ptr<double>();
+      unit.source_moments = P.source_moments.template data_ptr<double>();
+      for (size_t f = 0; f < P.links.size(); f++) {
+        unit.inflow[f] = face_inflow(set, local, f);
+        unit.trace_out[f] = P.links[f].has_buffer
+                              ? P.trace_current[f].template data_ptr<double>()
+                              : nullptr;
       }
-      // b_v += sum_q c_q R_v(q) R_u(q) trace_u over face pairs
-      auto cq = c.index({Slice(), face.pair_q}) * face.pair_val; // (nd, Pf)
-      auto contrib = cq.unsqueeze(1) * trace.index_select(2, face.pair_b);
-      b.index_add_(2, face.dofs.index({face.pair_a}), contrib);
-    }
+      unit.psi = P.psi.defined() ? P.psi.template data_ptr<double>() : nullptr;
+      moments.assign(static_cast<size_t>(M * ng * N), 0.0);
+      unit.moments = moments.data();
 
-    // Solve
-    auto rhs = b.reshape({nd * ng, N}).contiguous();
-    torch::Tensor x;
-    if (config_.local_solver == LocalSolverType::BANDED_LU) {
-      auto ab = disc.to_band(full).contiguous();
-      auto ipiv = linalg::banded::batched_lu_factor_(ab, disc.kl(), disc.ku());
-      linalg::banded::batched_lu_solve_(ab, ipiv, disc.kl(), disc.ku(), rhs);
-      x = rhs;
-    } else {
-      x =
-        torch::linalg_solve(disc.to_dense(full), rhs.unsqueeze(-1)).squeeze(-1);
-    }
-    x = x.view({nd, ng, N});
+      sweep_unit(unit, block, workspace);
 
-    // Outgoing face traces
-    for (size_t f = 0; f < P.links.size(); f++) {
-      if (!P.links[f].has_buffer)
-        continue;
-      P.trace_current[f].index_put_({dirs.view({-1, 1}), groups.view({1, -1})},
-        x.index_select(2, disc.faces()[f].dofs));
+      // Reduce this task's moment contribution (angle sets run concurrently)
+      std::lock_guard<std::mutex> lock(*P.mutex);
+      double* dst = P.moments_next.template data_ptr<double>();
+      for (int64_t m = 0; m < M; m++) {
+        for (int64_t bg = 0; bg < ng; bg++) {
+          const double* src = moments.data() + (m * ng + bg) * N;
+          double* out = dst + (m * num_groups_ + groups[bg]) * N;
+          for (int64_t v = 0; v < N; v++)
+            out[v] += src[v];
+        }
+      }
     }
-    if (P.psi.defined()) {
-      P.psi.index_put_({dirs.view({-1, 1}), groups.view({1, -1})}, x);
-    }
-
-    // Moments
-    auto Yw = weighted_harmonics_.index_select(0, dirs);
-    auto m = torch::einsum("dm,dgn->mgn", {Yw, x});
-    std::lock_guard<std::mutex> lock(*P.mutex);
-    P.moments_next.index_add_(1, groups, m);
   }
 
   /// @brief Scattering + external source moments from the current moments.
   void update_source_moments()
   {
+    thread_local std::vector<double> scratch;
     const int64_t M = harmonics_.size(1);
     for (auto& P : patches_) {
-      const int64_t N = P.disc->num_dofs();
-      const int64_t L = P.scatter.defined() ? P.scatter.size(0) : 0;
-      auto s = torch::zeros({M, num_groups_, N}, torch::kFloat64);
-      for (int64_t m = 0; m < M; m++) {
-        int64_t l = moment_order_[m].template item<int64_t>();
-        if (l < L) {
-          s[m] = torch::matmul(P.scatter[l], P.moments[m]);
-        }
-      }
-      s = P.disc->apply_mass(s.view({M * num_groups_, N}))
-            .view({M, num_groups_, N});
-      if (P.external.defined()) {
-        s[0] += P.external;
-      }
-      P.source_moments = std::move(s);
+      scattering_source(P.disc->view(),
+        P.scatter.defined() ? P.scatter.template data_ptr<double>() : nullptr,
+        P.scatter.defined() ? P.scatter.size(0) : 0, moment_order_raw_.data(),
+        M, num_groups_, P.moments.template data_ptr<double>(),
+        P.external.defined() ? P.external.template data_ptr<double>() : nullptr,
+        P.source_moments.template data_ptr<double>(), scratch);
     }
   }
 
-  /// @brief Build the sweep DAG: one task per (angle set, group set, patch).
+  /// @brief Build the sweep DAG: one task per (angle set, group set, chunk).
   void build_dag()
   {
     dag_.clear();
+    schedules_.clear();
     const auto& sets = graph_->angle_sets();
     for (size_t a = 0; a < sets.size(); a++) {
+      schedules_.push_back(graph_->schedule(a, chunk_of_));
+      const auto& chunks = schedules_.back();
       for (size_t s = 0; s < group_sets_.size(); s++) {
-        std::vector<task::Task*> tasks(patches_.size());
-        for (size_t i = 0; i < patches_.size(); i++) {
-          tasks[i] = dag_.create_task(task::DeviceTarget::CPU_ASYNC,
-            "sweep_a" + std::to_string(a) + "_g" + std::to_string(s) + "_p" +
-              std::to_string(patches_[i].gid));
-          tasks[i]->set_payload([this, a, s, i]() {
-            solve_task(a, s, i);
+        std::vector<task::Task*> tasks(chunks.size());
+        for (size_t c = 0; c < chunks.size(); c++) {
+          tasks[c] = dag_.create_task(task::DeviceTarget::CPU_ASYNC,
+            "sweep_a" + std::to_string(a) + "_g" + std::to_string(s) + "_c" +
+              std::to_string(c));
+          tasks[c]->set_payload([this, a, s, c]() {
+            auto t0 = std::chrono::steady_clock::now();
+            run_chunk(a, s, c);
+            task_nanoseconds_ +=
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - t0)
+                .count();
             return task::TaskStatus::COMPLETED;
           });
         }
-        for (size_t i = 0; i < patches_.size(); i++) {
-          for (int64_t j : graph_->upstream(a, static_cast<int64_t>(i))) {
-            tasks[i]->add_dependency(tasks[j]);
-          }
+        for (size_t c = 0; c < chunks.size(); c++) {
+          for (int64_t u : chunks[c].upstream)
+            tasks[c]->add_dependency(tasks[u]);
         }
       }
     }
@@ -403,7 +415,11 @@ public:
   /// @brief Build the patch discretizations, sweep graph and task DAG.
   /// @param qset Angular quadrature (the one the TT solver uses).
   /// @param config Sweep configuration.
-  void setup(const math::QuadratureSet::Ptr& qset, const SweepConfig& config)
+  /// @param chunks Optional GID -> chunk id map grouping units into tasks
+  /// (e.g. FDG elements by parent patch). Empty uses
+  /// config.task_granularity; otherwise every local GID must appear.
+  void setup(const math::QuadratureSet::Ptr& qset, const SweepConfig& config,
+    const std::unordered_map<int64_t, int64_t>& chunks = {})
   {
     qset_ = qset;
     config_ = config;
@@ -427,9 +443,10 @@ public:
       P.block = block;
       P.disc = PatchDiscretization::create(*block);
       const auto& mat = xs_server_->get_material(block->get_fill_id());
-      P.sigma_t = mat.get_total().to(torch::kFloat64).cpu();
+      P.sigma_t = mat.get_total().to(torch::kFloat64).cpu().contiguous();
       if (mat.get_scatter_gtg().defined() && mat.get_scatter_gtg().numel()) {
-        P.scatter = mat.get_scatter_gtg().to(torch::kFloat64).cpu();
+        P.scatter =
+          mat.get_scatter_gtg().to(torch::kFloat64).cpu().contiguous();
         num_orders = std::max<int64_t>(num_orders, P.scatter.size(0));
       }
       has_fission_ = has_fission_ || mat.is_fissile();
@@ -453,7 +470,7 @@ public:
                  .reshape({N, num_groups_})
                  .transpose(0, 1);
         }
-        P.external = q;
+        P.external = q.contiguous();
       }
       gid_to_local_[P.gid] = patches_.size();
       patches_.push_back(std::move(P));
@@ -461,7 +478,11 @@ public:
 
     std::tie(harmonics_, moment_order_) =
       discrete_harmonics(*qset_, NumDim, num_orders);
-    weighted_harmonics_ = harmonics_ * weights_.unsqueeze(1);
+    weighted_harmonics_ = (harmonics_ * weights_.unsqueeze(1)).contiguous();
+    moment_order_raw_.assign(moment_order_.template data_ptr<int64_t>(),
+      moment_order_.template data_ptr<int64_t>() + moment_order_.numel());
+    harmonics_ = harmonics_.contiguous();
+    omega_ = omega_.contiguous();
 
     // Face links and interfaces
     std::vector<SweepInterface> interfaces;
@@ -482,7 +503,7 @@ public:
               "sweeper yet");
           }
           if (link.type == physics::BoundaryType::REFLECTIVE) {
-            link.reflected = build_reflection(P.disc->faces()[f]);
+            link.reflected = build_reflection(P.disc->faces()[f]).contiguous();
             link.albedo = info.albedo();
             link.has_buffer = true;
           } else if (link.type == physics::BoundaryType::INTERNAL) {
@@ -502,7 +523,8 @@ public:
             link.neighbor = static_cast<int64_t>(it->second);
             link.neighbor_face = 2 * conn.dim + (conn.is_upper ? 1 : 0);
             link.trace_map =
-              build_trace_map(dim, conn, *patches_[link.neighbor].disc);
+              build_trace_map(dim, conn, *patches_[link.neighbor].disc)
+                .contiguous();
             link.has_buffer = true;
             link.is_first = P.gid < conn.gid;
             if (link.is_first) {
@@ -533,6 +555,29 @@ public:
     graph_ = SweepGraph::create(static_cast<int64_t>(patches_.size()),
       std::move(interfaces), num_directions);
 
+    // Chunks of units swept by one task
+    chunk_of_.assign(patches_.size(), 0);
+    for (size_t i = 0; i < patches_.size(); i++) {
+      if (!chunks.empty()) {
+        auto it = chunks.find(patches_[i].gid);
+        if (it == chunks.end()) {
+          throw utils::runtime_error(ctx("setup"),
+            "`chunks` has no entry for GID " + std::to_string(patches_[i].gid));
+        }
+        chunk_of_[i] = it->second;
+      } else if (config_.task_granularity == TaskGranularity::UNIT) {
+        chunk_of_[i] = static_cast<int64_t>(i);
+      }
+    }
+
+    // Plain index vectors for the kernel
+    set_directions_.clear();
+    for (const auto& set : graph_->angle_sets()) {
+      const auto& d = set.directions;
+      set_directions_.emplace_back(d.template data_ptr<int64_t>(),
+        d.template data_ptr<int64_t>() + d.numel());
+    }
+
     // Group sets
     group_sets_.clear();
     const int64_t gs = config_.group_set_size > 0
@@ -541,6 +586,11 @@ public:
     for (int64_t g0 = 0; g0 < num_groups_; g0 += gs) {
       group_sets_.push_back(
         torch::arange(g0, std::min(g0 + gs, num_groups_), torch::kInt64));
+    }
+    group_indices_.clear();
+    for (const auto& g : group_sets_) {
+      group_indices_.emplace_back(g.template data_ptr<int64_t>(),
+        g.template data_ptr<int64_t>() + g.numel());
     }
 
     // Buffers
@@ -559,6 +609,7 @@ public:
       }
       P.moments = torch::zeros({M, num_groups_, N}, torch::kFloat64);
       P.moments_next = torch::zeros_like(P.moments);
+      P.source_moments = torch::zeros_like(P.moments);
       P.psi =
         config_.store_angular_flux
           ? torch::zeros({num_directions, num_groups_, N}, torch::kFloat64)
@@ -578,8 +629,10 @@ public:
     if (!is_setup_)
       throw utils::runtime_error(ctx("sweep"), "Call setup() first");
     update_source_moments();
-    for (auto& P : patches_)
-      P.moments_next.zero_();
+    for (auto& P : patches_) {
+      double* m = P.moments_next.template data_ptr<double>();
+      std::fill(m, m + P.moments_next.numel(), 0.0);
+    }
     dag_.reset();
     scheduler_->execute(dag_);
     for (auto& P : patches_) {
@@ -625,10 +678,12 @@ public:
     double previous_error = -1.0;
     int64_t it = 0;
     for (; it < config_.max_iter; it++) {
-      std::vector<torch::Tensor> old;
-      old.reserve(patches_.size());
-      for (const auto& P : patches_)
-        old.push_back(P.moments[0].clone());
+      // Scalar flux before the sweep (moment 0 is the leading G * N block)
+      std::vector<std::vector<double>> old(patches_.size());
+      for (size_t i = 0; i < patches_.size(); i++) {
+        const double* phi = patches_[i].moments.template data_ptr<double>();
+        old[i].assign(phi, phi + num_groups_ * patches_[i].disc->num_dofs());
+      }
 
       auto t0 = std::chrono::high_resolution_clock::now();
       sweep();
@@ -639,11 +694,12 @@ public:
 
       double num = 0.0, den = 0.0;
       for (size_t i = 0; i < patches_.size(); i++) {
-        num += (patches_[i].moments[0] - old[i])
-                 .square()
-                 .sum()
-                 .template item<double>();
-        den += patches_[i].moments[0].square().sum().template item<double>();
+        const double* phi = patches_[i].moments.template data_ptr<double>();
+        for (size_t k = 0; k < old[i].size(); k++) {
+          const double diff = phi[k] - old[i][k];
+          num += diff * diff;
+          den += phi[k] * phi[k];
+        }
       }
       double error = den > 0 ? std::sqrt(num / den) : 0.0;
       errors_.push_back(error);
@@ -822,6 +878,15 @@ public:
   }
   int64_t get_num_iterations() const noexcept { return num_iterations_; }
   bool is_converged() const noexcept { return converged_; }
+  /// @return Cumulative seconds spent inside sweep task bodies, summed over
+  /// worker threads (compare with sweep wall time to see scheduler cost).
+  double get_task_seconds() const noexcept
+  {
+    return static_cast<double>(task_nanoseconds_.load()) * 1e-9;
+  }
+  void reset_task_seconds() noexcept { task_nanoseconds_ = 0; }
+  /// @return Chunk id of each local unit (in local order).
+  const std::vector<int64_t>& get_chunks() const noexcept { return chunk_of_; }
   int64_t num_tasks() const noexcept
   {
     return static_cast<int64_t>(dag_.size());

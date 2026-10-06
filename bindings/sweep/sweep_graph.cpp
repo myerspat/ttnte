@@ -34,6 +34,10 @@ void register_SweepGraph(py::module_& m)
     .def_readonly("forward", &AngleSet::forward)
     .def_readonly("backward", &AngleSet::backward);
 
+  py::class_<SweepChunk>(m, "SweepChunk")
+    .def_readonly("units", &SweepChunk::units)
+    .def_readonly("upstream", &SweepChunk::upstream);
+
   py::class_<SweepGraph, SweepGraph::Ptr>(m, "SweepGraph")
     .def(py::init([](int64_t num_nodes, std::vector<SweepInterface> interfaces,
                     int64_t num_directions) {
@@ -43,6 +47,12 @@ void register_SweepGraph(py::module_& m)
       py::arg("num_nodes"), py::arg("interfaces"), py::arg("num_directions"))
     .def(
       "upstream", &SweepGraph::upstream, py::arg("angle_set"), py::arg("node"))
+    .def(
+      "topological_order", &SweepGraph::topological_order, py::arg("angle_set"))
+    .def("schedule", &SweepGraph::schedule, py::arg("angle_set"),
+      py::arg("chunk_of"),
+      "Group nodes into sweep tasks for an angle set, merging chunk-level "
+      "cycles.")
     .def_property_readonly("num_nodes", &SweepGraph::num_nodes)
     .def_property_readonly("num_directions", &SweepGraph::num_directions)
     .def_property_readonly("interfaces", &SweepGraph::interfaces)

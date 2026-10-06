@@ -43,6 +43,15 @@ struct AngleSet {
   std::vector<EdgeState> backward;
 };
 
+/// @brief The work of one sweep task for an angle set: a group of units
+/// swept one after another in upwind order.
+struct SweepChunk {
+  /// Units in topological (upwind-first) order.
+  std::vector<int64_t> units;
+  /// Indices of the chunks (of the same schedule) this chunk waits for.
+  std::vector<int64_t> upstream;
+};
+
 /// @brief Per-direction sweep graphs over the local patches, with cycles
 /// broken and directions grouped into angle sets.
 ///
@@ -99,6 +108,24 @@ public:
 
   /// @return Upstream nodes (DEPENDENCY edges into `node`) for an angle set.
   std::vector<int64_t> upstream(size_t angle_set, int64_t node) const;
+
+  /// @return Every node in upwind-first order for an angle set (the graph of
+  /// DEPENDENCY edges is acyclic by construction).
+  std::vector<int64_t> topological_order(size_t angle_set) const;
+
+  /// @brief Group nodes into sweep tasks for an angle set.
+  ///
+  /// Nodes sharing a chunk id are swept by one task in topological order.
+  /// Grouping can create cycles between chunks even though the node graph is
+  /// acyclic (e.g. two patches of FDG elements that exchange flux both ways
+  /// along a curved interface); the chunks of each strongly connected
+  /// component of the chunk graph are then merged into one task, so any
+  /// grouping yields a valid DAG.
+  /// @param angle_set The angle set.
+  /// @param chunk_of Chunk id of every node (any integers).
+  /// @return The tasks, in a topological order of the chunk DAG.
+  std::vector<SweepChunk> schedule(
+    size_t angle_set, const std::vector<int64_t>& chunk_of) const;
 
   // =================================================================
   // Public getters

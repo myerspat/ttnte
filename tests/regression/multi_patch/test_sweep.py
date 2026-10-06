@@ -26,7 +26,12 @@ from ttnte.solvers import (
     IGADDSolver,
     MemoryPolicy,
 )
-from ttnte.sweep import IGASweepDriver2D, LocalSolverType, SweepConfig
+from ttnte.sweep import (
+    IGASweepDriver2D,
+    LocalSolverType,
+    SweepConfig,
+    TaskGranularity,
+)
 from ttnte.xs import Material, Server
 
 CPU = torch.device("cpu")
@@ -48,9 +53,12 @@ def _xs():
     return [source, void], server
 
 
-def _quarter_circle(fills, factor, split):
+def _quarter_circle(fills, factor, split, parents=None):
     """Shielded quarter circle (mc27 benchmark geometry): a scattering source disk with
-    a void shield, reflective on x = 0 and y = 0, vacuum outside."""
+    a void shield, reflective on x = 0 and y = 0, vacuum outside.
+
+    If `parents` is a list, the parent patch of every block is appended.
+    """
     c0 = cad.circle(radius=5, angle=torch.pi / 2)
     c1, c2 = c0.slice(0, 0, 0.5), c0.slice(0, 0.5, 1)
     l0 = cad.line(p0=(0, 0), p1=(0, 0))
@@ -75,6 +83,8 @@ def _quarter_circle(fills, factor, split):
             patch.source = FixedSource(isotropic_strength=torch.tensor([1.0]))
         for block in patch.split_elements() if split else [patch]:
             mesh.add_block(block)
+            if parents is not None:
+                parents.append(k)
     mesh.connect()
     mesh.set_axis_aligned_conditions(
         BCPlane(x_min=True, y_min=True), BoundaryType.REFLECTIVE, tol=1e-6
@@ -120,9 +130,10 @@ def _tt_scalar_flux(mesh, xs, qset):
     }
 
 
-def _sweep(mesh, xs, qset, **kw):
+def _sweep(mesh, xs, qset, chunks=None, **kw):
     sweeper = IGASweepDriver2D(mesh, xs, mpi_context)
-    sweeper.setup(qset, SweepConfig(tol=1e-10, max_iter=3000, verbose=False, **kw))
+    config = SweepConfig(tol=1e-10, max_iter=3000, verbose=False, **kw)
+    sweeper.setup(qset, config, chunks or {})
     sweeper.solve_fixed_source()
     assert sweeper.converged
     return sweeper
@@ -192,3 +203,37 @@ def test_solver_variants_agree():
     # The TransportSolution carries the scalar flux
     sol = other.build_solution()
     assert sol is not None
+
+
+@pytest.mark.mpi(min_size=1)
+def test_task_granularity_agrees():
+    """Per-unit tasks, one subdomain task, and FDG elements chunked by parent patch
+    (whose chunk graph can be cyclic along curved interfaces) give the same solution,
+    with one and several threads."""
+    if mpi_context.world_size > 1:
+        pytest.skip("Sweeps run on one rank")
+    torch.set_default_dtype(torch.float64)
+    fills, xs = _xs()
+    qset = _qset(4)
+    parents = []
+    mesh = _quarter_circle(fills, 3, True, parents)
+    base = _sweep(mesh, xs, qset, local_solver=LocalSolverType.DENSE_LU)
+    n = base.graph.num_nodes
+    ref = {g: base.get_scalar_flux(g) for g in range(n)}
+    variants = [
+        (dict(task_granularity=TaskGranularity.SUBDOMAIN), None),
+        (dict(task_granularity=TaskGranularity.SUBDOMAIN, num_threads=4), None),
+        (dict(num_threads=4), {g: parents[g] for g in range(n)}),
+    ]
+    for kw, chunks in variants:
+        other = _sweep(
+            _quarter_circle(fills, 3, True),
+            xs,
+            qset,
+            chunks,
+            local_solver=LocalSolverType.DENSE_LU,
+            **kw,
+        )
+        assert other.num_tasks < base.num_tasks
+        phi = {g: other.get_scalar_flux(g) for g in range(n)}
+        assert _rel_diff(phi, ref) < 1e-12

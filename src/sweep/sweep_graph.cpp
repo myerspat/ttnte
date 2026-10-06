@@ -1,6 +1,9 @@
 #include "ttnte/sweep/sweep_graph.hpp"
 #include "ttnte/utils/exception.hpp"
+#include <algorithm>
 #include <map>
+#include <set>
+#include <unordered_map>
 
 namespace ttnte::sweep {
 
@@ -123,6 +126,123 @@ std::vector<int64_t> SweepGraph::upstream(size_t angle_set, int64_t node) const
       nodes.push_back(itf.second);
   }
   return nodes;
+}
+
+std::vector<int64_t> SweepGraph::topological_order(size_t angle_set) const
+{
+  std::vector<std::vector<int64_t>> downstream(num_nodes_);
+  std::vector<int64_t> indegree(num_nodes_, 0);
+  for (int64_t i = 0; i < num_nodes_; i++) {
+    for (int64_t j : upstream(angle_set, i)) {
+      downstream[j].push_back(i);
+      indegree[i]++;
+    }
+  }
+  std::vector<int64_t> order;
+  order.reserve(num_nodes_);
+  for (int64_t i = 0; i < num_nodes_; i++)
+    if (indegree[i] == 0)
+      order.push_back(i);
+  for (size_t k = 0; k < order.size(); k++) {
+    for (int64_t i : downstream[order[k]])
+      if (--indegree[i] == 0)
+        order.push_back(i);
+  }
+  if (static_cast<int64_t>(order.size()) != num_nodes_) {
+    throw utils::runtime_error("ttnte::sweep::SweepGraph::topological_order",
+      "The dependency graph of an angle set is cyclic");
+  }
+  return order;
+}
+
+std::vector<SweepChunk> SweepGraph::schedule(
+  size_t angle_set, const std::vector<int64_t>& chunk_of) const
+{
+  if (static_cast<int64_t>(chunk_of.size()) != num_nodes_) {
+    throw utils::runtime_error("ttnte::sweep::SweepGraph::schedule",
+      "chunk_of must have one entry per node");
+  }
+
+  // Dense chunk ids and the chunk graph
+  std::unordered_map<int64_t, int64_t> dense;
+  std::vector<int64_t> chunk(num_nodes_);
+  for (int64_t i = 0; i < num_nodes_; i++) {
+    auto it = dense.emplace(chunk_of[i], static_cast<int64_t>(dense.size()));
+    chunk[i] = it.first->second;
+  }
+  const int64_t C = static_cast<int64_t>(dense.size());
+  std::vector<std::set<int64_t>> chunk_up(C);
+  for (int64_t i = 0; i < num_nodes_; i++) {
+    for (int64_t j : upstream(angle_set, i))
+      if (chunk[j] != chunk[i])
+        chunk_up[chunk[i]].insert(chunk[j]);
+  }
+
+  // Tarjan's strongly connected components over upstream edges (iterative).
+  // Components are completed upstream-first, i.e. in topological order.
+  std::vector<int64_t> comp(C, -1), low(C, 0), num(C, -1);
+  std::vector<bool> on_stack(C, false);
+  std::vector<int64_t> stack;
+  int64_t counter = 0, num_comps = 0;
+  std::vector<std::vector<int64_t>> up_list(C);
+  for (int64_t c = 0; c < C; c++)
+    up_list[c].assign(chunk_up[c].begin(), chunk_up[c].end());
+  for (int64_t root = 0; root < C; root++) {
+    if (num[root] >= 0)
+      continue;
+    std::vector<std::pair<int64_t, size_t>> call {{root, 0}};
+    num[root] = low[root] = counter++;
+    stack.push_back(root);
+    on_stack[root] = true;
+    while (!call.empty()) {
+      auto& [v, next] = call.back();
+      if (next < up_list[v].size()) {
+        int64_t w = up_list[v][next++];
+        if (num[w] < 0) {
+          num[w] = low[w] = counter++;
+          stack.push_back(w);
+          on_stack[w] = true;
+          call.emplace_back(w, 0);
+        } else if (on_stack[w]) {
+          low[v] = std::min(low[v], num[w]);
+        }
+      } else {
+        const int64_t vv = v;
+        if (low[vv] == num[vv]) {
+          int64_t w;
+          do {
+            w = stack.back();
+            stack.pop_back();
+            on_stack[w] = false;
+            comp[w] = num_comps;
+          } while (w != vv);
+          num_comps++;
+        }
+        call.pop_back();
+        if (!call.empty()) {
+          const int64_t parent = call.back().first;
+          low[parent] = std::min(low[parent], low[vv]);
+        }
+      }
+    }
+  }
+
+  // One task per component, units in global topological order
+  std::vector<SweepChunk> tasks(num_comps);
+  for (int64_t i : topological_order(angle_set))
+    tasks[comp[chunk[i]]].units.push_back(i);
+  for (int64_t c = 0; c < C; c++) {
+    for (int64_t u : chunk_up[c]) {
+      if (comp[u] != comp[c])
+        tasks[comp[c]].upstream.push_back(comp[u]);
+    }
+  }
+  for (auto& t : tasks) {
+    std::sort(t.upstream.begin(), t.upstream.end());
+    t.upstream.erase(
+      std::unique(t.upstream.begin(), t.upstream.end()), t.upstream.end());
+  }
+  return tasks;
 }
 
 } // namespace ttnte::sweep

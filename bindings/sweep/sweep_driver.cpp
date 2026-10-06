@@ -29,8 +29,11 @@ static void register_SweepDriver_impl(
     // =================================================================
     // Public methods
     .def("setup", &SweepDriver::setup,
-      "Build the patch discretizations, sweep graph and task DAG.",
+      "Build the patch discretizations, sweep graph and task DAG. `chunks` "
+      "optionally maps GID -> chunk id to group units into tasks (e.g. FDG "
+      "elements by parent patch); empty uses config.task_granularity.",
       py::arg("angular_qset"), py::arg("config"),
+      py::arg("chunks") = std::unordered_map<int64_t, int64_t> {},
       py::call_guard<py::gil_scoped_release>())
     .def("sweep", &SweepDriver::sweep,
       "Run one transport sweep with the current moments as the scattering "
@@ -67,7 +70,11 @@ static void register_SweepDriver_impl(
     .def_property_readonly("sweep_times", &SweepDriver::get_sweep_times)
     .def_property_readonly("num_iterations", &SweepDriver::get_num_iterations)
     .def_property_readonly("converged", &SweepDriver::is_converged)
-    .def_property_readonly("num_tasks", &SweepDriver::num_tasks);
+    .def_property_readonly("num_tasks", &SweepDriver::num_tasks)
+    .def_property_readonly("chunks", &SweepDriver::get_chunks)
+    .def_property_readonly("task_seconds", &SweepDriver::get_task_seconds,
+      "Cumulative seconds inside sweep task bodies, summed over threads.")
+    .def("reset_task_seconds", &SweepDriver::reset_task_seconds);
 }
 
 void register_SweepDriver(py::module_& m)

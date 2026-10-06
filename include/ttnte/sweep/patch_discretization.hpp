@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ttnte/cad/patch.hpp"
+#include <cstdint>
 #include <memory>
 #include <torch/extension.h>
 #include <vector>
@@ -53,6 +54,42 @@ struct FaceGeometry {
   torch::Tensor upwind_weights(const torch::Tensor& omega, bool outflow) const;
 };
 
+/// @brief Raw pointers into one face's FaceGeometry tensors (valid for the
+/// lifetime of the owning PatchDiscretization).
+struct FaceView {
+  int64_t num_dofs = 0;
+  int64_t num_points = 0;
+  int64_t num_pairs = 0;
+  const int64_t* dofs = nullptr;
+  const double* normal = nullptr;
+  const double* weights = nullptr;
+  const int64_t* pair_q = nullptr;
+  const int64_t* pair_a = nullptr;
+  const int64_t* pair_b = nullptr;
+  const double* pair_val = nullptr;
+  const int64_t* pair_volume_index = nullptr;
+};
+
+/// @brief Raw pointers into a PatchDiscretization's tensors, built once so
+/// inner kernel loops never touch the tensor API.
+struct KernelView {
+  int64_t ndim = 0;
+  int64_t num_dofs = 0;
+  int64_t num_pairs = 0;
+  int64_t kl = 0;
+  int64_t ku = 0;
+  int64_t ldab = 0;
+  int64_t max_face_points = 0;
+  const int64_t* pair_row = nullptr;
+  const int64_t* pair_col = nullptr;
+  const double* mass = nullptr;
+  /// (ndim, P)
+  const double* grad = nullptr;
+  const int64_t* band_index = nullptr;
+  const int64_t* dense_index = nullptr;
+  std::vector<FaceView> faces;
+};
+
 /// @brief Discrete operators of one IGA patch for the discrete-ordinates sweep.
 ///
 /// The patch's local system for direction d and group g is
@@ -65,6 +102,9 @@ struct FaceGeometry {
 /// assembler uses, and stored as a coalesced pair list so the operator can be
 /// written directly into banded or dense storage. The same class serves patch
 /// (PDG) and single-element (FDG) discretizations.
+///
+/// Every tensor member is contiguous CPU float64/int64, so raw-array kernels
+/// (see sweep_kernel.hpp) may read them through data_ptr().
 class PatchDiscretization {
 public:
   // =================================================================
@@ -94,8 +134,12 @@ protected:
   int64_t ku_ = 0;
   /// (P) flat index of each pair in (n, 2kl+ku+1) band storage.
   torch::Tensor band_index_;
+  /// (P) flat index of each pair in row-major (n, n) dense storage.
+  torch::Tensor dense_index_;
   /// (N) integral of each basis function (load vector of a unit source).
   torch::Tensor basis_integral_;
+  /// Raw pointers into the tensors above.
+  KernelView view_;
 
   // =================================================================
   // Protected constructors
@@ -141,12 +185,18 @@ public:
 
   // =================================================================
   // Public getters
+  /// @return Raw pointers into this discretization for kernels.
+  const KernelView& view() const noexcept { return view_; }
   int64_t ndim() const noexcept { return ndim_; }
   const std::vector<int64_t>& shape() const noexcept { return shape_; }
   int64_t num_dofs() const noexcept { return num_dofs_; }
   int64_t num_pairs() const { return pair_row_.size(0); }
   int64_t kl() const noexcept { return kl_; }
   int64_t ku() const noexcept { return ku_; }
+  /// @return Leading dimension of the band storage, 2 kl + ku + 1.
+  int64_t ldab() const noexcept { return 2 * kl_ + ku_ + 1; }
+  const torch::Tensor& band_index() const noexcept { return band_index_; }
+  const torch::Tensor& dense_index() const noexcept { return dense_index_; }
   const torch::Tensor& pair_row() const noexcept { return pair_row_; }
   const torch::Tensor& pair_col() const noexcept { return pair_col_; }
   const torch::Tensor& mass_values() const noexcept { return mass_val_; }

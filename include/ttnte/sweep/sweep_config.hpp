@@ -15,6 +15,17 @@ enum class LocalSolverType : uint8_t {
   DENSE_LU,
 };
 
+/// @brief How sweep units are grouped into scheduler tasks.
+enum class TaskGranularity : uint8_t {
+  /// One task per unit, angle set and group set: the most concurrency, for
+  /// a few large units (PDG patches).
+  UNIT,
+  /// One task per angle set and group set sweeping every local unit in
+  /// upwind order (the AAH-style chunk): the least scheduling overhead, for
+  /// many small units (FDG elements).
+  SUBDOMAIN,
+};
+
 /// @brief Configuration of the transport sweep solver.
 struct SweepConfig {
   /// Local patch solver.
@@ -23,6 +34,9 @@ struct SweepConfig {
   /// When false only the flux moments and the face traces needed by the
   /// sweep (interfaces and reflective faces) are stored.
   bool store_angular_flux = false;
+  /// Grouping of units into tasks (overridden by an explicit chunk map
+  /// passed to SweepDriver::setup()).
+  TaskGranularity task_granularity = TaskGranularity::UNIT;
   /// Worker threads of the task scheduler.
   int64_t num_threads = 1;
   /// Number of energy groups per sweep task (<= 0 means all groups in one

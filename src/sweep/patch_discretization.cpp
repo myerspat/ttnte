@@ -323,6 +323,54 @@ PatchDiscretization::PatchDiscretization(const cad::Patch& patch)
   ku_ = std::max<int64_t>(0, (-diff).max().item<int64_t>());
   const int64_t ldab = linalg::banded::factor_ldab(kl_, ku_);
   band_index_ = pair_col_ * ldab + (kl_ + ku_ + pair_row_ - pair_col_);
+  dense_index_ = pair_row_ * num_dofs_ + pair_col_;
+
+  // Contiguous storage for raw-array kernels
+  auto own = [](torch::Tensor& t) {
+    if (t.defined())
+      t = t.contiguous();
+  };
+  for (auto* t : {&pair_row_, &pair_col_, &mass_val_, &grad_val_, &band_index_,
+         &dense_index_, &basis_integral_}) {
+    own(*t);
+  }
+  for (auto& face : faces_) {
+    for (auto* t :
+      {&face.dofs, &face.normal, &face.weights, &face.pair_q, &face.pair_a,
+        &face.pair_b, &face.pair_val, &face.pair_volume_index}) {
+      own(*t);
+    }
+  }
+
+  // Raw view (tensors are not reassigned after this point)
+  view_.ndim = ndim_;
+  view_.num_dofs = num_dofs_;
+  view_.num_pairs = pair_row_.size(0);
+  view_.kl = kl_;
+  view_.ku = ku_;
+  view_.ldab = ldab;
+  view_.pair_row = pair_row_.data_ptr<int64_t>();
+  view_.pair_col = pair_col_.data_ptr<int64_t>();
+  view_.mass = mass_val_.data_ptr<double>();
+  view_.grad = grad_val_.data_ptr<double>();
+  view_.band_index = band_index_.data_ptr<int64_t>();
+  view_.dense_index = dense_index_.data_ptr<int64_t>();
+  for (const auto& face : faces_) {
+    FaceView fv;
+    fv.num_dofs = face.dofs.size(0);
+    fv.num_points = face.weights.size(0);
+    fv.num_pairs = face.pair_q.size(0);
+    fv.dofs = face.dofs.data_ptr<int64_t>();
+    fv.normal = face.normal.data_ptr<double>();
+    fv.weights = face.weights.data_ptr<double>();
+    fv.pair_q = face.pair_q.data_ptr<int64_t>();
+    fv.pair_a = face.pair_a.data_ptr<int64_t>();
+    fv.pair_b = face.pair_b.data_ptr<int64_t>();
+    fv.pair_val = face.pair_val.data_ptr<double>();
+    fv.pair_volume_index = face.pair_volume_index.data_ptr<int64_t>();
+    view_.max_face_points = std::max(view_.max_face_points, fv.num_points);
+    view_.faces.push_back(fv);
+  }
 }
 
 torch::Tensor PatchDiscretization::streaming_values(
@@ -350,7 +398,7 @@ torch::Tensor PatchDiscretization::to_dense(const torch::Tensor& values) const
 {
   const int64_t B = values.size(0);
   auto out = torch::zeros({B, num_dofs_ * num_dofs_}, values.options());
-  out.index_copy_(1, pair_row_ * num_dofs_ + pair_col_, values);
+  out.index_copy_(1, dense_index_, values);
   return out.view({B, num_dofs_, num_dofs_});
 }
 
