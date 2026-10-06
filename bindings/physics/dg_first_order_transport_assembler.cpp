@@ -45,6 +45,27 @@ void register_DGFirstOrderTransportAssembler(
       py::return_value_policy::reference_internal)
     .def("get_xs_server", &AssemblerType::get_xs_server,
       py::return_value_policy::reference_internal)
+    .def("assemble_balance_functional",
+      &AssemblerType::assemble_balance_functional, py::arg("energy_matrix"),
+      py::arg("eps"), py::arg("max_rank"),
+      "Assemble a particle-balance reaction-rate functional. energy_matrix "
+      "is a (num_groups, num_groups) weight/transfer matrix (diagonal for a "
+      "per-group-only rate such as absorption or total scatter-out; a full "
+      "matrix for group-to-group redistribution such as fission or "
+      "scatter-in), with energy_matrix[i, j] = output group i's coefficient "
+      "on input group j. mv(functional, psi).to_dense().reshape((num_groups,"
+      ")) gives the per-group reaction rate.",
+      py::call_guard<py::gil_scoped_release>())
+    .def("assemble_leakage_functional",
+      &AssemblerType::assemble_leakage_functional, py::arg("dim"),
+      py::arg("is_upper"), py::arg("is_outflow"), py::arg("narrowed_input"),
+      py::arg("eps"), py::arg("max_rank"),
+      "Assemble a particle-balance leakage (partial-current) functional for "
+      "one boundary face, integrated over the face's spatial extent (unlike "
+      "current_ops, which leaves face-position structure intact for the "
+      "per-point Schwarz check). mv(functional, psi).to_dense()."
+      "reshape((num_groups,)) gives the per-group scalar partial current.",
+      py::call_guard<py::gil_scoped_release>())
 
     .def_property_readonly(
       "interior_loss_op", &AssemblerType::get_interior_loss_op)

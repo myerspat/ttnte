@@ -275,6 +275,30 @@ public:
       .set_type(type);
   }
 
+  /// @brief Set the specular albedo of a boundary face. May be set at any
+  /// time (before or after the face type); the assembler validates that
+  /// albedo != 1 only appears on `BoundaryType::REFLECTIVE` faces.
+  /// @param dim The dimension to take the upper or lower face.
+  /// @param is_upper Whether to take the upper or lower face.
+  /// @param albedo The fraction of the mirrored outgoing angular flux that
+  /// re-enters through this face, in [0, 1].
+  /// @throws utils::runtime_error If albedo is outside [0, 1].
+  void set_boundary_albedo(size_t dim, bool is_upper, double albedo)
+  {
+    boundaries_[dim * static_cast<size_t>(2) + static_cast<size_t>(is_upper)]
+      .set_albedo(albedo);
+  }
+
+  /// @param dim The dimension to take the upper or lower face.
+  /// @param is_upper Whether to take the upper or lower face.
+  /// @return The specular albedo of that boundary face.
+  double get_boundary_albedo(size_t dim, bool is_upper) const
+  {
+    return boundaries_[dim * static_cast<size_t>(2) +
+                       static_cast<size_t>(is_upper)]
+      .albedo();
+  }
+
   /// @brief Prescribe a fixed incident flux on a boundary face -- sets the
   /// face's type to `BoundaryType::INCIDENT` and attaches the source in one
   /// call.

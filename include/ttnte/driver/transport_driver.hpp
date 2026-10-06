@@ -41,6 +41,9 @@ public:
   using Solution = TransportSolution<BlockType>;
   using Callback =
     std::function<void(const TransportDriver&, const solvers::Solver&)>;
+  /// GID -> initial angular flux for that patch. Only this rank's own local
+  /// GIDs may appear; a GID left out falls back to the default all-ones guess.
+  using InitialGuess = std::unordered_map<int64_t, linalg::State>;
 
   // Communication and load balancing
   using Communicator = parallel::Communicator;
@@ -180,11 +183,28 @@ public:
   /// iteration-to-iteration change, |k_i - k_{i-1}| (in k-units, so e.g.
   /// 1e-5 is 1 pcm). Checked independently of (in addition to) `tol`'s
   /// flux-shape criterion -- both must hold before the outer loop breaks.
+  /// @param initial_guess Optional per-patch starting angular flux (see
+  /// init_solver()); the initial fission source and k_global are computed from
+  /// it. Its AMPLITUDE matters: take it from a converged solve (e.g. a coarser
+  /// level's solution, prolonged), not an arbitrarily scaled field -- the
+  /// source is renormalized to unit total each outer iteration, so the
+  /// guess's amplitude should agree with that normalization (a mis-scaled
+  /// guess is expected to cost extra Schwarz sweeps; not yet measured).
+  /// @param initial_guess_error Estimated relative error of `initial_guess`,
+  /// used to seed the inner solver's tolerance forcing (its running-minimum
+  /// error, from which the local truncation eps and the Schwarz tolerance are
+  /// derived). The default, 1.0, says nothing and reproduces the cold-start
+  /// schedule: eps starts ~1e-2 and only tightens as sweeps proceed, which
+  /// silently degrades a good guess in the first outer iteration. Pass the
+  /// expected accuracy of the guess (e.g. a coarse level's discretization
+  /// error, or the outer tolerance of the solve it came from) to keep it.
+  /// Ignored by solvers without forcing.
   /// @return A TransportSolution holding the converged k-eigenvalue
   /// (get_k_eff()) and the raw angular flux per local patch (get_solution()).
   typename Solution::Ptr solve_eigenvalue(solvers::Solver::Ptr inner_solver,
     double tol = 1e-8, int max_iter = 500, bool clear_assemblers = true,
-    bool verbose = true, double k_tol = 1e-5)
+    bool verbose = true, double k_tol = 1e-5,
+    const InitialGuess& initial_guess = {}, double initial_guess_error = 1.0)
   {
     if (patch_data_.empty()) {
       throw utils::runtime_error(
@@ -199,7 +219,8 @@ public:
     last_outer_error_ = std::numeric_limits<double>::max();
 
     // Initialize the solver
-    double k_global = init_solver(inner_solver, clear_assemblers);
+    double k_global =
+      init_solver(inner_solver, clear_assemblers, initial_guess);
     // Previous iteration's k_global, for the independent k-convergence check
     // below -- seeded from the pre-loop value so the very first outer
     // iteration's k_error reflects the initial guess's own drift, not a
@@ -218,7 +239,11 @@ public:
 
     double error = std::numeric_limits<double>::max();
     double k_error = std::numeric_limits<double>::max();
-    inner_solver->update_convergence_criteria(error);
+    // Seed the solver's tolerance forcing. The default (1.0) tells it nothing,
+    // i.e. the loose-early schedule of a cold start; a smaller value declares
+    // the starting guess already that accurate, so the first sweeps are not
+    // truncated coarsely enough to undo it (see initial_guess_error).
+    inner_solver->seed_convergence_criteria(initial_guess_error);
 
     for (const auto& sys : local_systems) {
       const auto& x = sys->get_state();
@@ -474,12 +499,19 @@ public:
   /// local systems (frees assembled operators no longer needed once the
   /// LinearSystem buffer is built).
   /// @param verbose Whether to print outer iteration progress.
+  /// @param initial_guess Optional per-patch starting angular flux (see
+  /// init_solver()). Unlike the eigenvalue case there is no normalization to
+  /// disagree with -- the source is fixed, so any guess is just a starting
+  /// point.
+  /// @param initial_guess_error Estimated relative error of `initial_guess`;
+  /// seeds the inner solver's tolerance forcing -- see solve_eigenvalue().
   /// @return A TransportSolution holding the raw angular flux per local patch
   /// (get_solution()); k_eff is left unset (nullopt) since fixed-source
   /// problems have no eigenvalue.
   typename Solution::Ptr solve_fixed_source(solvers::Solver::Ptr inner_solver,
     double tol = 1e-8, int max_iter = 500, bool clear_assemblers = true,
-    bool verbose = true)
+    bool verbose = true, const InitialGuess& initial_guess = {},
+    double initial_guess_error = 1.0)
   {
     if (patch_data_.empty()) {
       throw utils::runtime_error(
@@ -489,7 +521,7 @@ public:
 
     // Initialize the solver. The returned total fission source is unused
     // here -- fixed-source problems have no eigenvalue to seed.
-    init_solver(inner_solver, clear_assemblers);
+    init_solver(inner_solver, clear_assemblers, initial_guess);
 
     // Ensure all worker threads have set their CUDA device before the first
     // iteration so cuBLAS context initialization does not produce warnings.
@@ -507,7 +539,8 @@ public:
     verbose = verbose && comm_.rank() == 0;
 
     double error = std::numeric_limits<double>::max();
-    inner_solver->update_convergence_criteria(error);
+    // Seed the solver's tolerance forcing -- see solve_eigenvalue().
+    inner_solver->seed_convergence_criteria(initial_guess_error);
 
     // Temporarily move the angular quadrature set to match the local
     // systems' own device/dtype for the duration of the solve -- see
@@ -714,10 +747,50 @@ public:
   /// @param solver The solver to initialize.
   /// @param clear_assemblers Clear each patch's assembler after building the
   /// local systems.
+  /// @param initial_guess Optional GID -> starting angular flux for this
+  /// rank's local patches. A patch with an entry starts from a rounded COPY of
+  /// it (moved to the patch's device/dtype and rounded to the solver's
+  /// eps/max_rank, so the caller's State is never aliased by the solver);
+  /// every other patch starts from the all-ones default. The initial fission
+  /// source and k are computed from whichever starting state a patch has.
   /// @return The global fission source.
-  double init_solver(
-    const solvers::Solver::Ptr& solver, bool clear_assemblers = true)
+  /// @throws ttnte::utils::runtime_error If a GID is not a local patch, the
+  /// guess is undefined or not a tensor train, or its mode sizes do not match
+  /// the patch's operator.
+  double init_solver(const solvers::Solver::Ptr& solver,
+    bool clear_assemblers = true, const InitialGuess& initial_guess = {})
   {
+    // Validate the initial guess before touching any state
+    for (const auto& [gid, guess] : initial_guess) {
+      if (patch_data_.find(gid) == patch_data_.end()) {
+        throw utils::runtime_error(
+          "ttnte::driver::TransportDriver::init_solver",
+          "`initial_guess` has an entry for GID " + std::to_string(gid) +
+            ", which is not a local patch on this MPI rank");
+      }
+      if (!guess.defined() || !guess.is_tt() ||
+          solver->get_state_format() != linalg::FormatType::TENSOR_TRAIN) {
+        throw utils::runtime_error(
+          "ttnte::driver::TransportDriver::init_solver",
+          "`initial_guess` for GID " + std::to_string(gid) +
+            " must be a defined tensor-train State and the solver must use "
+            "the tensor-train format");
+      }
+      const auto& sys_n_modes =
+        patch_data_.at(gid).system->get_interior_op().as_tt().get_n_modes();
+      const auto guess_m_modes = guess.as_tt().get_m_modes();
+      if (guess_m_modes.size() != sys_n_modes.size() ||
+          !std::equal(
+            guess_m_modes.begin(), guess_m_modes.end(), sys_n_modes.begin())) {
+        throw utils::runtime_error(
+          "ttnte::driver::TransportDriver::init_solver",
+          "`initial_guess` for GID " + std::to_string(gid) +
+            " has mode sizes that do not match this patch's operator "
+            "(angular quadrature, spatial basis, and energy groups must "
+            "all agree)");
+      }
+    }
+
     // Clear assemblers
     if (clear_assemblers) {
       for (auto& [gid, pd] : patch_data_) {
@@ -741,9 +814,19 @@ public:
       const auto& device = interior_op.get_device();
       const auto& dtype = interior_op.get_dtype();
 
+      // Start from the caller's guess for this patch if it gave one (a
+      // rounded copy -- see the initial_guess doc), otherwise all ones
+      linalg::State psi;
+      if (const auto it = initial_guess.find(sys->get_gid());
+        it != initial_guess.end()) {
+        psi = it->second.to(device, dtype)
+                .round(solver->get_eps(), solver->get_max_rank());
+      } else {
+        psi = linalg::State::ones(
+          solver->get_state_format(), n_modes, device, dtype);
+      }
+
       // Check if this is a fissile system
-      linalg::State psi =
-        linalg::State::ones(solver->get_state_format(), n_modes, device, dtype);
       const auto& src = sys->get_source();
       if (src && src->is_eigenvalue()) {
         // Update the fission source
@@ -766,11 +849,72 @@ public:
     }
 
     // Initialize the solver
-    solver->init(std::move(local_systems));
+    solver->init(local_systems);
+
+    // A sweep takes its interface data ONLY from each coupling's pending
+    // recv_buffer (filled by the previous sweep's narrow/send tasks), never
+    // from the neighbor's state directly. Without seeding, the first sweep
+    // after a user-supplied guess sees no boundary data at all and discards
+    // the guess's interface information, which the slow interface modes of
+    // a block-Jacobi iteration then take many sweeps to recover.
+    if (!initial_guess.empty()) {
+      seed_interface_buffers(
+        local_systems, solver->get_eps(), solver->get_max_rank());
+    }
 
     // Wait for the eigenvalue to be sent across ranks
     kreq.wait();
     return k_global;
+  }
+
+  /// @brief Fill each internal coupling's pending receive buffer with the
+  /// face its neighbor would have sent after a sweep that produced the
+  /// systems' current states (the same narrow + rounding the DAG's narrow
+  /// task performs; the boundary mapping and boundary_op are applied later
+  /// by the apply task, as usual).
+  /// @note Only same-rank neighbors are seeded.
+  /// TODO: seed cross-rank interfaces through the boundary communicator.
+  /// @param local_systems The local systems of this rank, states set.
+  /// @param eps Rounding tolerance for the faces.
+  /// @param max_rank Maximum rank for the faces.
+  void seed_interface_buffers(
+    const std::vector<linalg::LinearSystem::Ptr>& local_systems, double eps,
+    int64_t max_rank) const
+  {
+    std::unordered_map<int64_t, linalg::LinearSystem::Ptr> by_gid;
+    for (const auto& sys : local_systems) {
+      by_gid[sys->get_gid()] = sys;
+    }
+
+    const int my_rank = comm_.rank();
+    for (const auto& ssys : local_systems) {
+      const auto& state = ssys->get_state();
+      if (!state.defined()) {
+        continue;
+      }
+      for (const auto& scoupling : ssys->get_couplings()) {
+        if (scoupling.connection.mpi_rank != my_rank) {
+          continue;
+        }
+        const auto it = by_gid.find(scoupling.connection.gid);
+        if (it == by_gid.end()) {
+          continue;
+        }
+        for (auto& tcoupling : it->second->get_couplings()) {
+          if (tcoupling.connection.gid == ssys->get_gid() &&
+              tcoupling.connection.fid == scoupling.fid) {
+            const size_t boundary_dim =
+              static_cast<size_t>(state.ndimension()) -
+              scoupling.connection.mapping.flip.size() - 2 + scoupling.dim;
+            auto face =
+              state.narrow(boundary_dim, scoupling.is_upper ? -1 : 0, 1);
+            face.round_(eps, max_rank);
+            tcoupling.recv_buffer = std::move(face);
+            break;
+          }
+        }
+      }
+    }
   }
 
   // =================================================================

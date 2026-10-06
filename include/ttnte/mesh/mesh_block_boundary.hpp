@@ -2,6 +2,7 @@
 
 #include "ttnte/physics/boundary_types.hpp"
 #include "ttnte/physics/fixed_source.hpp"
+#include "ttnte/utils/exception.hpp"
 #include "ttnte/utils/io_formatting.hpp"
 #include <cstddef>
 #include <cstdint>
@@ -116,6 +117,13 @@ private:
   /// prescribed incident flux specification for this face.
   std::optional<physics::FixedSource> source_ = std::nullopt;
 
+  /// Specular albedo of the face, in [0, 1]: the incoming angular flux is
+  /// albedo * (mirrored outgoing angular flux). Only meaningful when
+  /// type == ttnte::physics::BoundaryType::REFLECTIVE (1 = perfect specular
+  /// reflection, 0 = vacuum); the assembler rejects albedo != 1 on any other
+  /// face type.
+  double albedo_ = 1.0;
+
 public:
   // =================================================================
   // Public constructors
@@ -146,8 +154,22 @@ public:
   {
     return source_;
   }
+  /// @return The specular albedo of this face (1 unless set).
+  double albedo() const noexcept { return albedo_; }
 
   void set_type(const physics::BoundaryType& type) { type_ = type; }
+  /// @brief Set the specular albedo of this face.
+  /// @param albedo The fraction of the mirrored outgoing angular flux that
+  /// re-enters through this face, in [0, 1].
+  /// @throws utils::runtime_error If albedo is outside [0, 1] (or NaN).
+  void set_albedo(double albedo)
+  {
+    if (!(albedo >= 0.0 && albedo <= 1.0)) {
+      throw utils::runtime_error("ttnte::mesh::BoundaryInfo::set_albedo",
+        "The albedo must be in [0, 1], got " + std::to_string(albedo));
+    }
+    albedo_ = albedo;
+  }
   /// @param source The prescribed incident source for this face.
   void set_source(physics::FixedSource source) { source_ = std::move(source); }
 };
@@ -188,7 +210,7 @@ inline std::ostream& operator<<(std::ostream& os, const BoundaryInfo& binfo)
 
   os << "BoundaryInfo(\n  fid=" << binfo.get_fid()
      << ",\n  type=" << physics::to_string(binfo.get_type())
-     << ",\n  connections=[";
+     << ",\n  albedo=" << binfo.albedo() << ",\n  connections=[";
 
   if (binfo.get_connections().empty()) {
     os << "],\n)";

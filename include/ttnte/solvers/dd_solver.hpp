@@ -300,6 +300,18 @@ public:
     }
   }
 
+  /// @brief Seed the strategy's running-minimum Schwarz error (and through it
+  /// the local solver's truncation eps and this solver's Schwarz break
+  /// tolerance) with the estimated accuracy of the starting guess -- see
+  /// Solver::seed_convergence_criteria(). Must be called after init() so the
+  /// strategy's local solver exists.
+  void seed_convergence_criteria(double error) override
+  {
+    if (error < 1.0) {
+      strategy_->update_convergence_criteria(error);
+    }
+  }
+
   /// @brief Finalize the DD solver and remove any remaining information from
   /// the GPU.
   void finalize() override

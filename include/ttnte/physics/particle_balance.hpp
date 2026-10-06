@@ -37,12 +37,15 @@ struct FaceBalance {
   /// Outgoing (this patch's own) partial current through this face.
   torch::Tensor outgoing;
   /// Incoming partial current through this face. Set for `REFLECTIVE`
-  /// (equals `outgoing` at a self-consistent solution) and `INCIDENT` (from
-  /// the prescribed source), both computed purely locally. Left unset for
-  /// `VACUUM` (identically 0, not computed). For `INTERNAL`, computed purely
-  /// locally as unset here -- it is instead resolved to the neighbor's own
-  /// `outgoing` (via `neighbor_gid`/`neighbor_dim`/`neighbor_is_upper`)
-  /// after every patch has been gathered, by
+  /// (albedo * the mirrored outgoing current, i.e. the assembled,
+  /// albedo-scaled reflective inflow operator applied to psi and integrated
+  /// -- equals albedo * `outgoing` for a mirror-symmetric quadrature) and
+  /// `INCIDENT` (from the prescribed source), both computed purely locally.
+  /// Left unset for `VACUUM` (identically 0, not computed). For `INTERNAL`,
+  /// computed purely locally as unset here -- it is instead resolved to the
+  /// neighbor's own `outgoing` (via
+  /// `neighbor_gid`/`neighbor_dim`/`neighbor_is_upper`) after every patch has
+  /// been gathered, by
   /// `TransportSolution::patch_balance_table()`/`global_balance()`'s
   /// `resolve_internal_faces()`, which also folds the result into this
   /// patch's `leakage`. Left unset here too if the neighbor patch isn't

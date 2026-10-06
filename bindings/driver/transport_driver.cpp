@@ -15,6 +15,7 @@ static void register_TransportDriver_impl(
   using TransportDriver = ttnte::driver::TransportDriver<BlockType, NumDim>;
   using LoadHeuristicPtr = typename TransportDriver::LoadHeuristicPtr;
   using DriverPtr = typename TransportDriver::Ptr;
+  using InitialGuess = typename TransportDriver::InitialGuess;
 
   std::string class_name =
     typestr + "TransportDriver" + std::to_string(NumDim) + "D";
@@ -41,8 +42,11 @@ static void register_TransportDriver_impl(
       py::call_guard<py::gil_scoped_release>())
     .def("init_solver", &TransportDriver::init_solver,
       "Set up the solver, build its iteration DAG, and compute the initial "
-      "fission source. Returns the initial k-eigenvalue.",
+      "fission source. Returns the initial k-eigenvalue. `initial_guess` "
+      "maps GID -> starting angular flux (State) for local patches; patches "
+      "without an entry start from all ones.",
       py::arg("solver"), py::arg("clear_assemblers") = true,
+      py::arg("initial_guess") = InitialGuess {},
       py::call_guard<py::gil_scoped_release>())
     .def("solve_eigenvalue", &TransportDriver::solve_eigenvalue,
       "Run the k-eigenvalue power iteration with the given solver (e.g. a "
@@ -52,10 +56,19 @@ static void register_TransportDriver_impl(
       "raw angular flux per local patch. Convergence requires BOTH the "
       "scalar-flux-shape relative L2 error (tol) and k_eff's own absolute "
       "iteration-to-iteration change (k_tol, in k-units -- e.g. 1e-5 is 1 "
-      "pcm) to fall below their respective tolerances.",
+      "pcm) to fall below their respective tolerances. `initial_guess` maps "
+      "GID -> starting angular flux (State) for local patches, e.g. a "
+      "previous solution's get_local_field(gid) or a prolonged coarser-level "
+      "solution; the initial fission source and k are computed from it. Its "
+      "amplitude should come from a converged solve. `initial_guess_error` "
+      "is the guess's estimated relative error; it seeds the solver's "
+      "tolerance forcing so a good guess is not truncated away in the first "
+      "outer iteration (default 1.0 = cold-start forcing).",
       py::arg("inner_solver"), py::arg("tol") = 1e-8, py::arg("max_iter") = 500,
       py::arg("clear_assemblers") = true, py::arg("verbose") = true,
-      py::arg("k_tol") = 1e-5, py::call_guard<py::gil_scoped_release>())
+      py::arg("k_tol") = 1e-5, py::arg("initial_guess") = InitialGuess {},
+      py::arg("initial_guess_error") = 1.0,
+      py::call_guard<py::gil_scoped_release>())
     .def("solve_fixed_source", &TransportDriver::solve_fixed_source,
       "Run the fixed-source solver with the given solver (e.g. a DDSolver "
       "for multi-patch domain decomposition, or a bare LocalSolver such as "
@@ -65,9 +78,12 @@ static void register_TransportDriver_impl(
       "TransportSolution holding the raw angular flux per local patch "
       "(k_eff is unset). Convergence requires the scalar-flux-shape "
       "relative L2 error (tol) between successive outer iterations to fall "
-      "below tol.",
+      "below tol. `initial_guess` maps GID -> starting angular flux (State) "
+      "for local patches; patches without an entry start from all ones.",
       py::arg("inner_solver"), py::arg("tol") = 1e-8, py::arg("max_iter") = 500,
       py::arg("clear_assemblers") = true, py::arg("verbose") = true,
+      py::arg("initial_guess") = InitialGuess {},
+      py::arg("initial_guess_error") = 1.0,
       py::call_guard<py::gil_scoped_release>())
     .def("distribute", &TransportDriver::distribute,
       "Initial partition using METIS on rank 0 and cull the local mesh.",

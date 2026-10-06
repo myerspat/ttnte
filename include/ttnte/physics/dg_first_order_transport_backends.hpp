@@ -507,9 +507,14 @@ public:
   /// quadrature's weights are always normalized to sum to 1, not to
   /// weighting_factor(), so no extra normalization is needed), an arbitrary
   /// `function(coords)` contribution evaluated at physical-space/angle/
-  /// energy sample points via TT-cross, or both (combined via direct_sum).
+  /// energy sample points via TT-cross, an already-projected spatially
+  /// varying load (`projected_isotropic_source`, compressed to a TT and
+  /// broadcast uniformly across ordinates), or any combination (summed via
+  /// direct_sum).
   /// @param source The source specification for this block.
   /// @return The assembled source State.
+  /// @throws utils::runtime_error If `projected_isotropic_source` does not
+  /// have shape (control points per parametric dimension..., energy groups).
   linalg::State assemble_source(const FixedSource& source);
   /// @brief Assemble a prescribed incident-flux RHS contribution for one
   /// boundary face (`BoundaryType::INCIDENT`). Builds a raw nodal (not
@@ -523,7 +528,8 @@ public:
   /// @param dim The dimension of the face.
   /// @param is_upper Whether the face is at the upper or lower end of `dim`.
   /// @param source The source specification for this face. Only
-  /// `isotropic_strength` is currently supported; `function` throws.
+  /// `isotropic_strength` is currently supported; `function` and
+  /// `projected_isotropic_source` throw.
   /// @return The assembled incident-source State.
   linalg::State assemble_incident_source(
     size_t dim, bool is_upper, const FixedSource& source);
