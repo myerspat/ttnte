@@ -174,6 +174,7 @@ add_subdirectory(bindings/driver)
 add_subdirectory(bindings/linalg)
 add_subdirectory(bindings/task)
 add_subdirectory(bindings/solvers)
+add_subdirectory(bindings/sweep)
 add_subdirectory(bindings/python)
 add_subdirectory(bindings/math)
 
@@ -190,6 +191,7 @@ add_library(
   ${TASK_SRC}
   ${LINALG_SRC}
   ${SOLVERS_SRC}
+  ${SWEEP_SRC}
   ${PY_SRC}
   ${PHYSICS_SRC}
   ${MATH_SRC})
@@ -226,6 +228,7 @@ add_library(
   ${LINALG_BINDINGS}
   ${TASK_BINDINGS}
   ${SOLVERS_BINDINGS}
+  ${SWEEP_BINDINGS}
   ${PY_BINDINGS}
   ${MATH_BINDINGS})
 

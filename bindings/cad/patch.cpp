@@ -106,6 +106,10 @@ void register_Patch(py::module_& m)
             reps);
         },
         py::arg("new_knots"), py::arg("reps") = 1)
+      .def("split_elements", &Patch::split_elements,
+        "Split into single-element (Bezier) patches, one per knot span, for "
+        "fully discontinuous (FDG) meshes. Elements inherit the fill and "
+        "fixed source.")
       .def(
         "knot_insert_",
         [](Patch& self, const std::vector<torch::Tensor>& new_knots,
