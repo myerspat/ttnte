@@ -58,16 +58,18 @@ void sweep_unit(
   for (int64_t bd = 0; bd < block.num_block_directions; bd++) {
     const int64_t d = block.directions[bd];
     const double* omega = block.omega + d * ndim;
+    const bool cached = unit.factors && unit.factors_ready;
 
-    // Streaming + outflow pair values (group independent)
-    for (int64_t p = 0; p < P; p++) {
+    // Streaming + outflow pair values (group independent), not needed when
+    // the factors are cached
+    for (int64_t p = 0; p < P && !cached; p++) {
       double s = 0.0;
       for (int64_t i = 0; i < ndim; i++)
         s -= omega[i] * v.grad[i * P + p];
       values[p] = s;
     }
     for (const auto& face : v.faces) {
-      if (!upwind(face, omega, ndim, 1.0, 1.0, c_out))
+      if (cached || !upwind(face, omega, ndim, 1.0, 1.0, c_out))
         continue;
       for (int64_t k = 0; k < face.num_pairs; k++)
         values[face.pair_volume_index[k]] +=
@@ -94,11 +96,27 @@ void sweep_unit(
     for (int64_t bg = 0; bg < block.num_block_groups; bg++) {
       const int64_t g = block.groups[bg];
 
-      // Operator
-      std::fill(A, A + matrix_size, 0.0);
-      const double sigma = unit.sigma_t[g];
-      for (int64_t p = 0; p < P; p++)
-        A[index[p]] = values[p] + sigma * v.mass[p];
+      // Operator: assembled and factored here, or read from the cache
+      double* L = A;
+      int64_t* piv = ipiv;
+      if (unit.factors) {
+        L = unit.factors + (d * G + g) * matrix_size;
+        piv = unit.factor_pivots + (d * G + g) * N;
+      }
+      if (!cached) {
+        std::fill(L, L + matrix_size, 0.0);
+        const double sigma = unit.sigma_t[g];
+        for (int64_t p = 0; p < P; p++)
+          L[index[p]] = values[p] + sigma * v.mass[p];
+        const int64_t info =
+          banded ? linalg::banded::lu_factor(L, v.ldab, N, v.kl, v.ku, piv)
+                 : linalg::dense::lu_factor(L, N, piv);
+        if (info != 0) {
+          throw utils::runtime_error("ttnte::sweep::sweep_unit",
+            "Singular local system (direction " + std::to_string(d) +
+              ", group " + std::to_string(g) + ")");
+        }
+      }
 
       // Source: sum_m Y_m(d) s_{m,g}
       std::fill(b, b + N, 0.0);
@@ -131,20 +149,10 @@ void sweep_unit(
       }
 
       // Solve
-      int64_t info;
       if (banded) {
-        info = linalg::banded::lu_factor(A, v.ldab, N, v.kl, v.ku, ipiv);
-        if (info == 0)
-          linalg::banded::lu_solve(A, v.ldab, N, v.kl, v.ku, ipiv, b);
+        linalg::banded::lu_solve(L, v.ldab, N, v.kl, v.ku, piv, b);
       } else {
-        info = linalg::dense::lu_factor(A, N, ipiv);
-        if (info == 0)
-          linalg::dense::lu_solve(A, N, ipiv, b);
-      }
-      if (info != 0) {
-        throw utils::runtime_error("ttnte::sweep::sweep_unit",
-          "Singular local system (direction " + std::to_string(d) + ", group " +
-            std::to_string(g) + ")");
+        linalg::dense::lu_solve(L, N, piv, b);
       }
 
       // Outgoing traces, angular flux and moments

@@ -191,6 +191,8 @@ def test_solver_variants_agree():
         dict(local_solver=LocalSolverType.DENSE_LU),
         dict(num_threads=4),
         dict(store_angular_flux=True),
+        dict(cache_factorizations=True),
+        dict(cache_factorizations=True, local_solver=LocalSolverType.DENSE_LU),
     ]:
         other = _sweep(_quarter_circle(fills, 3, False), xs, qset, **kw)
         assert _rel_diff({g: other.get_scalar_flux(g) for g in range(4)}, ref) < 1e-12
@@ -224,6 +226,10 @@ def test_task_granularity_agrees():
         (dict(task_granularity=TaskGranularity.SUBDOMAIN), None),
         (dict(task_granularity=TaskGranularity.SUBDOMAIN, num_threads=4), None),
         (dict(num_threads=4), {g: parents[g] for g in range(n)}),
+        (
+            dict(task_granularity=TaskGranularity.SUBDOMAIN, cache_factorizations=True),
+            None,
+        ),
     ]
     for kw, chunks in variants:
         other = _sweep(

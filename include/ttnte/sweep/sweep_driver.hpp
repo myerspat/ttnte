@@ -103,6 +103,10 @@ private:
     torch::Tensor source_moments;
     /// (N_Omega, G, N) angular flux, if stored.
     torch::Tensor psi;
+    /// Factorization cache (see SweepConfig::cache_factorizations).
+    torch::Tensor factors;
+    torch::Tensor factor_pivots;
+    bool factors_ready = false;
     /// Guards moments_next accumulation across concurrent angle sets.
     std::unique_ptr<std::mutex> mutex = std::make_unique<std::mutex>();
   };
@@ -318,6 +322,11 @@ private:
                               : nullptr;
       }
       unit.psi = P.psi.defined() ? P.psi.template data_ptr<double>() : nullptr;
+      if (P.factors.defined()) {
+        unit.factors = P.factors.template data_ptr<double>();
+        unit.factor_pivots = P.factor_pivots.template data_ptr<int64_t>();
+        unit.factors_ready = P.factors_ready;
+      }
       moments.assign(static_cast<size_t>(M * ng * N), 0.0);
       unit.moments = moments.data();
 
@@ -610,6 +619,18 @@ public:
       P.moments = torch::zeros({M, num_groups_, N}, torch::kFloat64);
       P.moments_next = torch::zeros_like(P.moments);
       P.source_moments = torch::zeros_like(P.moments);
+      if (config_.cache_factorizations) {
+        const bool banded = config_.local_solver == LocalSolverType::BANDED_LU;
+        const int64_t size = banded ? N * P.disc->ldab() : N * N;
+        P.factors =
+          torch::empty({num_directions, num_groups_, size}, torch::kFloat64);
+        P.factor_pivots =
+          torch::empty({num_directions, num_groups_, N}, torch::kInt64);
+      } else {
+        P.factors = torch::Tensor();
+        P.factor_pivots = torch::Tensor();
+      }
+      P.factors_ready = false;
       P.psi =
         config_.store_angular_flux
           ? torch::zeros({num_directions, num_groups_, N}, torch::kFloat64)
@@ -638,6 +659,8 @@ public:
     for (auto& P : patches_) {
       std::swap(P.trace_current, P.trace_previous);
       std::swap(P.moments, P.moments_next);
+      // Every (direction, group) of every unit is solved once per sweep
+      P.factors_ready = P.factors.defined();
     }
   }
 
@@ -885,6 +908,16 @@ public:
     return static_cast<double>(task_nanoseconds_.load()) * 1e-9;
   }
   void reset_task_seconds() noexcept { task_nanoseconds_ = 0; }
+  /// @return Bytes held by the factorization cache (0 if disabled).
+  int64_t factorization_bytes() const noexcept
+  {
+    int64_t bytes = 0;
+    for (const auto& P : patches_) {
+      if (P.factors.defined())
+        bytes += P.factors.numel() * 8 + P.factor_pivots.numel() * 8;
+    }
+    return bytes;
+  }
   /// @return Chunk id of each local unit (in local order).
   const std::vector<int64_t>& get_chunks() const noexcept { return chunk_of_; }
   int64_t num_tasks() const noexcept

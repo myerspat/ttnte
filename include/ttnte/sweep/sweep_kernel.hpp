@@ -52,6 +52,14 @@ struct UnitSweep {
   /// (num_moments, num_block_groups, N) moments ACCUMULATED by the sweep
   /// (the caller zeroes and reduces it).
   double* moments = nullptr;
+  /// Optional factorization cache: (N_Omega, G, matrix size) factors and
+  /// (N_Omega, G, N) pivots, matrix size being N * ldab (banded) or N * N
+  /// (dense). nullptr disables caching.
+  double* factors = nullptr;
+  int64_t* factor_pivots = nullptr;
+  /// Whether `factors` already holds this unit's factors (otherwise they
+  /// are computed and stored).
+  bool factors_ready = false;
 };
 
 /// @brief The directions, groups and angular data of one sweep task.

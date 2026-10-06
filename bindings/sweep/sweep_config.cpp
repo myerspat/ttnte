@@ -24,12 +24,14 @@ void register_SweepConfig(py::module_& m)
 
   py::class_<SweepConfig>(m, "SweepConfig")
     .def(py::init([](LocalSolverType local_solver, bool store_angular_flux,
-                    TaskGranularity task_granularity, int64_t num_threads,
-                    int64_t group_set_size, double tol, int64_t max_iter,
-                    bool rho_safety, double face_weight_tol, bool verbose) {
+                    bool cache_factorizations, TaskGranularity task_granularity,
+                    int64_t num_threads, int64_t group_set_size, double tol,
+                    int64_t max_iter, bool rho_safety, double face_weight_tol,
+                    bool verbose) {
       SweepConfig c;
       c.local_solver = local_solver;
       c.store_angular_flux = store_angular_flux;
+      c.cache_factorizations = cache_factorizations;
       c.task_granularity = task_granularity;
       c.num_threads = num_threads;
       c.group_set_size = group_set_size;
@@ -42,6 +44,7 @@ void register_SweepConfig(py::module_& m)
     }),
       py::arg("local_solver") = LocalSolverType::BANDED_LU,
       py::arg("store_angular_flux") = false,
+      py::arg("cache_factorizations") = false,
       py::arg("task_granularity") = TaskGranularity::UNIT,
       py::arg("num_threads") = 1, py::arg("group_set_size") = 0,
       py::arg("tol") = 1e-6, py::arg("max_iter") = 1000,
@@ -49,6 +52,7 @@ void register_SweepConfig(py::module_& m)
       py::arg("verbose") = true)
     .def_readwrite("local_solver", &SweepConfig::local_solver)
     .def_readwrite("store_angular_flux", &SweepConfig::store_angular_flux)
+    .def_readwrite("cache_factorizations", &SweepConfig::cache_factorizations)
     .def_readwrite("task_granularity", &SweepConfig::task_granularity)
     .def_readwrite("num_threads", &SweepConfig::num_threads)
     .def_readwrite("group_set_size", &SweepConfig::group_set_size)

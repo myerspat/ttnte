@@ -34,6 +34,12 @@ struct SweepConfig {
   /// When false only the flux moments and the face traces needed by the
   /// sweep (interfaces and reflective faces) are stored.
   bool store_angular_flux = false;
+  /// Factor every (direction, group) local system once and reuse the
+  /// factors in later sweeps (the operators do not change between source
+  /// iterations). Trades memory -- N_Omega * G * (N * 2kl+ku+1 or N^2)
+  /// doubles per unit, see SweepDriver::factorization_bytes() -- for
+  /// skipping assembly and factorization after the first sweep.
+  bool cache_factorizations = false;
   /// Grouping of units into tasks (overridden by an explicit chunk map
   /// passed to SweepDriver::setup()).
   TaskGranularity task_granularity = TaskGranularity::UNIT;

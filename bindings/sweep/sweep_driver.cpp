@@ -72,6 +72,9 @@ static void register_SweepDriver_impl(
     .def_property_readonly("converged", &SweepDriver::is_converged)
     .def_property_readonly("num_tasks", &SweepDriver::num_tasks)
     .def_property_readonly("chunks", &SweepDriver::get_chunks)
+    .def_property_readonly("factorization_bytes",
+      &SweepDriver::factorization_bytes,
+      "Bytes held by the factorization cache (0 if disabled).")
     .def_property_readonly("task_seconds", &SweepDriver::get_task_seconds,
       "Cumulative seconds inside sweep task bodies, summed over threads.")
     .def("reset_task_seconds", &SweepDriver::reset_task_seconds);
