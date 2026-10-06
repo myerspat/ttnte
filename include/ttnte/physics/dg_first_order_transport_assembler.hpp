@@ -234,6 +234,9 @@ public:
         lhs += outflow_op;
         lhs.round_(inner_eps, this->config_.rounding.max_rank);
       }
+      // REFLECTIVE inflow: inflow_op is already albedo * B_refl (scaled
+      // once, in the backend's assemble_boundary_operators()), so this is
+      // LHS = ... + B_out - albedo * B_refl.
       if (inflow_op.defined() && conditions[i] != BoundaryType::INTERNAL &&
           conditions[i] != BoundaryType::INCIDENT) {
         lhs -= inflow_op;
@@ -413,9 +416,34 @@ public:
           to_vector(linalg::mv(leakage_functional(true, false), psi));
 
         if (face.type == BoundaryType::REFLECTIVE) {
-          // Self-referential: applied to the full psi, same as outgoing.
-          face.incoming =
-            to_vector(linalg::mv(leakage_functional(false, false), psi));
+          // Incoming = the weak form's own inflow term tested against the
+          // constant function: the (albedo-scaled, see
+          // DGFirstOrderTransportBackend::assemble_boundary_operators())
+          // reflective inflow operator applied to psi -- i.e.
+          // albedo * mirrored outgoing angular flux -- integrated over angle
+          // and summed over the spatial DOF axis (partition of unity), the
+          // same reduction used for `fixed_source` above. This is exactly
+          // the term subtracted in the assembled LHS, so the balance closes
+          // to solve tolerance for any albedo in [0, 1] (albedo = 0 gives 0,
+          // matching VACUUM), unlike psi's own incoming-direction trace,
+          // which the DG discretization only matches weakly. Falls back to
+          // albedo * outgoing (equal for a mirror-symmetric quadrature, which
+          // the reflection permutation assumes) if the inflow operators are
+          // not available (assemble() not called).
+          const size_t face_idx =
+            static_cast<size_t>(dim) * 2 + static_cast<size_t>(is_upper);
+          if (face_idx < inflow_ops_.size() &&
+              inflow_ops_[face_idx].defined()) {
+            linalg::State inflow =
+              linalg::mv(inflow_ops_[face_idx].to(options), psi);
+            inflow.round_(eps, max_rank);
+            linalg::State integrated =
+              angular_qset_->integrate(inflow, eps, max_rank);
+            face.incoming =
+              integrated.to_dense().reshape({-1, num_groups}).sum(0);
+          } else {
+            face.incoming = binfo.albedo() * face.outgoing;
+          }
           result.leakage += face.outgoing - *face.incoming;
 
         } else if (face.type == BoundaryType::INCIDENT) {
@@ -463,6 +491,60 @@ public:
     }
 
     return result;
+  }
+
+  /// @brief Assemble a particle-balance reaction-rate functional (see
+  /// DGFirstOrderTransportBackend::assemble_balance_functional()), computed
+  /// on demand (not cached) and dispatched to this assembler's own backend
+  /// (this->config_.interior_loss_fmt). `mv(functional, psi)` collapses
+  /// space and angle to size 1 directly -- `.to_dense().reshape({num_groups})`
+  /// is the per-group scalar result.
+  /// @param energy_matrix (num_groups, num_groups) weight/transfer matrix --
+  /// energy_matrix[i, j] is the output group i's coefficient on input group
+  /// j (see DGFirstOrderTransportBackend::assemble_balance_functional()'s
+  /// own doc for the diagonal-vs-transfer-matrix convention).
+  /// @param eps TT-rounding tolerance for this functional's own
+  /// construction, independent of config_->rounding.eps.
+  /// @param max_rank TT-rounding max rank, paired with `eps`.
+  /// @return The assembled reduction functional.
+  linalg::Operator assemble_balance_functional(
+    const torch::Tensor& energy_matrix, double eps, int64_t max_rank)
+  {
+    return std::visit(
+      [&](auto* backend) {
+        return backend->assemble_balance_functional(
+          energy_matrix, eps, max_rank);
+      },
+      get_backend_variant(this->config_.interior_loss_fmt));
+  }
+
+  /// @brief Assemble a particle-balance leakage (partial-current) functional
+  /// for one boundary face (see
+  /// DGFirstOrderTransportBackend::assemble_leakage_functional()), computed
+  /// on demand (not cached). Unlike `current_ops_`/`get_current_ops()`
+  /// (built for the per-point Schwarz convergence check -- angular cores
+  /// folded away only, spatial/energy structure along the face left intact),
+  /// this integrates over the face's spatial extent too, giving a scalar
+  /// per group.
+  /// @param dim The dimension of the face.
+  /// @param is_upper Whether the face is at the upper or lower end of `dim`.
+  /// @param is_outflow True for the outgoing ((Omega.n)_+) functional, false
+  /// for incoming ((Omega.n)_-).
+  /// @param narrowed_input Whether this will be applied to a State already
+  /// narrowed to a single point along `dim`, rather than the full state
+  /// (e.g. psi itself -- the usual case for the outgoing functional).
+  /// @param eps TT-rounding tolerance, independent of config_->rounding.eps.
+  /// @param max_rank TT-rounding max rank, paired with `eps`.
+  /// @return The assembled leakage functional.
+  linalg::Operator assemble_leakage_functional(size_t dim, bool is_upper,
+    bool is_outflow, bool narrowed_input, double eps, int64_t max_rank)
+  {
+    return std::visit(
+      [&](auto* backend) {
+        return backend->assemble_leakage_functional(
+          dim, is_upper, is_outflow, narrowed_input, eps, max_rank);
+      },
+      get_backend_variant(this->config_.interior_loss_fmt));
   }
 
   // =================================================================

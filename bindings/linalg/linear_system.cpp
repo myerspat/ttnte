@@ -47,10 +47,29 @@ void register_LinearSystem(py::module_& m)
     .def_property("gid", &LinearSystem::get_gid, &LinearSystem::set_gid)
     .def_property_readonly(
       "couplings",
-      [](LinearSystem& ls) -> c10::SmallVector<NeighborCoupling, 6>& {
-        return ls.get_couplings();
+      [](LinearSystem& ls) {
+        const auto& couplings = ls.get_couplings();
+        return std::vector<NeighborCoupling>(
+          couplings.begin(), couplings.end());
       },
-      py::return_value_policy::reference_internal)
+      "Get the couplings as a Python list. Returns a COPY (c10::SmallVector "
+      "has no pybind11 STL caster, unlike std::vector -- same pattern as "
+      "DGFirstOrderTransportAssembler::get_outflow_ops/get_inflow_ops/"
+      "current_ops); mutating entries in the returned list does not affect "
+      "this LinearSystem's own couplings.")
+    .def(
+      "set_coupling_recv_buffer",
+      [](LinearSystem& ls, size_t idx, State face) {
+        auto& couplings = ls.get_couplings();
+        if (idx >= couplings.size()) {
+          throw std::out_of_range("coupling index out of range");
+        }
+        couplings[idx].recv_buffer = std::move(face);
+      },
+      py::arg("idx"), py::arg("face"),
+      "Set the pending (raw, unmapped) neighbor face for coupling idx on the "
+      "live coupling (the `couplings` property returns copies). The next "
+      "step's apply task maps it and applies boundary_op.")
     .def("add_coupling", &LinearSystem::add_coupling, py::arg("coupling"),
       "Append a coupling after construction. The coupling's boundary_op will "
       "not be in the flat buffer; call before any transfer_buffer.");

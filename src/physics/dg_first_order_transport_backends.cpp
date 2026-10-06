@@ -1415,6 +1415,52 @@ DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim>::assemble_source(
       terms.emplace_back(std::move(isotropic));
     }
 
+    // ---- Pre-projected isotropic load branch ----
+    //
+    // Here the caller has ALREADY performed the Galerkin projection of a
+    // (possibly spatially varying) angle-independent density q_g(x) onto the
+    // DG test basis, b_{i,g} = integral( q_g(x) * R_i(x) ) dV, and handed it
+    // over as a dense (space x NumDim, energy) tensor. Since it is already
+    // the load vector (same units as the isotropic branch's
+    // `mm(basis^T, mapping) x Q_g`), all that remains is to compress it to a
+    // TT and broadcast it uniformly across ordinates -- again with no angular
+    // normalization, because the angular weights sum to 1 (see the isotropic
+    // branch).
+    if (source.projected_isotropic_source.has_value()) {
+      const auto& dense = *source.projected_isotropic_source;
+      const std::string ctx =
+        "ttnte::physics::DGFirstOrderTransportBackend::assemble_source";
+
+      if (!dense.defined() || dense.dim() != NumDim + 1) {
+        throw utils::runtime_error(
+          ctx, "FixedSource::projected_isotropic_source must be a dense tensor "
+               "with NumDim + 1 = " +
+                 std::to_string(NumDim + 1) +
+                 " dimensions (control points per parametric dimension, then "
+                 "energy groups)");
+      }
+      for (int64_t k = 0; k <= NumDim; k++) {
+        int64_t expected =
+          k < NumDim ? block_->get_ctrlpts_size(k) : num_groups;
+        if (dense.size(k) != expected) {
+          throw utils::runtime_error(ctx,
+            "FixedSource::projected_isotropic_source dimension " +
+              std::to_string(k) + " has size " + std::to_string(dense.size(k)) +
+              " but the expected " +
+              (k < NumDim
+                  ? "number of control points along parametric dimension " +
+                      std::to_string(k)
+                  : std::string("number of energy groups")) +
+              " is " + std::to_string(expected));
+        }
+      }
+
+      linalg::TTEngine load(angular_ones_cores, false);
+      load.kron_(linalg::TTEngine::from_dense(
+        dense.to(options), config_->rounding.eps, config_->rounding.max_rank));
+      terms.emplace_back(std::move(load));
+    }
+
     // ---- Arbitrary function (MMS or otherwise) branch ----
     //
     // Here Q(xhat) is a genuine user-supplied function of physical
@@ -1596,6 +1642,15 @@ DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim>::assemble_incident_source(
         "Arbitrary-function incident boundary sources are not yet "
         "supported -- only FixedSource::isotropic_strength can be "
         "prescribed on a boundary face");
+    }
+    if (source.projected_isotropic_source.has_value()) {
+      throw utils::runtime_error(
+        "ttnte::physics::DGFirstOrderTransportBackend::"
+        "assemble_incident_source",
+        "FixedSource::projected_isotropic_source (a pre-projected volumetric "
+        "load vector) is not supported on an INCIDENT boundary face -- only "
+        "FixedSource::isotropic_strength can be prescribed on a boundary "
+        "face");
     }
     if (!source.isotropic_strength.has_value()) {
       throw utils::runtime_error(
@@ -1790,6 +1845,26 @@ DGFirstOrderTransportBackend<cad::Patch, Fmt,
       linalg::Operator(), linalg::Operator(), linalg::Operator());
   }
 
+  // Partial (specular) albedo: only meaningful on a REFLECTIVE face. This is
+  // the SINGLE place the albedo enters the transport operator -- the
+  // REFLECTIVE inflow operator B_refl returned below is scaled by it, so
+  // every consumer of the returned inflow operator (the assembler's LHS,
+  // `lhs -= inflow_op`, and its stored `inflow_ops_`) sees the same
+  // albedo * B_refl. albedo == 1 skips the scaling entirely (bit-for-bit
+  // identical to plain REFLECTIVE); albedo == 0 gives a zero inflow
+  // operator (VACUUM to roundoff).
+  const double albedo = block_->get_boundary_info(dim, is_upper).albedo();
+  if (albedo != 1.0 && block_->get_boundary_info(dim, is_upper).get_type() !=
+                         BoundaryType::REFLECTIVE) {
+    throw utils::runtime_error("ttnte::physics::DGFirstOrderTransportBackend::"
+                               "assemble_boundary_operators",
+      "Boundary face (dim=" + std::to_string(dim) +
+        ", is_upper=" + (is_upper ? "true" : "false") + ") has albedo " +
+        std::to_string(albedo) +
+        " != 1 but is not BoundaryType::REFLECTIVE -- an albedo is only "
+        "valid on REFLECTIVE faces");
+  }
+
   if constexpr (Fmt == FormatType::TENSOR_TRAIN && NumDim > 1) {
     auto [basis, normal, mapping] = assemble_boundary_geometry(dim, is_upper);
     const auto& options = torch::TensorOptions()
@@ -1907,6 +1982,9 @@ DGFirstOrderTransportBackend<cad::Patch, Fmt,
           condition == BoundaryType::INCIDENT) {
         B_in->diagonalize_({0, 1});
       }
+      if (condition == BoundaryType::REFLECTIVE && albedo != 1.0) {
+        *B_in *= albedo;
+      }
       return std::make_tuple(linalg::Operator(std::move(B_out)),
         linalg::Operator(std::move(*B_in)), std::move(current_op));
     }
@@ -1991,6 +2069,9 @@ DGFirstOrderTransportBackend<cad::Patch, Fmt,
       if (condition == BoundaryType::INTERNAL ||
           condition == BoundaryType::INCIDENT) {
         B_in->diagonalize_({0});
+      }
+      if (condition == BoundaryType::REFLECTIVE && albedo != 1.0) {
+        *B_in *= albedo;
       }
       return std::make_tuple(linalg::Operator(std::move(B_out)),
         linalg::Operator(std::move(*B_in)), std::move(current_op));

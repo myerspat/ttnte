@@ -45,6 +45,21 @@ public:
   virtual void update_convergence_criteria(
     double error, double rank_metric = 0.0)
   {}
+  /// @brief Seed the solver's tolerance forcing, before the first step(),
+  /// with an a-priori estimate of how accurate the starting guess already is.
+  /// Forcing schedules start from "error = 1" (loose truncation, tightening
+  /// as sweeps proceed), which is right for a cold start but truncates a good
+  /// warm start away in its first sweeps. Defaults to
+  /// update_convergence_criteria(error), which is the right seed for a bare
+  /// LocalSolver; DDSolver overrides it because its update_convergence_
+  /// criteria() is deliberately a no-op (its forcing is driven by its own
+  /// internal Schwarz error, which the outer flux error must not feed).
+  /// @param error Estimated relative error of the starting guess; >= 1.0
+  /// leaves the cold-start schedule unchanged.
+  virtual void seed_convergence_criteria(double error)
+  {
+    update_convergence_criteria(error);
+  }
   /// @return Number of inner iterations the most recent step() call ran
   /// (e.g. DDSolver's Schwarz sweeps). Defaults to 1 -- a bare LocalSolver's
   /// step() is a single direct solve with no inner iteration loop of its

@@ -66,6 +66,21 @@ void register_MeshBlock(py::class_<DerivedType, Options...>& py_class)
       },
       py::arg("dim"), py::arg("is_upper"), py::arg("type"))
     .def(
+      "set_boundary_albedo",
+      [](DerivedType& self, size_t dim, bool is_upper, double albedo) {
+        self.set_boundary_albedo(dim, is_upper, albedo);
+      },
+      py::arg("dim"), py::arg("is_upper"), py::arg("albedo"),
+      "Set the specular albedo in [0, 1] of a boundary face (incoming "
+      "angular flux = albedo * mirrored outgoing). Only valid on REFLECTIVE "
+      "faces; checked at assembly.")
+    .def(
+      "get_boundary_albedo",
+      [](const DerivedType& self, size_t dim, bool is_upper) {
+        return self.get_boundary_albedo(dim, is_upper);
+      },
+      py::arg("dim"), py::arg("is_upper"))
+    .def(
       "set_boundary_source",
       [](DerivedType& self, size_t dim, bool is_upper,
         ttnte::physics::FixedSource source) {

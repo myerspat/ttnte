@@ -82,6 +82,8 @@ void register_Boundary(py::module_& m)
 
     .def_property_readonly("fid", &BoundaryInfo::get_fid)
     .def_property_readonly("type", &BoundaryInfo::get_type)
+    .def_property("albedo", &BoundaryInfo::albedo, &BoundaryInfo::set_albedo,
+      "Specular albedo in [0, 1] (only meaningful on REFLECTIVE faces).")
     .def_property_readonly("connections", [](const BoundaryInfo& self) {
       const auto& conns = self.get_connections();
       return std::vector<NeighborInfo>(conns.begin(), conns.end());

@@ -521,10 +521,12 @@ public:
   /// @param source Optional incident source, applied to every matched face.
   /// Only valid when `type == BoundaryType::INCIDENT`.
   /// @param tol The tolerance for geometric comparisons.
+  /// @param albedo Specular albedo in [0, 1] applied to every matched face.
+  /// Only valid (when != 1) for `type == BoundaryType::REFLECTIVE`.
   void set_axis_aligned_conditions(const physics::BCPlane& bcplanes,
     const physics::BoundaryType& type,
     std::optional<physics::FixedSource> source = std::nullopt,
-    double tol = 1e-8)
+    double tol = 1e-8, double albedo = 1.0)
   {
     // Lock class from multiple threads calling
     std::lock_guard<std::mutex> lock(mesh_mutex);
@@ -536,6 +538,17 @@ public:
       throw utils::runtime_error(*this,
         error_context("set_axis_aligned_condition"),
         "A source was provided but `type` is not BoundaryType::INCIDENT");
+    }
+    if (!(albedo >= 0.0 && albedo <= 1.0)) {
+      throw utils::runtime_error(*this,
+        error_context("set_axis_aligned_condition"),
+        "The albedo must be in [0, 1], got " + std::to_string(albedo));
+    }
+    if (albedo != 1.0 && type != physics::BoundaryType::REFLECTIVE) {
+      throw utils::runtime_error(*this,
+        error_context("set_axis_aligned_condition"),
+        "An albedo != 1 was provided but `type` is not "
+        "BoundaryType::REFLECTIVE");
     }
 
     // Global bbox accessor
@@ -565,6 +578,7 @@ public:
                 } else {
                   bptr->set_boundary_type(dim, is_upper, type);
                 }
+                bptr->set_boundary_albedo(dim, is_upper, albedo);
               } else if (i + 1 < active_planes.size() && active_planes[i + 1] &&
                          std::abs(bbox_center[d].item<double>() -
                                   bbox_acc[1][d]) < tol) {
@@ -573,6 +587,7 @@ public:
                 } else {
                   bptr->set_boundary_type(dim, is_upper, type);
                 }
+                bptr->set_boundary_albedo(dim, is_upper, albedo);
               }
             }
           }

@@ -43,7 +43,7 @@ void register_Mesh(py::module_& m, const std::string& typestr)
       py::arg("tol") = 1e-8)
     .def("set_axis_aligned_conditions", &Mesh::set_axis_aligned_conditions,
       py::arg("bcplanes"), py::arg("type"), py::arg("source") = py::none(),
-      py::arg("tol") = 1e-8)
+      py::arg("tol") = 1e-8, py::arg("albedo") = 1.0)
     .def("build_connectivity_graph", &Mesh::build_connectivity_graph)
 
     // =================================================================

@@ -33,6 +33,19 @@ void register_NeighborCoupling(py::module_& m)
     .def_readwrite("is_upper", &NeighborCoupling::is_upper)
     .def_readwrite("recv_buffer", &NeighborCoupling::recv_buffer)
     .def_readwrite("send_buffer", &NeighborCoupling::send_buffer)
+    .def_readonly("current_op", &NeighborCoupling::current_op,
+      "Operator reducing a boundary-narrowed angular-flux State to the "
+      "outgoing partial current on this face ((Omega . n)_+ upwind mask "
+      "times the angular quadrature weights). May be undefined if not built "
+      "for this format.")
+    .def_readonly("sq_diff", &NeighborCoupling::sq_diff,
+      "0.5 * ||J_new - J_old||^2 of the outgoing partial current on this "
+      "face from the last local solve (LocalSolver::postsolve). 0 before the "
+      "first sweep.")
+    .def_readonly("sq_prev", &NeighborCoupling::sq_prev,
+      "0.5 * ||J_old||^2 of the outgoing partial current on this face from "
+      "the last local solve (the denominator contribution of the Schwarz "
+      "error). 0 before the first sweep.")
 
     // =================================================================
     // Methods
