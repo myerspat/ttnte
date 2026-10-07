@@ -27,6 +27,7 @@ VARIANTS = [
     dict(),
     dict(group_set_size=1),
     dict(group_set_size=3, group_iteration=GroupIteration.JACOBI),
+    dict(inner_forcing=0.1),
 ]
 
 
@@ -111,3 +112,17 @@ def test_eigenvalue_matches_dense_eigensolve(kw):
     F = F.unsqueeze(0).expand(D, N, G, D, N, G).reshape(D * N * G, D * N * G)
     k_ref = torch.linalg.eigvals(torch.linalg.solve(A, F)).abs().max().item()
     assert abs(sw.k_eff - k_ref) < 1e-8
+
+
+def test_inner_forcing_saves_sweeps():
+    """Forced (inexact) inner solves reach the same k with fewer sweeps."""
+    torch.set_default_dtype(torch.float64)
+    fills, xs = kaist(problem="2B", device=CPU, dtype=torch.float64)
+    runs = {}
+    for forcing in (0.0, 0.1):
+        sw = _driver(_mesh(fills[2]), xs, inner_forcing=forcing)
+        sw.solve_eigenvalue(1e-11)
+        assert sw.converged
+        runs[forcing] = (sw.k_eff, sw.equivalent_sweeps)
+    assert abs(runs[0.1][0] - runs[0.0][0]) < 1e-9
+    assert runs[0.1][1] < runs[0.0][1]

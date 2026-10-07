@@ -74,6 +74,11 @@ struct SweepConfig {
   /// Within-group-set tolerance: GMRES relative residual or Richardson
   /// relative scalar flux change (<= 0 uses 0.1 * tol).
   double inner_tol = 0.0;
+  /// Inexact-Newton style forcing of the within-group-set tolerance (<= 0
+  /// disables it): outer iteration k solves to max(floor, inner_forcing *
+  /// min(e_{k-1}, 1)), e_{k-1} being the previous outer scalar flux change
+  /// (taken as 1 on the first outer) and floor the tolerance above.
+  double inner_forcing = 0.0;
   /// Maximum sweeps of one within-group-set solve (1 with RICHARDSON and
   /// JACOBI is classic source iteration).
   int64_t inner_max_iter = 1000;

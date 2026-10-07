@@ -584,10 +584,15 @@ private:
     }
   }
 
-  /// @return Within-group-set tolerance.
+  /// @return Within-group-set tolerance of the current outer iteration.
   double inner_tolerance() const
   {
-    return config_.inner_tol > 0 ? config_.inner_tol : 0.1 * config_.tol;
+    const double floor =
+      config_.inner_tol > 0 ? config_.inner_tol : 0.1 * config_.tol;
+    if (config_.inner_forcing <= 0)
+      return floor;
+    const double change = errors_.empty() ? 1.0 : std::min(errors_.back(), 1.0);
+    return std::max(floor, config_.inner_forcing * change);
   }
 
   /// @brief Solve group set `s` for its within-set scattering.
@@ -804,6 +809,7 @@ private:
         }
       }
 
+      const double inner_tol = inner_tolerance();
       auto t0 = std::chrono::high_resolution_clock::now();
       outer_sweeps_.push_back(group_set_pass());
       sweep_times_.push_back(std::chrono::duration<double>(
@@ -838,6 +844,8 @@ private:
                   << std::setprecision(4) << error << ", rho = " << std::fixed
                   << std::setprecision(4) << rho
                   << ", group-set sweeps = " << outer_sweeps_.back()
+                  << ", inner tol = " << std::scientific << std::setprecision(1)
+                  << inner_tol << std::fixed
                   << ", elapsed = " << std::setprecision(3)
                   << std::chrono::duration<double>(
                        std::chrono::high_resolution_clock::now() - start)
