@@ -786,8 +786,16 @@ private:
     double callback_seconds = 0.0;
     solve_seconds_ = 0.0;
     double previous_error = -1.0;
-    if (eigenvalue_mode_)
-      k_ = fission_production();
+    if (eigenvalue_mode_) {
+      // Normalize the initial flux to unit fission production with k = 1, so
+      // the first iterate (fission source / k) has the scale of the warm
+      // start; an initial k far from the eigenvalue makes a loosely solved
+      // first inner (inner_forcing) meaningless.
+      const double production = fission_production();
+      for (auto& P : patches_)
+        P.moments.div_(production);
+      k_ = 1.0;
+    }
 
     int64_t it = 0;
     for (; it < config_.max_iter; it++) {
