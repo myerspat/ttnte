@@ -1,6 +1,7 @@
 #include "ttnte/sweep/sweep_driver.hpp"
 #include "ttnte/cad/patch.hpp"
 #include "ttnte/parallel/parallel_context.hpp"
+#include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <torch/extension.h>
@@ -50,6 +51,26 @@ static void register_SweepDriver_impl(
       "holding k_eff.",
       py::arg("k_tol") = 1e-6, py::call_guard<py::gil_scoped_release>())
     .def("build_solution", &SweepDriver::build_solution)
+    .def(
+      "set_callback",
+      [](SweepDriver& self,
+        std::optional<typename SweepDriver::Callback> callback,
+        int64_t frequency) {
+        if (!callback.has_value()) {
+          self.set_callback(typename SweepDriver::Callback(), frequency);
+          return;
+        }
+        self.set_callback(
+          [callback = std::move(*callback)](const SweepDriver& driver) {
+            py::gil_scoped_acquire acquire;
+            callback(driver);
+          },
+          frequency);
+      },
+      py::arg("callback"), py::arg("frequency") = 1,
+      "Set a callback invoked with this driver after every `frequency`-th "
+      "outer iteration of solve_fixed_source()/solve_eigenvalue(). Callback "
+      "time is excluded from solve_seconds. Pass None to disable.")
     .def("get_scalar_flux", &SweepDriver::get_scalar_flux, py::arg("gid"),
       "Scalar flux coefficients (*ctrlpts_grid, G).")
     .def("get_moments", &SweepDriver::get_moments, py::arg("gid"),
@@ -75,6 +96,9 @@ static void register_SweepDriver_impl(
     .def_property_readonly("sweep_times", &SweepDriver::get_sweep_times)
     .def_property_readonly("num_iterations", &SweepDriver::get_num_iterations)
     .def_property_readonly("k_eff", &SweepDriver::get_k_eff)
+    .def_property_readonly("solve_seconds", &SweepDriver::get_solve_seconds,
+      "Wall seconds of the solve up to its last completed outer iteration, "
+      "excluding callback time.")
     .def_property_readonly("k_history", &SweepDriver::get_k_history)
     .def_property_readonly("outer_sweeps", &SweepDriver::get_outer_sweeps,
       "Group-set sweeps of each outer iteration of the last solve.")

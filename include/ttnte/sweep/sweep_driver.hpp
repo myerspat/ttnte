@@ -20,6 +20,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -66,6 +67,8 @@ public:
   using Mesh = mesh::Mesh<BlockType>;
   using Ptr = std::shared_ptr<SweepDriver>;
   using Solution = driver::TransportSolution<BlockType>;
+  /// Called after every `frequency`-th outer iteration of a solve.
+  using Callback = std::function<void(const SweepDriver&)>;
 
 private:
   // =================================================================
@@ -183,6 +186,13 @@ private:
   bool has_fission_ = false;
   /// Cumulative time spent inside sweep task bodies (all threads).
   std::atomic<int64_t> task_nanoseconds_ {0};
+
+  /// Optional per-outer-iteration callback and its frequency.
+  Callback callback_;
+  int64_t callback_frequency_ = 1;
+  /// Wall time of the running solve at the last completed outer iteration,
+  /// excluding time spent in the callback.
+  double solve_seconds_ = 0.0;
 
   /// Whether the running solve is a k-eigenvalue power iteration, and k.
   bool eigenvalue_mode_ = false;
@@ -768,6 +778,8 @@ private:
 
     const bool verbose = config_.verbose && comm_.rank() == 0;
     auto start = std::chrono::high_resolution_clock::now();
+    double callback_seconds = 0.0;
+    solve_seconds_ = 0.0;
     double previous_error = -1.0;
     if (eigenvalue_mode_)
       k_ = fission_production();
@@ -831,6 +843,17 @@ private:
                        std::chrono::high_resolution_clock::now() - start)
                        .count()
                   << " s" << std::defaultfloat << std::endl;
+      }
+      solve_seconds_ = std::chrono::duration<double>(
+                         std::chrono::high_resolution_clock::now() - start)
+                         .count() -
+                       callback_seconds;
+      if (callback_ && it % callback_frequency_ == 0) {
+        auto c0 = std::chrono::high_resolution_clock::now();
+        callback_(*this);
+        callback_seconds += std::chrono::duration<double>(
+          std::chrono::high_resolution_clock::now() - c0)
+                              .count();
       }
       const bool k_ok = !eigenvalue_mode_ || k_error < k_tol;
       if (it > 0 && error < target && k_ok) {
@@ -1330,8 +1353,25 @@ public:
     return A.reshape({D * N * G, D * N * G});
   }
 
+  /// @brief Set a callback invoked after every `frequency`-th outer
+  /// iteration of solve_fixed_source()/solve_eigenvalue() (as
+  /// TransportDriver::set_callback()). Time spent in the callback is
+  /// excluded from get_solve_seconds(). Pass an empty function to disable.
+  void set_callback(Callback callback, int64_t frequency = 1)
+  {
+    if (frequency < 1) {
+      throw utils::runtime_error(
+        ctx("set_callback"), "`frequency` must be at least 1");
+    }
+    callback_ = std::move(callback);
+    callback_frequency_ = frequency;
+  }
+
   // =================================================================
   // Public getters
+  /// @return Wall seconds of the running/last solve up to its last
+  /// completed outer iteration, excluding callback time.
+  double get_solve_seconds() const noexcept { return solve_seconds_; }
   const SweepConfig& get_config() const noexcept { return config_; }
   const SweepGraph::Ptr& get_graph() const noexcept { return graph_; }
   PatchDiscretization::Ptr get_discretization(int64_t gid) const
