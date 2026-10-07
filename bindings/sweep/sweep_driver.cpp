@@ -44,6 +44,11 @@ static void register_SweepDriver_impl(
       "Returns a TransportSolution holding the angular flux "
       "(store_angular_flux=True) or the scalar flux.",
       py::call_guard<py::gil_scoped_release>())
+    .def("solve_eigenvalue", &SweepDriver::solve_eigenvalue,
+      "Solve the k-eigenvalue problem by power iteration (as "
+      "TransportDriver.solve_eigenvalue). Returns a TransportSolution "
+      "holding k_eff.",
+      py::arg("k_tol") = 1e-6, py::call_guard<py::gil_scoped_release>())
     .def("build_solution", &SweepDriver::build_solution)
     .def("get_scalar_flux", &SweepDriver::get_scalar_flux, py::arg("gid"),
       "Scalar flux coefficients (*ctrlpts_grid, G).")
@@ -69,6 +74,17 @@ static void register_SweepDriver_impl(
     .def_property_readonly("errors", &SweepDriver::get_errors)
     .def_property_readonly("sweep_times", &SweepDriver::get_sweep_times)
     .def_property_readonly("num_iterations", &SweepDriver::get_num_iterations)
+    .def_property_readonly("k_eff", &SweepDriver::get_k_eff)
+    .def_property_readonly("k_history", &SweepDriver::get_k_history)
+    .def_property_readonly("outer_sweeps", &SweepDriver::get_outer_sweeps,
+      "Group-set sweeps of each outer iteration of the last solve.")
+    .def_property_readonly(
+      "group_set_sweeps", &SweepDriver::get_group_set_sweeps)
+    .def_property_readonly("equivalent_sweeps",
+      &SweepDriver::get_equivalent_sweeps,
+      "Full-sweep equivalents of the last solve (sum of |set| / G).")
+    .def_property_readonly(
+      "num_delayed_blocks", &SweepDriver::num_delayed_blocks)
     .def_property_readonly("converged", &SweepDriver::is_converged)
     .def_property_readonly("num_tasks", &SweepDriver::num_tasks)
     .def_property_readonly("chunks", &SweepDriver::get_chunks)

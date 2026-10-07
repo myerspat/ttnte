@@ -180,47 +180,67 @@ void sweep_unit(
   }
 }
 
-void scattering_source(const KernelView& view, const double* scatter,
+void transfer_source(const KernelView& view, const double* transfer,
   int64_t num_orders, const int64_t* moment_order, int64_t num_moments,
-  int64_t num_groups, const double* moments, const double* external,
+  int64_t num_groups, const double* moments, double scale,
+  const int64_t* dest_groups, int64_t num_dest, const uint8_t* source_mask,
   double* out, std::vector<double>& scratch)
 {
   const int64_t N = view.num_dofs;
   const int64_t G = num_groups;
-  scratch.resize(G * N);
+  scratch.resize(N);
   double* t = scratch.data();
-  std::fill(out, out + num_moments * G * N, 0.0);
 
   for (int64_t m = 0; m < num_moments; m++) {
     const int64_t l = moment_order[m];
-    double* dst = out + m * G * N;
-    if (scatter && l < num_orders) {
-      // t = sigma_l phi_m  (G x G times G x N)
-      std::fill(t, t + G * N, 0.0);
-      const double* sig = scatter + l * G * G;
-      const double* phi = moments + m * G * N;
-      for (int64_t g = 0; g < G; g++) {
-        for (int64_t gp = 0; gp < G; gp++) {
-          const double s = sig[g * G + gp];
-          if (s == 0.0)
-            continue;
-          for (int64_t i = 0; i < N; i++)
-            t[g * N + i] += s * phi[gp * N + i];
-        }
+    if (l >= num_orders)
+      continue;
+    const double* T = transfer + l * G * G;
+    const double* phi = moments + m * G * N;
+    for (int64_t k = 0; k < num_dest; k++) {
+      const int64_t g = dest_groups[k];
+      // t = scale * sum_g' T_{g,g'} phi_g'
+      std::fill(t, t + N, 0.0);
+      bool any = false;
+      for (int64_t gp = 0; gp < G; gp++) {
+        const double c = T[g * G + gp];
+        if (c == 0.0 || (source_mask && !source_mask[gp]))
+          continue;
+        any = true;
+        const double sc = scale * c;
+        const double* pg = phi + gp * N;
+        for (int64_t i = 0; i < N; i++)
+          t[i] += sc * pg[i];
       }
-      // dst = M t
-      for (int64_t g = 0; g < G; g++) {
-        const double* tg = t + g * N;
-        double* dg = dst + g * N;
-        for (int64_t p = 0; p < view.num_pairs; p++)
-          dg[view.pair_row[p]] += view.mass[p] * tg[view.pair_col[p]];
-      }
-    }
-    if (m == 0 && external) {
-      for (int64_t i = 0; i < G * N; i++)
-        dst[i] += external[i];
+      if (!any)
+        continue;
+      // out += M t
+      double* dst = out + (m * G + g) * N;
+      for (int64_t p = 0; p < view.num_pairs; p++)
+        dst[view.pair_row[p]] += view.mass[p] * t[view.pair_col[p]];
     }
   }
+}
+
+double transfer_total(const KernelView& view, const double* transfer,
+  int64_t num_groups, const double* scalar_flux, const double* basis_integral)
+{
+  // sum_v (M phi)_v = sum_u (int R_u) phi_u (partition of unity)
+  const int64_t N = view.num_dofs;
+  const int64_t G = num_groups;
+  double total = 0.0;
+  for (int64_t gp = 0; gp < G; gp++) {
+    double column = 0.0;
+    for (int64_t g = 0; g < G; g++)
+      column += transfer[g * G + gp];
+    if (column == 0.0)
+      continue;
+    double integral = 0.0;
+    for (int64_t u = 0; u < N; u++)
+      integral += basis_integral[u] * scalar_flux[gp * N + u];
+    total += column * integral;
+  }
+  return total;
 }
 
 } // namespace ttnte::sweep

@@ -26,6 +26,25 @@ enum class TaskGranularity : uint8_t {
   SUBDOMAIN,
 };
 
+/// @brief Coupling of group sets in the across-group-set iteration.
+enum class GroupIteration : uint8_t {
+  /// Every group set sees the previous pass's flux of the other sets
+  /// (concurrent-friendly, slow with strong group coupling).
+  JACOBI,
+  /// Group sets are solved in energy order, each seeing the latest flux of
+  /// the sets already solved: downscatter is resolved in one pass.
+  GAUSS_SEIDEL,
+};
+
+/// @brief Solver of the within-group-set problem
+/// (I - D L^{-1} M S_ss) phi_s = D L^{-1} q_s, one sweep per product.
+enum class InnerSolver : uint8_t {
+  /// Fixed-point (source) iteration.
+  RICHARDSON,
+  /// Restarted GMRES on the moments and the lagged face traces.
+  GMRES,
+};
+
 /// @brief Configuration of the transport sweep solver.
 struct SweepConfig {
   /// Local patch solver.
@@ -48,10 +67,23 @@ struct SweepConfig {
   /// Number of energy groups per sweep task (<= 0 means all groups in one
   /// task). Smaller group sets expose more concurrent tasks.
   int64_t group_set_size = 0;
-  /// Relative tolerance on the scalar flux change between source
-  /// iterations.
+  /// Coupling of group sets.
+  GroupIteration group_iteration = GroupIteration::GAUSS_SEIDEL;
+  /// Within-group-set solver.
+  InnerSolver inner_solver = InnerSolver::GMRES;
+  /// Within-group-set tolerance: GMRES relative residual or Richardson
+  /// relative scalar flux change (<= 0 uses 0.1 * tol).
+  double inner_tol = 0.0;
+  /// Maximum sweeps of one within-group-set solve (1 with RICHARDSON and
+  /// JACOBI is classic source iteration).
+  int64_t inner_max_iter = 1000;
+  /// GMRES restart length.
+  int64_t gmres_restart = 30;
+  /// Relative tolerance on the scalar flux change between outer iterations
+  /// (across-group-set passes for fixed source, power iterations for
+  /// k-eigenvalue).
   double tol = 1e-6;
-  /// Maximum number of source iterations (sweeps).
+  /// Maximum number of outer iterations.
   int64_t max_iter = 1000;
   /// Scale the stopping test by (1 - rho), rho being the estimated spectral
   /// radius, so slowly converging iterations are not mistaken for converged

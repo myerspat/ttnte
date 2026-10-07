@@ -107,24 +107,38 @@ struct SweepWorkspace {
 void sweep_unit(
   const UnitSweep& unit, const SweepBlock& block, SweepWorkspace& workspace);
 
-/// @brief Scattering + external source moments of one unit, in raw loops:
-///   out_{m,g} = M sum_g' sigma_{l(m), g <- g'} phi_{m,g'}  (+ q_ext for m = 0)
-/// (the weak-form source (sigma_s phi, R_v): phi shares the unit's basis, so
-/// the mass matrix applies it).
+/// @brief Accumulate a group-to-group transfer source of one unit, in raw
+/// loops:
+///   out_{m,g} += scale * M sum_{g' in src} T_{l(m), g <- g'} phi_{m,g'}
+/// for g in `dest_groups`. With T the scattering matrices this is the
+/// scattering source (weak form (sigma_s phi, R_v); phi shares the unit's
+/// basis, so the mass matrix applies it); with T = chi (x) nu_sigma_f and
+/// one order it is the fission source. Restricting the source groups splits
+/// within- and across-group-set coupling.
 /// @param view The unit's discretization.
-/// @param scatter (L, G, G) scattering matrices (rows destination), or
-/// nullptr for none.
-/// @param num_orders L.
+/// @param transfer (L, G, G) matrices, rows the destination group.
+/// @param num_orders L (moments with l >= L get nothing).
 /// @param moment_order (num_moments) Legendre order of each moment.
 /// @param num_moments Number of moments.
 /// @param num_groups G.
-/// @param moments (num_moments, G, N) current flux moments.
-/// @param external (G, N) external source load vector, or nullptr.
-/// @param out (num_moments, G, N) output source moments.
+/// @param moments (num_moments, G, N) flux moments.
+/// @param scale Factor applied to the transfer (e.g. 1 / k).
+/// @param dest_groups Destination groups.
+/// @param num_dest Number of destination groups.
+/// @param source_mask (G) nonzero for source groups to include, or nullptr
+/// for all.
+/// @param out (num_moments, G, N) accumulated output.
 /// @param scratch Reused scratch (resized as needed).
-void scattering_source(const KernelView& view, const double* scatter,
+void transfer_source(const KernelView& view, const double* transfer,
   int64_t num_orders, const int64_t* moment_order, int64_t num_moments,
-  int64_t num_groups, const double* moments, const double* external,
+  int64_t num_groups, const double* moments, double scale,
+  const int64_t* dest_groups, int64_t num_dest, const uint8_t* source_mask,
   double* out, std::vector<double>& scratch);
+
+/// @return Total production sum_{g,v} (T phi_0)_{g,v} of an order-0
+/// transfer (the fission production of one unit; k for a unit-normalized
+/// fission source).
+double transfer_total(const KernelView& view, const double* transfer,
+  int64_t num_groups, const double* scalar_flux, const double* basis_integral);
 
 } // namespace ttnte::sweep
