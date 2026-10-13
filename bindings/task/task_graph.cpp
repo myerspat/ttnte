@@ -20,6 +20,7 @@ void register_TaskGraph(py::module_& m)
     .def("add_dependency", &TaskGraph::add_dependency, py::arg("dependent"),
       py::arg("dependency"))
     .def("clear", &TaskGraph::clear)
+    .def("reset", &TaskGraph::reset)
 
     .def("get_tasks", &TaskGraph::get_tasks,
       py::return_value_policy::reference_internal)

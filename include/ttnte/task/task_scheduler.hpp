@@ -4,9 +4,24 @@
 #include "ttnte/parallel/thread_pool.hpp"
 #include "ttnte/task/task_graph.hpp"
 #include "ttnte/utils/label.hpp"
+#include <cstdint>
 #include <mutex>
 
 namespace ttnte::task {
+
+/// @brief How TaskScheduler::execute() drives a graph.
+enum class ExecutionMode : uint8_t {
+  /// The main thread repeatedly scans every task, promoting, dispatching and
+  /// polling them. Supports every DeviceTarget (GPU polling, MPI on the main
+  /// thread); costs O(number of tasks) per scan.
+  POLL,
+  /// Dependency counters: a worker that completes a task releases its
+  /// successors, runs one of them itself and queues the rest; the main
+  /// thread sleeps until the graph is done. Requires every task to be
+  /// CPU_ASYNC with a payload that completes synchronously (returns
+  /// COMPLETED). For large DAGs of short CPU tasks (transport sweeps).
+  PUSH
+};
 
 /// @brief This class executes the graph held by the TaskGraph.
 class TaskScheduler {
@@ -35,6 +50,13 @@ private:
   /// The mutex for stopping race conditions.
   std::mutex mutex;
 
+  // =================================================================
+  // Private methods
+  /// @brief ExecutionMode::POLL.
+  void execute_poll(TaskGraph& graph);
+  /// @brief ExecutionMode::PUSH.
+  void execute_push(TaskGraph& graph);
+
 public:
   // =================================================================
   // Public constructor
@@ -53,8 +75,9 @@ public:
   void wait_for_init() { thread_pool_.wait_for_init(); }
 
   /// @brief Execute a task graph.
-  /// @param The TaskGraph to execute.
-  void execute(TaskGraph& graph);
+  /// @param graph The TaskGraph to execute.
+  /// @param mode Polling (any task type) or push-based (CPU_ASYNC only).
+  void execute(TaskGraph& graph, ExecutionMode mode = ExecutionMode::POLL);
 
   // =================================================================
   // Public getters / setters

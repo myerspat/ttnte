@@ -31,6 +31,20 @@ void register_Task(py::module_& m)
     .def(py::init<const DeviceTarget&, std::optional<std::string>>(),
       py::arg("target"), py::arg("label") = py::none())
 
+    .def(
+      "set_payload",
+      [](Task& task, py::function payload) {
+        // Called from worker threads: hold the GIL only while in Python
+        task.set_payload([payload]() {
+          py::gil_scoped_acquire gil;
+          return payload().cast<TaskStatus>();
+        });
+      },
+      py::arg("payload"),
+      "Set a Python payload returning a TaskStatus (testing and "
+      "prototyping; every call takes the GIL)")
+    .def("add_dependency", &Task::add_dependency, py::arg("dependency"))
+
     .def_property_readonly("target", &Task::get_target)
     .def_property_readonly("status", &Task::get_status)
     .def_property_readonly("label", &Task::get_label);

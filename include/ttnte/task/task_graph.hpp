@@ -2,10 +2,12 @@
 
 #include "ttnte/task/task.hpp"
 #include "ttnte/utils/label.hpp"
+#include <cstdint>
 #include <deque>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace ttnte::task {
 
@@ -18,6 +20,22 @@ public:
   using Label = utils::Label<TaskGraph>;
   using TaskDeque = std::deque<Task>;
 
+  /// @brief Index form of the DAG for push-based execution: successors and
+  /// dependency counts of every task (tasks indexed in creation order).
+  struct PushPlan {
+    /// Tasks that become ready when task i completes.
+    std::vector<std::vector<int64_t>> successors;
+    /// Number of dependencies of task i.
+    std::vector<int64_t> num_dependencies;
+    /// Tasks without dependencies.
+    std::vector<int64_t> roots;
+    /// Whether every task targets DeviceTarget::CPU_ASYNC.
+    bool all_cpu_async = true;
+    /// Number of tasks and edges the plan was built from (staleness check).
+    size_t num_tasks = 0;
+    size_t num_edges = 0;
+  };
+
 private:
   // =================================================================
   // Private data
@@ -25,6 +43,9 @@ private:
   Label label_;
   /// Deque of tasks.
   TaskDeque tasks_;
+
+  /// Cached push-based execution plan (see push_plan()).
+  PushPlan push_plan_;
 
   /// Mutex for a thread lock.
   std::mutex mutex;
@@ -52,6 +73,11 @@ public:
   void add_dependency(Task* dependent, Task* dependency);
   /// @brief Clear the task graph.
   void clear();
+  /// @brief Index form of the DAG, rebuilt whenever tasks or dependencies
+  /// were added since it was last built (dependencies may be added through
+  /// Task::add_dependency(), so staleness is detected from the edge count).
+  /// @return The push-based execution plan.
+  const PushPlan& push_plan();
   /// @brief Reset all tasks to WAITING so the graph can be re-executed without
   /// rebuilding.
   void reset()

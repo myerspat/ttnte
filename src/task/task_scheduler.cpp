@@ -1,6 +1,10 @@
 #include "ttnte/task/task_scheduler.hpp"
 #include "ttnte/parallel/parallel_context.hpp"
+#include "ttnte/utils/exception.hpp"
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <memory>
 #include <torch/cuda.h>
 
 #ifdef USE_CUDA
@@ -55,10 +59,100 @@ TaskScheduler::TaskScheduler(
     thread_pool_(num_threads, build_worker_init(stream_pool_))
 {}
 
-void TaskScheduler::execute(TaskGraph& graph)
+void TaskScheduler::execute(TaskGraph& graph, ExecutionMode mode)
 {
   // Lock class from multiple threads trying to execute the same graph
   std::lock_guard<std::mutex> lock(mutex);
+  if (mode == ExecutionMode::PUSH)
+    execute_push(graph);
+  else
+    execute_poll(graph);
+}
+
+void TaskScheduler::execute_push(TaskGraph& graph)
+{
+  const auto& plan = graph.push_plan();
+  const size_t n = plan.num_tasks;
+  if (n == 0)
+    return;
+  if (!plan.all_cpu_async) {
+    throw utils::runtime_error("ttnte::task::TaskScheduler::execute",
+      "ExecutionMode::PUSH requires every task to be CPU_ASYNC");
+  }
+  if (plan.roots.empty()) {
+    throw utils::runtime_error(
+      "ttnte::task::TaskScheduler::execute", "The task graph has no roots");
+  }
+
+  // Shared by the workers; kept alive by every queued closure so a worker
+  // still unwinding after the last completion never touches freed memory.
+  struct State {
+    TaskGraph::TaskDeque* tasks;
+    const TaskGraph::PushPlan* plan;
+    std::unique_ptr<std::atomic<int64_t>[]> pending;
+    std::atomic<size_t> remaining;
+    std::atomic<bool> incomplete {false};
+    std::mutex done_mutex;
+    std::condition_variable done_cv;
+    bool done = false;
+  };
+  auto state = std::make_shared<State>();
+  state->tasks = &graph.get_tasks();
+  state->plan = &plan;
+  state->pending = std::make_unique<std::atomic<int64_t>[]>(n);
+  for (size_t i = 0; i < n; i++)
+    state->pending[i].store(
+      plan.num_dependencies[i], std::memory_order_relaxed);
+  state->remaining.store(n, std::memory_order_relaxed);
+
+  // Run task i, then keep running one released successor on this thread
+  // (data locality: it consumes what i just produced) and queue the others.
+  auto run = std::make_shared<std::function<void(int64_t)>>();
+  *run = [this, state, weak = std::weak_ptr<std::function<void(int64_t)>>(run)](
+           int64_t i) {
+    auto self = weak.lock();
+    while (i >= 0) {
+      Task& task = (*state->tasks)[i];
+      task.update_status(TaskStatus::RUNNING);
+      task.execute();
+      if (task.get_status() == TaskStatus::COMPLETED)
+        task.count();
+      else
+        state->incomplete.store(true, std::memory_order_relaxed);
+
+      int64_t next = -1;
+      for (int64_t c : state->plan->successors[i]) {
+        if (state->pending[c].fetch_sub(1, std::memory_order_acq_rel) == 1) {
+          if (next < 0)
+            next = c;
+          else
+            thread_pool_.push_task([self, c]() { (*self)(c); });
+        }
+      }
+      if (state->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        std::lock_guard<std::mutex> lock(state->done_mutex);
+        state->done = true;
+        state->done_cv.notify_one();
+      }
+      i = next;
+    }
+  };
+
+  for (int64_t r : plan.roots)
+    thread_pool_.push_task([run, r]() { (*run)(r); });
+
+  std::unique_lock<std::mutex> lock(state->done_mutex);
+  state->done_cv.wait(lock, [&state] { return state->done; });
+  lock.unlock();
+
+  if (state->incomplete.load()) {
+    throw utils::runtime_error("ttnte::task::TaskScheduler::execute",
+      "ExecutionMode::PUSH requires payloads that return COMPLETED");
+  }
+}
+
+void TaskScheduler::execute_poll(TaskGraph& graph)
+{
 
   int tasks_completed = 0;
   const int total_tasks = graph.size();
