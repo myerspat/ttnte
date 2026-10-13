@@ -181,11 +181,16 @@ private:
   /// One sweep DAG per group set.
   std::vector<std::unique_ptr<task::TaskGraph>> dags_;
   std::unique_ptr<task::TaskScheduler> scheduler_;
+  /// Flat DAG of patch-range tasks running patch_fn_ (see for_each_patch()).
+  std::unique_ptr<task::TaskGraph> patch_dag_;
+  const std::function<void(PatchState&)>* patch_fn_ = nullptr;
   bool is_setup_ = false;
   /// Whether any local material is fissile.
   bool has_fission_ = false;
   /// Cumulative time spent inside sweep task bodies (all threads).
   std::atomic<int64_t> task_nanoseconds_ {0};
+  /// Wall time spent executing sweep DAGs (the parallel part of a sweep).
+  int64_t dag_nanoseconds_ = 0;
 
   /// Optional per-outer-iteration callback and its frequency.
   Callback callback_;
@@ -407,6 +412,45 @@ private:
   /// @param fixed Include the parts that do not depend on this set's flux:
   /// external and fission sources, and scattering from the other sets.
   /// @param jacobi Take the other sets' flux from the start of the pass.
+  /// @brief Apply `fn` to every patch, in parallel on the scheduler's
+  /// workers (patches are independent; `fn` may use thread_local scratch).
+  void for_each_patch(const std::function<void(PatchState&)>& fn)
+  {
+    if (!patch_dag_) {
+      for (auto& P : patches_)
+        fn(P);
+      return;
+    }
+    patch_fn_ = &fn;
+    patch_dag_->reset();
+    scheduler_->execute(*patch_dag_, task::ExecutionMode::PUSH);
+    patch_fn_ = nullptr;
+  }
+
+  /// @brief Build the patch-range tasks of for_each_patch() (none, i.e.
+  /// serial, with one thread).
+  void build_patch_dag()
+  {
+    patch_dag_.reset();
+    const int64_t num_threads = std::max<int64_t>(1, config_.num_threads);
+    const int64_t n = static_cast<int64_t>(patches_.size());
+    if (num_threads == 1 || n < 2)
+      return;
+    const int64_t num_chunks = std::min<int64_t>(n, 4 * num_threads);
+    patch_dag_ = std::make_unique<task::TaskGraph>();
+    for (int64_t c = 0; c < num_chunks; c++) {
+      const int64_t begin = c * n / num_chunks;
+      const int64_t end = (c + 1) * n / num_chunks;
+      auto* task = patch_dag_->create_task(
+        task::DeviceTarget::CPU_ASYNC, "patches_" + std::to_string(c));
+      task->set_payload([this, begin, end]() {
+        for (int64_t i = begin; i < end; i++)
+          (*patch_fn_)(patches_[i]);
+        return task::TaskStatus::COMPLETED;
+      });
+    }
+  }
+
   void compute_source(size_t s, Within within, bool fixed, bool jacobi)
   {
     thread_local std::vector<double> scratch;
@@ -414,7 +458,7 @@ private:
     const int64_t ng = static_cast<int64_t>(groups.size());
     const int64_t M = harmonics_.size(1);
     const int64_t G = num_groups_;
-    for (auto& P : patches_) {
+    for_each_patch([&](PatchState& P) {
       const auto& view = P.disc->view();
       const int64_t N = view.num_dofs;
       double* out = P.source_moments.template data_ptr<double>();
@@ -451,7 +495,7 @@ private:
           phi.template data_ptr<double>(), 1.0, groups.data(), ng,
           group_masks_[s].data(), out, scratch);
       }
-    }
+    });
   }
 
   /// @brief Sweep group set `s` with the current source moments and lagged
@@ -460,16 +504,20 @@ private:
   {
     const auto& groups = group_indices_[s];
     const int64_t M = harmonics_.size(1);
-    for (auto& P : patches_) {
+    for_each_patch([&](PatchState& P) {
       const int64_t N = P.disc->num_dofs();
       double* m = P.moments_next.template data_ptr<double>();
       for (int64_t k = 0; k < M; k++)
         for (int64_t g : groups)
           std::fill(m + (k * num_groups_ + g) * N,
             m + (k * num_groups_ + g + 1) * N, 0.0);
-    }
+    });
     dags_[s]->reset();
-    scheduler_->execute(*dags_[s]);
+    auto t0 = std::chrono::steady_clock::now();
+    scheduler_->execute(*dags_[s], task::ExecutionMode::PUSH);
+    dag_nanoseconds_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - t0)
+                          .count();
     for (auto& P : patches_)
       if (P.factors.defined())
         P.factors_ready[s] = 1;
@@ -485,8 +533,7 @@ private:
     const auto& groups = group_indices_[s];
     const int64_t M = harmonics_.size(1);
     const int64_t G = num_groups_;
-    const int64_t D = omega_.size(0);
-    for (auto& P : patches_) {
+    for_each_patch([&](PatchState& P) {
       const int64_t N = P.disc->num_dofs();
       const double* next = P.moments_next.template data_ptr<double>();
       double* cur = P.moments.template data_ptr<double>();
@@ -494,17 +541,19 @@ private:
         for (int64_t g : groups)
           std::copy(next + (m * G + g) * N, next + (m * G + g + 1) * N,
             cur + (m * G + g) * N);
-      for (size_t f = 0; f < P.links.size(); f++) {
-        if (!P.links[f].has_buffer)
-          continue;
-        const int64_t Nf = P.trace_current[f].size(2);
-        const double* src = P.trace_current[f].template data_ptr<double>();
-        double* dst = P.trace_previous[f].template data_ptr<double>();
-        for (int64_t d = 0; d < D; d++)
-          for (int64_t g : groups)
-            std::copy(src + (d * G + g) * Nf, src + (d * G + g + 1) * Nf,
-              dst + (d * G + g) * Nf);
-      }
+    });
+    // Previous traces are read only where they are lagged (reflective faces
+    // and LAGGED interface edges, the delayed blocks), so only those
+    // directions are carried over
+    for (const auto& blk : delayed_) {
+      auto& P = patches_[blk.local];
+      const int64_t Nf = P.trace_current[blk.face].size(2);
+      const double* src = P.trace_current[blk.face].template data_ptr<double>();
+      double* dst = P.trace_previous[blk.face].template data_ptr<double>();
+      for (int64_t d : blk.directions)
+        for (int64_t g : groups)
+          std::copy(src + (d * G + g) * Nf, src + (d * G + g + 1) * Nf,
+            dst + (d * G + g) * Nf);
     }
   }
 
@@ -667,8 +716,7 @@ private:
   {
     const bool jacobi = config_.group_iteration == GroupIteration::JACOBI;
     if (jacobi)
-      for (auto& P : patches_)
-        P.pass_moments.copy_(P.moments);
+      for_each_patch([](PatchState& P) { P.pass_moments.copy_(P.moments); });
     int64_t sweeps = 0;
     for (size_t s = 0; s < group_sets_.size(); s++)
       sweeps += inner_solve(s, jacobi);
@@ -1186,6 +1234,7 @@ public:
     scheduler_ = std::make_unique<task::TaskScheduler>(
       std::max<int64_t>(1, config_.num_threads));
     build_dag();
+    build_patch_dag();
     is_setup_ = true;
   }
 
@@ -1195,8 +1244,7 @@ public:
   {
     if (!is_setup_)
       throw utils::runtime_error(ctx("sweep"), "Call setup() first");
-    for (auto& P : patches_)
-      P.pass_moments.copy_(P.moments);
+    for_each_patch([](PatchState& P) { P.pass_moments.copy_(P.moments); });
     for (size_t s = 0; s < group_sets_.size(); s++) {
       compute_source(s, Within::MOMENTS, true, true);
       sweep_group_set(s);
@@ -1430,7 +1478,17 @@ public:
   {
     return static_cast<double>(task_nanoseconds_.load()) * 1e-9;
   }
-  void reset_task_seconds() noexcept { task_nanoseconds_ = 0; }
+  /// @return Cumulative wall seconds spent executing sweep DAGs; the rest of
+  /// a sweep's wall time is serial work on the calling thread.
+  double get_dag_seconds() const noexcept
+  {
+    return static_cast<double>(dag_nanoseconds_) * 1e-9;
+  }
+  void reset_task_seconds() noexcept
+  {
+    task_nanoseconds_ = 0;
+    dag_nanoseconds_ = 0;
+  }
   /// @return Bytes held by the factorization cache (0 if disabled).
   int64_t factorization_bytes() const noexcept
   {

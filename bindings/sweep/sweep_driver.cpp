@@ -115,6 +115,8 @@ static void register_SweepDriver_impl(
     .def_property_readonly("factorization_bytes",
       &SweepDriver::factorization_bytes,
       "Bytes held by the factorization cache (0 if disabled).")
+    .def_property_readonly("dag_seconds", &SweepDriver::get_dag_seconds,
+      "Wall seconds spent executing sweep DAGs (parallel part)")
     .def_property_readonly("task_seconds", &SweepDriver::get_task_seconds,
       "Cumulative seconds inside sweep task bodies, summed over threads.")
     .def("reset_task_seconds", &SweepDriver::reset_task_seconds);
