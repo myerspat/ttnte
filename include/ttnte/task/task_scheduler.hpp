@@ -16,10 +16,12 @@ enum class ExecutionMode : uint8_t {
   /// thread); costs O(number of tasks) per scan.
   POLL,
   /// Dependency counters: a worker that completes a task releases its
-  /// successors, runs one of them itself and queues the rest; the main
-  /// thread sleeps until the graph is done. Requires every task to be
-  /// CPU_ASYNC with a payload that completes synchronously (returns
-  /// COMPLETED). For large DAGs of short CPU tasks (transport sweeps).
+  /// successors, runs one of them itself and queues the rest. NETWORK_*
+  /// tasks run on the calling thread, which starts them, polls them while
+  /// their payload returns POLLING (MPI stays on one thread) and otherwise
+  /// sleeps until the graph is done. CPU tasks must be CPU_ASYNC with a
+  /// payload that returns COMPLETED. For large DAGs of short CPU tasks
+  /// (transport sweeps), optionally with MPI exchanges.
   PUSH
 };
 

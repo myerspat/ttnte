@@ -29,8 +29,10 @@ public:
     std::vector<int64_t> num_dependencies;
     /// Tasks without dependencies.
     std::vector<int64_t> roots;
-    /// Whether every task targets DeviceTarget::CPU_ASYNC.
-    bool all_cpu_async = true;
+    /// Whether task i is a network task (run by the calling thread).
+    std::vector<uint8_t> is_network;
+    /// Whether every task is CPU_ASYNC or NETWORK_* (what PUSH supports).
+    bool supported = true;
     /// Number of tasks and edges the plan was built from (staleness check).
     size_t num_tasks = 0;
     size_t num_edges = 0;

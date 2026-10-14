@@ -117,3 +117,72 @@ def test_dependency_added_after_execution(mode):
     graph.reset()
     scheduler.execute(graph, mode)
     assert log == ["slow", "fast"]
+
+
+def _polling_payload(name, log, threads, polls):
+    """Network-like payload: POLLING `polls` times, then COMPLETED."""
+    import threading
+
+    state = {"n": 0}
+
+    def payload():
+        threads.add(threading.get_ident())
+        if state["n"] < polls:
+            state["n"] += 1
+            return TaskStatus.POLLING
+        state["n"] = 0  # reusable after graph.reset()
+        log.append(name)
+        return TaskStatus.COMPLETED
+
+    return payload
+
+
+@pytest.mark.parametrize("num_threads", [1, 4])
+def test_push_network_tasks(num_threads):
+    """Mixed CPU / NETWORK graph: recv -> cpu -> send chains and a network root; network
+    payloads run only on the calling thread."""
+    import threading
+
+    graph, log, net_threads = TaskGraph(), [], set()
+    deps = {}
+    tasks = {}
+
+    def cpu(name):
+        t = graph.create_task(DeviceTarget.CPU_ASYNC, name)
+        t.set_payload(lambda: (log.append(name), TaskStatus.COMPLETED)[1])
+        tasks[name] = t
+        return t
+
+    def net(name, polls):
+        t = graph.create_task(DeviceTarget.NETWORK_ASYNC, name)
+        t.set_payload(_polling_payload(name, log, net_threads, polls))
+        tasks[name] = t
+        return t
+
+    for c in range(6):
+        recv = net(f"recv{c}", polls=c % 3)
+        work = cpu(f"work{c}")
+        send = net(f"send{c}", polls=2)
+        after = cpu(f"after{c}")
+        graph.add_dependency(work, recv)
+        graph.add_dependency(send, work)
+        graph.add_dependency(after, send)
+        deps[f"work{c}"] = [f"recv{c}"]
+        deps[f"send{c}"] = [f"work{c}"]
+        deps[f"after{c}"] = [f"send{c}"]
+        if c:
+            graph.add_dependency(work, tasks[f"work{c - 1}"])
+            deps[f"work{c}"].append(f"work{c - 1}")
+
+    scheduler = TaskScheduler(num_threads)
+    for _ in range(3):
+        log.clear()
+        net_threads.clear()
+        graph.reset()
+        scheduler.execute(graph, ExecutionMode.PUSH)
+        assert sorted(log) == sorted(tasks), "every task exactly once"
+        pos = {n: k for k, n in enumerate(log)}
+        for name, ds in deps.items():
+            for d in ds:
+                assert pos[d] < pos[name], f"{name} ran before {d}"
+        assert net_threads == {threading.get_ident()}

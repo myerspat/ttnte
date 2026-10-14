@@ -43,10 +43,14 @@ const TaskGraph::PushPlan& TaskGraph::push_plan()
   PushPlan plan;
   plan.successors.assign(n, {});
   plan.num_dependencies.assign(n, 0);
+  plan.is_network.assign(n, 0);
   for (size_t i = 0; i < n; i++) {
     const Task& task = tasks_[i];
-    plan.all_cpu_async =
-      plan.all_cpu_async && task.get_target() == DeviceTarget::CPU_ASYNC;
+    const auto target = task.get_target();
+    plan.is_network[i] = target == DeviceTarget::NETWORK_ASYNC ||
+                         target == DeviceTarget::NETWORK_SYNC;
+    plan.supported = plan.supported &&
+                     (target == DeviceTarget::CPU_ASYNC || plan.is_network[i]);
     for (const Task* dependency : task.get_dependencies()) {
       auto it = index.find(dependency);
       if (it == index.end()) {
