@@ -227,12 +227,13 @@ void TaskScheduler::execute_push(TaskGraph& graph)
     run->pending[i].store(plan.num_dependencies[i], std::memory_order_relaxed);
   run->remaining.store(n, std::memory_order_relaxed);
 
-  for (int64_t r : plan.roots) {
+  // Network roots first: no worker runs yet, so network_ready needs no lock
+  for (int64_t r : plan.roots)
     if (plan.is_network[r])
       run->network_ready.push_back(r);
-    else
+  for (int64_t r : plan.roots)
+    if (!plan.is_network[r])
       run->enqueue_cpu(r);
-  }
   run->drive();
 
   if (run->incomplete.load()) {

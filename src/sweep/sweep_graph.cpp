@@ -13,6 +13,11 @@ SweepGraph::SweepGraph(int64_t num_nodes,
     interfaces_(std::move(interfaces))
 {
   const int64_t K = static_cast<int64_t>(interfaces_.size());
+  node_interfaces_.assign(num_nodes_, {});
+  for (int64_t k = 0; k < K; k++) {
+    node_interfaces_.at(interfaces_[k].first).push_back(k);
+    node_interfaces_.at(interfaces_[k].second).push_back(k);
+  }
   std::vector<torch::Tensor> fw(K), bw(K);
   for (int64_t k = 0; k < K; k++) {
     const auto& itf = interfaces_[k];
@@ -118,7 +123,7 @@ std::vector<int64_t> SweepGraph::upstream(size_t angle_set, int64_t node) const
 {
   const auto& set = angle_sets_.at(angle_set);
   std::vector<int64_t> nodes;
-  for (size_t k = 0; k < interfaces_.size(); k++) {
+  for (int64_t k : node_interfaces_.at(node)) {
     const auto& itf = interfaces_[k];
     if (itf.second == node && set.forward[k] == EdgeState::DEPENDENCY)
       nodes.push_back(itf.first);

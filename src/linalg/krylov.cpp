@@ -17,9 +17,15 @@ double dot(const double* a, const double* b, size_t n)
 } // namespace
 
 KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
-  std::vector<double>& x, int64_t restart, double tol, int64_t max_applies)
+  std::vector<double>& x, int64_t restart, double tol, int64_t max_applies,
+  const Reducer& reduce)
 {
   const size_t n = b.size();
+  // Inner products of (possibly distributed) vectors
+  auto dot = [&reduce](const double* a, const double* c, size_t len) {
+    const double local = krylov::dot(a, c, len);
+    return reduce ? reduce(local) : local;
+  };
   if (x.size() != n) {
     throw utils::runtime_error("ttnte::linalg::krylov::gmres",
       "The initial guess and right-hand side lengths differ");

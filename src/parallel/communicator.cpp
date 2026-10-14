@@ -72,9 +72,22 @@ Communicator Communicator::world()
   return Communicator(f_comm, rank, size, false);
 }
 
+Communicator Communicator::self()
+{
+  return Communicator(MPI_Comm_c2f(MPI_COMM_SELF), 0, 1, false);
+}
+
 bool Communicator::is_world_comm() const
 {
   return f_comm_ == MPI_Comm_c2f(MPI_COMM_WORLD);
+}
+
+int Communicator::tag_upper_bound() const
+{
+  int* value = nullptr;
+  int flag = 0;
+  MPI_Comm_get_attr(MPI_Comm_f2c(f_comm_), MPI_TAG_UB, &value, &flag);
+  return flag && value ? *value : 32767;
 }
 
 Communicator Communicator::duplicate() const

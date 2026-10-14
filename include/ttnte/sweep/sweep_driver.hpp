@@ -5,6 +5,7 @@
 #include "ttnte/math/quadrature_set.hpp"
 #include "ttnte/mesh/mesh.hpp"
 #include "ttnte/parallel/communicator.hpp"
+#include "ttnte/parallel/load_balancer.hpp"
 #include "ttnte/parallel/parallel_context.hpp"
 #include "ttnte/physics/boundary_types.hpp"
 #include "ttnte/sweep/angular_moments.hpp"
@@ -20,6 +21,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <deque>
 #include <functional>
 #include <iomanip>
 #include <iostream>
@@ -28,6 +30,7 @@
 #include <mutex>
 #include <numeric>
 #include <set>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -76,9 +79,15 @@ private:
   /// Where a face's incoming angular flux comes from.
   struct FaceLink {
     physics::BoundaryType type = physics::BoundaryType::VACUUM;
-    /// INTERNAL: neighbor local index and its face (2 * dim + is_upper).
+    /// INTERNAL: neighbor local index (-1 if remote) and its face
+    /// (2 * dim + is_upper).
     int64_t neighbor = -1;
     int64_t neighbor_face = -1;
+    /// INTERNAL: MPI rank of the neighbor if it is on another rank (-1 if
+    /// local; its traces then arrive in this patch's ghost buffers), and the
+    /// number of dofs of its face.
+    int remote_rank = -1;
+    int64_t neighbor_face_dofs = 0;
     /// INTERNAL: (Nf) neighbor-face index of each of this face's dofs.
     torch::Tensor trace_map;
     /// INTERNAL: SweepInterface index and whether this patch is its first.
@@ -113,6 +122,11 @@ private:
     /// sweep (undefined if the face has no buffer).
     std::vector<torch::Tensor> trace_current;
     std::vector<torch::Tensor> trace_previous;
+    /// Per face with a remote neighbor: (N_Omega, G, Nf_neighbor) neighbor
+    /// traces of this and the previous sweep, received by MPI (undefined
+    /// otherwise).
+    std::vector<torch::Tensor> ghost_current;
+    std::vector<torch::Tensor> ghost_previous;
     /// (num_moments, G, N) moments, the moments being accumulated by the
     /// running sweep, and the scattering + external source moments.
     torch::Tensor moments;
@@ -172,6 +186,9 @@ private:
     int64_t local = -1;
     int64_t face = -1;
     std::vector<int64_t> directions;
+    /// The lagged trace is a ghost (remote upstream) of `local`'s face
+    /// rather than `local`'s own outgoing trace.
+    bool ghost = false;
   };
   std::vector<DelayedBlock> delayed_;
   /// Per group set: (G) membership mask and its complement.
@@ -185,6 +202,37 @@ private:
     std::vector<int64_t> directions;
   };
   std::vector<DirectionBlock> direction_blocks_;
+
+  /// MPI trace exchange of one cross-rank interface for an angle set: the
+  /// local unit's face and the remote rank (see build_dag()).
+  struct Exchange {
+    int64_t local = -1;
+    int64_t face = -1;
+    int rank = -1;
+    /// Index of the interface among those shared with `rank` (message tag).
+    int64_t pair_index = -1;
+    /// Receives only: whether the local unit's sweep waits for it (else
+    /// the trace is lagged and read next sweep).
+    bool dependency = false;
+  };
+  /// Per angle set: traces to receive into ghosts and to send.
+  std::vector<std::vector<Exchange>> recvs_;
+  std::vector<std::vector<Exchange>> sends_;
+  /// Per angle set: task (schedule chunk) of every local unit.
+  std::vector<std::vector<int64_t>> task_of_unit_;
+  /// Message buffers of the exchange tasks (stable addresses).
+  std::deque<std::vector<double>> exchange_buffers_;
+  /// Communicator of the trace exchange (a duplicate of comm_).
+  parallel::Communicator sweep_comm_;
+  /// Whether this driver solves the whole mesh on this rank alone.
+  bool serial_ = false;
+  /// Optional user partition (GID -> rank); METIS when empty.
+  std::unordered_map<int64_t, int> partition_;
+  /// Rank of every node of the global sweep graph, and the local index of
+  /// each node (-1 if remote) and node of each local unit.
+  std::vector<int> node_rank_;
+  std::vector<int64_t> node_to_local_;
+  std::vector<int64_t> local_to_node_;
 
   /// One sweep DAG per group set.
   std::vector<std::unique_ptr<task::TaskGraph>> dags_;
@@ -317,6 +365,31 @@ private:
     return index;
   }
 
+  /// @return The trace buffer of a lagged block (its current or previous
+  /// sweep).
+  torch::Tensor& delayed_buffer(const DelayedBlock& blk, bool current)
+  {
+    auto& P = patches_[blk.local];
+    if (blk.ghost)
+      return current ? P.ghost_current[blk.face] : P.ghost_previous[blk.face];
+    return current ? P.trace_current[blk.face] : P.trace_previous[blk.face];
+  }
+  const torch::Tensor& delayed_buffer(
+    const DelayedBlock& blk, bool current) const
+  {
+    return const_cast<SweepDriver*>(this)->delayed_buffer(blk, current);
+  }
+
+  /// @return The sum of `value` over all ranks.
+  double global_sum(double value) const
+  {
+    if (comm_.size() == 1)
+      return value;
+    double sum = 0.0;
+    comm_.iallreduce(&value, &sum, 1, parallel::MPIOp::SUM).wait();
+    return sum;
+  }
+
   /// @brief Inflow of face `f` of unit `local` for an angle set.
   FaceInflow face_inflow(const AngleSet& set, size_t local, size_t f) const
   {
@@ -328,10 +401,13 @@ private:
                                             : set.forward[link.interface];
       if (state == EdgeState::NONE)
         return in;
-      const auto& nb = patches_[link.neighbor];
-      const auto& buffer = state == EdgeState::DEPENDENCY
-                             ? nb.trace_current[link.neighbor_face]
-                             : nb.trace_previous[link.neighbor_face];
+      const bool current = state == EdgeState::DEPENDENCY;
+      const auto& buffer =
+        link.remote_rank >= 0
+          ? (current ? P.ghost_current[f] : P.ghost_previous[f])
+          : (current
+                ? patches_[link.neighbor].trace_current[link.neighbor_face]
+                : patches_[link.neighbor].trace_previous[link.neighbor_face]);
       in.kind = FaceInflow::Kind::NEIGHBOR;
       in.trace = buffer.template data_ptr<double>();
       in.source_face_dofs = buffer.size(2);
@@ -566,10 +642,10 @@ private:
     // directions are carried over
     parallel_for(static_cast<int64_t>(delayed_.size()), [&](int64_t b) {
       const auto& blk = delayed_[b];
-      auto& P = patches_[blk.local];
-      const int64_t Nf = P.trace_current[blk.face].size(2);
-      const double* src = P.trace_current[blk.face].template data_ptr<double>();
-      double* dst = P.trace_previous[blk.face].template data_ptr<double>();
+      const auto& current = delayed_buffer(blk, true);
+      const int64_t Nf = current.size(2);
+      const double* src = current.template data_ptr<double>();
+      double* dst = delayed_buffer(blk, false).template data_ptr<double>();
       for (int64_t d : blk.directions)
         for (int64_t g : groups)
           std::copy(src + (d * G + g) * Nf, src + (d * G + g + 1) * Nf,
@@ -587,7 +663,7 @@ private:
       n += M * ng * P.disc->num_dofs();
     for (const auto& blk : delayed_)
       n += static_cast<int64_t>(blk.directions.size()) * ng *
-           patches_[blk.local].disc->faces()[blk.face].num_dofs();
+           delayed_buffer(blk, false).size(2);
     return n;
   }
 
@@ -610,9 +686,7 @@ private:
         }
     }
     for (const auto& blk : delayed_) {
-      const auto& P = patches_[blk.local];
-      const auto& buf =
-        from_current ? P.trace_current[blk.face] : P.trace_previous[blk.face];
+      const auto& buf = delayed_buffer(blk, from_current);
       const int64_t Nf = buf.size(2);
       const double* t = buf.template data_ptr<double>();
       for (int64_t d : blk.directions)
@@ -642,7 +716,7 @@ private:
         }
     }
     for (const auto& blk : delayed_) {
-      auto& buf = patches_[blk.local].trace_previous[blk.face];
+      auto& buf = delayed_buffer(blk, false);
       const int64_t Nf = buf.size(2);
       double* t = buf.template data_ptr<double>();
       for (int64_t d : blk.directions)
@@ -688,6 +762,8 @@ private:
             }
         }
         commit_group_set(s);
+        num = global_sum(num);
+        den = global_sum(den);
         if (den == 0.0 || std::sqrt(num / den) < tol)
           break;
       }
@@ -714,8 +790,11 @@ private:
       for (int64_t i = 0; i < n; i++)
         out[i] = in[i] - tmp[i];
     };
-    auto result = linalg::krylov::gmres(
-      apply, b, x, config_.gmres_restart, tol, config_.inner_max_iter);
+    auto result = linalg::krylov::gmres(apply, b, x, config_.gmres_restart, tol,
+      config_.inner_max_iter,
+      comm_.size() > 1
+        ? linalg::krylov::Reducer([this](double v) { return global_sum(v); })
+        : linalg::krylov::Reducer());
     if (!result.converged && config_.verbose && comm_.rank() == 0) {
       std::cout << "-- warning: within-group-set GMRES (set " << s
                 << ") stopped at relative residual " << result.relative_residual
@@ -764,6 +843,8 @@ private:
       num += (phi[i] - old[i]) * (phi[i] - old[i]);
       den += relative_to_old ? old[i] * old[i] : phi[i] * phi[i];
     }
+    num = global_sum(num);
+    den = global_sum(den);
     return den > 0 ? std::sqrt(num / den) : 0.0;
   }
 
@@ -779,7 +860,7 @@ private:
           num_groups_, P.moments.template data_ptr<double>(),
           P.disc->basis_integral().template data_ptr<double>());
     }
-    return total;
+    return global_sum(total);
   }
 
   /// @brief Reset the iterate: zero traces, and zero or unit scalar flux.
@@ -794,6 +875,10 @@ private:
           P.trace_current[f].zero_();
           P.trace_previous[f].zero_();
         }
+        if (P.ghost_current[f].defined()) {
+          P.ghost_current[f].zero_();
+          P.ghost_previous[f].zero_();
+        }
       }
     }
     errors_.clear();
@@ -805,15 +890,140 @@ private:
     converged_ = false;
   }
 
-  /// @brief Build one sweep DAG per group set: one task per (angle set,
-  /// chunk).
+  /// @brief Assign every node to a rank (the user partition, else METIS on
+  /// the patch connectivity graph) and cull the mesh to this rank's blocks.
+  /// @return The rank of every node.
+  std::vector<int> partition(const std::vector<PatchState>& nodes)
+  {
+    std::vector<int> rank(nodes.size(), comm_.rank());
+    if (comm_.size() == 1)
+      return rank;
+    std::unordered_map<int64_t, int> gid2rank = partition_;
+    if (gid2rank.empty()) {
+      parallel::LoadBalancer<BlockType> balancer(comm_.size());
+      gid2rank =
+        balancer.compute_partition(mesh_->build_connectivity_graph(), comm_)
+          .second;
+    }
+    std::vector<int64_t> keep;
+    for (size_t i = 0; i < nodes.size(); i++) {
+      auto it = gid2rank.find(nodes[i].gid);
+      if (it == gid2rank.end() || it->second < 0 ||
+          it->second >= comm_.size()) {
+        throw utils::runtime_error(
+          ctx("setup"), "The partition has no valid rank for GID " +
+                          std::to_string(nodes[i].gid));
+      }
+      rank[i] = it->second;
+      if (rank[i] == comm_.rank())
+        keep.push_back(nodes[i].gid);
+    }
+    mesh_->cull_blocks(torch::tensor(keep, torch::kInt64), gid2rank);
+    return rank;
+  }
+
+  /// @brief Build one sweep DAG per group set: one task per (direction
+  /// block, chunk), plus MPI receive/send tasks for cross-rank interfaces.
   void build_dag()
   {
     dags_.clear();
     schedules_.clear();
+    task_of_unit_.clear();
+    recvs_.clear();
+    sends_.clear();
+    exchange_buffers_.clear();
     const auto& sets = graph_->angle_sets();
-    for (size_t a = 0; a < sets.size(); a++)
-      schedules_.push_back(graph_->schedule(a, chunk_of_));
+    const auto& interfaces = graph_->interfaces();
+    const int64_t num_nodes = static_cast<int64_t>(node_rank_.size());
+
+    // Schedule the global graph with every remote node in a chunk of its
+    // own, then keep the local tasks: a dependency through a remote node is
+    // carried by the MPI messages
+    int64_t next_chunk = 0;
+    for (int64_t c : chunk_of_)
+      next_chunk = std::max(next_chunk, c + 1);
+    std::vector<int64_t> chunk_of_node(num_nodes);
+    for (int64_t node = 0; node < num_nodes; node++) {
+      chunk_of_node[node] = node_to_local_[node] >= 0
+                              ? chunk_of_[node_to_local_[node]]
+                              : next_chunk + node;
+    }
+    for (size_t a = 0; a < sets.size(); a++) {
+      auto global = graph_->schedule(a, chunk_of_node);
+      std::vector<int64_t> local_task(global.size(), -1);
+      std::vector<SweepChunk> chunks;
+      for (size_t t = 0; t < global.size(); t++) {
+        int64_t num_local = 0;
+        for (int64_t node : global[t].units)
+          num_local += node_to_local_[node] >= 0 ? 1 : 0;
+        if (num_local == 0)
+          continue;
+        if (num_local != static_cast<int64_t>(global[t].units.size())) {
+          throw utils::runtime_error(ctx("setup"),
+            "Task chunking creates a cycle through another rank's patches; "
+            "use TaskGranularity::UNIT for multi-rank sweeps");
+        }
+        local_task[t] = static_cast<int64_t>(chunks.size());
+        SweepChunk chunk;
+        for (int64_t node : global[t].units)
+          chunk.units.push_back(node_to_local_[node]);
+        chunks.push_back(std::move(chunk));
+      }
+      for (size_t t = 0; t < global.size(); t++) {
+        if (local_task[t] < 0)
+          continue;
+        for (int64_t u : global[t].upstream)
+          if (local_task[u] >= 0)
+            chunks[local_task[t]].upstream.push_back(local_task[u]);
+      }
+      std::vector<int64_t> task_of(patches_.size(), -1);
+      for (size_t c = 0; c < chunks.size(); c++)
+        for (int64_t u : chunks[c].units)
+          task_of[u] = static_cast<int64_t>(c);
+      schedules_.push_back(std::move(chunks));
+      task_of_unit_.push_back(std::move(task_of));
+    }
+
+    // Cross-rank interfaces: the local side's face and the interface's
+    // index among those shared with the other rank (same on both ranks,
+    // which enumerate the global interfaces in the same order)
+    std::vector<int64_t> pair_index(interfaces.size(), -1);
+    std::unordered_map<int, int64_t> pair_count;
+    std::unordered_map<int64_t, std::pair<int64_t, int64_t>> local_side;
+    for (size_t i = 0; i < patches_.size(); i++) {
+      const auto& links = patches_[i].links;
+      for (size_t f = 0; f < links.size(); f++) {
+        if (links[f].remote_rank >= 0)
+          local_side[links[f].interface] = {static_cast<int64_t>(i), f};
+      }
+    }
+    for (size_t k = 0; k < interfaces.size(); k++) {
+      auto it = local_side.find(static_cast<int64_t>(k));
+      if (it == local_side.end())
+        continue;
+      const auto& P = patches_[it->second.first];
+      pair_index[k] = pair_count[P.links[it->second.second].remote_rank]++;
+    }
+    recvs_.assign(sets.size(), {});
+    sends_.assign(sets.size(), {});
+    for (size_t a = 0; a < sets.size(); a++) {
+      for (const auto& [k, side] : local_side) {
+        const auto& link = patches_[side.first].links[side.second];
+        const EdgeState in =
+          link.is_first ? sets[a].backward[k] : sets[a].forward[k];
+        const EdgeState out =
+          link.is_first ? sets[a].forward[k] : sets[a].backward[k];
+        Exchange ex {side.first, side.second, link.remote_rank, pair_index[k]};
+        if (in != EdgeState::NONE) {
+          ex.dependency = in == EdgeState::DEPENDENCY;
+          recvs_[a].push_back(ex);
+        }
+        if (out != EdgeState::NONE) {
+          ex.dependency = false;
+          sends_[a].push_back(ex);
+        }
+      }
+    }
 
     // Independent copies of an angle set's DAG over blocks of its
     // directions expose more concurrent tasks
@@ -852,8 +1062,107 @@ private:
         for (size_t c = 0; c < chunks.size(); c++)
           for (int64_t u : chunks[c].upstream)
             tasks[c]->add_dependency(tasks[u]);
+        add_exchange_tasks(*dag, tasks, b, s);
       }
       dags_.push_back(std::move(dag));
+    }
+  }
+
+  /// @brief MPI tasks of direction block `b` for group set `s`: receive the
+  /// remote upstream traces into ghosts (the local sweep task waits for
+  /// DEPENDENCY edges) and send the local outgoing traces after their task.
+  /// Messages carry the block's directions x the set's groups x face dofs.
+  void add_exchange_tasks(task::TaskGraph& dag,
+    const std::vector<task::Task*>& tasks, size_t b, size_t s)
+  {
+    const size_t a = direction_blocks_[b].set;
+    if (recvs_[a].empty() && sends_[a].empty())
+      return;
+    const int64_t num_blocks = static_cast<int64_t>(direction_blocks_.size());
+    const int64_t nd =
+      static_cast<int64_t>(direction_blocks_[b].directions.size());
+    const int64_t ng = static_cast<int64_t>(group_indices_[s].size());
+    const int64_t tag_bound = sweep_comm_.tag_upper_bound();
+
+    auto make_tag = [&](const Exchange& ex) {
+      const int64_t tag = ex.pair_index * num_blocks + static_cast<int64_t>(b);
+      if (tag > tag_bound) {
+        throw utils::runtime_error(ctx("setup"),
+          "Too many cross-rank interfaces x direction blocks for MPI tags (" +
+            std::to_string(tag) + " > MPI_TAG_UB " + std::to_string(tag_bound) +
+            "); raise directions_per_task");
+      }
+      return static_cast<int>(tag);
+    };
+
+    for (const auto& ex : recvs_[a]) {
+      const int64_t Nf = patches_[ex.local].links[ex.face].neighbor_face_dofs;
+      exchange_buffers_.emplace_back(nd * ng * Nf);
+      double* buf = exchange_buffers_.back().data();
+      const int count = static_cast<int>(nd * ng * Nf);
+      auto* recv = dag.create_task(task::DeviceTarget::NETWORK_ASYNC,
+        "recv_b" + std::to_string(b) + "_u" + std::to_string(ex.local) + "_f" +
+          std::to_string(ex.face));
+      recv->set_payload(
+        [this, buf, count, Nf, b, s, local = ex.local, face = ex.face,
+          rank = ex.rank, tag = make_tag(ex), request = parallel::Request(),
+          initiated = false]() mutable -> task::TaskStatus {
+          if (!initiated) {
+            request = sweep_comm_.irecv(buf, count, rank, tag);
+            initiated = true;
+            return task::TaskStatus::POLLING;
+          }
+          if (!request.test())
+            return task::TaskStatus::POLLING;
+          initiated = false;
+          request = parallel::Request();
+          double* ghost =
+            patches_[local].ghost_current[face].template data_ptr<double>();
+          const double* src = buf;
+          for (int64_t d : direction_blocks_[b].directions)
+            for (int64_t g : group_indices_[s]) {
+              std::copy(src, src + Nf, ghost + (d * num_groups_ + g) * Nf);
+              src += Nf;
+            }
+          return task::TaskStatus::COMPLETED;
+        });
+      if (ex.dependency)
+        tasks[task_of_unit_[a][ex.local]]->add_dependency(recv);
+    }
+
+    for (const auto& ex : sends_[a]) {
+      const int64_t Nf = patches_[ex.local].trace_current[ex.face].size(2);
+      exchange_buffers_.emplace_back(nd * ng * Nf);
+      double* buf = exchange_buffers_.back().data();
+      const int count = static_cast<int>(nd * ng * Nf);
+      auto* send = dag.create_task(task::DeviceTarget::NETWORK_ASYNC,
+        "send_b" + std::to_string(b) + "_u" + std::to_string(ex.local) + "_f" +
+          std::to_string(ex.face));
+      send->set_payload(
+        [this, buf, count, Nf, b, s, local = ex.local, face = ex.face,
+          rank = ex.rank, tag = make_tag(ex), request = parallel::Request(),
+          initiated = false]() mutable -> task::TaskStatus {
+          if (!initiated) {
+            const double* trace =
+              patches_[local].trace_current[face].template data_ptr<double>();
+            double* dst = buf;
+            for (int64_t d : direction_blocks_[b].directions)
+              for (int64_t g : group_indices_[s]) {
+                const double* src = trace + (d * num_groups_ + g) * Nf;
+                std::copy(src, src + Nf, dst);
+                dst += Nf;
+              }
+            request = sweep_comm_.isend(buf, count, rank, tag);
+            initiated = true;
+            return task::TaskStatus::POLLING;
+          }
+          if (!request.test())
+            return task::TaskStatus::POLLING;
+          initiated = false;
+          request = parallel::Request();
+          return task::TaskStatus::COMPLETED;
+        });
+      send->add_dependency(tasks[task_of_unit_[a][ex.local]]);
     }
   }
 
@@ -980,9 +1289,11 @@ public:
   /// @param xs_server Multigroup cross sections.
   /// @param mpi_context The MPI context (same argument as TransportDriver).
   SweepDriver(typename Mesh::Ptr mesh, xs::Server::Ptr xs_server,
-    const parallel::ParallelContext& mpi_context)
+    const parallel::ParallelContext& mpi_context, bool serial = false)
     : mesh_(std::move(mesh)), xs_server_(std::move(xs_server)),
-      comm_(parallel::Communicator::world())
+      comm_(serial ? parallel::Communicator::self()
+                   : parallel::Communicator::world()),
+      serial_(serial)
   {
     (void)mpi_context;
     if (!mesh_->is_finalized())
@@ -999,7 +1310,17 @@ public:
 
   // =================================================================
   // Public methods
-  /// @brief Build the patch discretizations, sweep graph and task DAG.
+  /// @brief Use a fixed partition (GID -> MPI rank) for multi-rank sweeps
+  /// instead of METIS. Takes effect at the next setup().
+  void set_partition(std::unordered_map<int64_t, int> gid_to_rank)
+  {
+    partition_ = std::move(gid_to_rank);
+  }
+
+  /// @brief Build the patch discretizations, sweep graph and task DAG. On
+  /// several MPI ranks the mesh must be complete on every rank: the global
+  /// sweep graph is built first, then the mesh is partitioned (see
+  /// set_partition()) and culled to this rank's patches.
   /// @param qset Angular quadrature (the one the TT solver uses).
   /// @param config Sweep configuration.
   /// @param chunks Optional GID -> chunk id map grouping units into tasks
@@ -1014,15 +1335,22 @@ public:
     patches_.clear();
     gid_to_local_.clear();
 
-    if (comm_.size() > 1) {
+    const bool distributed = comm_.size() > 1;
+    if (distributed &&
+        mesh_->get_blocks().size() != mesh_->get_global_num_blocks()) {
       throw utils::runtime_error(ctx("setup"),
-        "Multi-rank sweeps are not implemented yet; run on one MPI rank");
+        "Multi-rank sweeps need the full (undistributed) mesh on every rank: "
+        "setup() builds the global sweep graph, then partitions the mesh");
     }
 
     std::tie(omega_, omega3_, weights_) = discrete_ordinates(*qset_, NumDim);
     const int64_t num_directions = omega_.size(0);
 
-    // Patches
+    // Every patch of the mesh is a node of the global sweep graph (cycles
+    // must be broken consistently across ranks); only this rank's patches
+    // are kept after partitioning
+    std::vector<PatchState> nodes;
+    std::unordered_map<int64_t, size_t> gid_to_node;
     int64_t num_orders = 1;
     for (const auto& block : mesh_->get_blocks()) {
       PatchState P;
@@ -1065,8 +1393,8 @@ public:
         }
         P.external = q.contiguous();
       }
-      gid_to_local_[P.gid] = patches_.size();
-      patches_.push_back(std::move(P));
+      gid_to_node[P.gid] = nodes.size();
+      nodes.push_back(std::move(P));
     }
 
     std::tie(harmonics_, moment_order_) =
@@ -1077,11 +1405,11 @@ public:
     harmonics_ = harmonics_.contiguous();
     omega_ = omega_.contiguous();
 
-    // Face links and interfaces
+    // Face links and interfaces between nodes
     std::vector<SweepInterface> interfaces;
     std::map<std::pair<int64_t, int64_t>, int64_t> owner_face_to_interface;
-    for (size_t i = 0; i < patches_.size(); i++) {
-      auto& P = patches_[i];
+    for (size_t i = 0; i < nodes.size(); i++) {
+      auto& P = nodes[i];
       P.links.resize(2 * NumDim);
       for (int64_t dim = 0; dim < NumDim; dim++) {
         for (bool is_upper : {false, true}) {
@@ -1107,16 +1435,18 @@ public:
                 "face (conforming interfaces only)");
             }
             const auto& conn = conns[0];
-            auto it = gid_to_local_.find(conn.gid);
-            if (it == gid_to_local_.end()) {
+            auto it = gid_to_node.find(conn.gid);
+            if (it == gid_to_node.end()) {
               throw utils::runtime_error(
                 ctx("setup"), "Neighbor patch " + std::to_string(conn.gid) +
-                                " is not on this rank");
+                                " is not in the mesh");
             }
             link.neighbor = static_cast<int64_t>(it->second);
             link.neighbor_face = 2 * conn.dim + (conn.is_upper ? 1 : 0);
+            link.neighbor_face_dofs =
+              nodes[link.neighbor].disc->faces()[link.neighbor_face].num_dofs();
             link.trace_map =
-              build_trace_map(dim, conn, *patches_[link.neighbor].disc)
+              build_trace_map(dim, conn, *nodes[link.neighbor].disc)
                 .contiguous();
             link.has_buffer = true;
             link.is_first = P.gid < conn.gid;
@@ -1137,7 +1467,7 @@ public:
         }
       }
     }
-    for (auto& P : patches_) {
+    for (auto& P : nodes) {
       for (auto& link : P.links) {
         if (link.type == physics::BoundaryType::INTERNAL && !link.is_first) {
           link.interface =
@@ -1145,8 +1475,38 @@ public:
         }
       }
     }
-    graph_ = SweepGraph::create(static_cast<int64_t>(patches_.size()),
+    graph_ = SweepGraph::create(static_cast<int64_t>(nodes.size()),
       std::move(interfaces), num_directions);
+
+    // Partition, keep this rank's patches and turn links to other ranks'
+    // patches into ghost links
+    node_rank_ = partition(nodes);
+    node_to_local_.assign(nodes.size(), -1);
+    local_to_node_.clear();
+    for (size_t node = 0; node < nodes.size(); node++) {
+      if (node_rank_[node] != comm_.rank())
+        continue;
+      node_to_local_[node] = static_cast<int64_t>(patches_.size());
+      local_to_node_.push_back(static_cast<int64_t>(node));
+      gid_to_local_[nodes[node].gid] = patches_.size();
+      patches_.push_back(std::move(nodes[node]));
+    }
+    nodes.clear();
+    for (auto& P : patches_) {
+      for (auto& link : P.links) {
+        if (link.type != physics::BoundaryType::INTERNAL)
+          continue;
+        const int64_t nb = link.neighbor;
+        if (node_to_local_[nb] >= 0) {
+          link.neighbor = node_to_local_[nb];
+        } else {
+          link.neighbor = -1;
+          link.remote_rank = node_rank_[nb];
+        }
+      }
+    }
+    if (distributed)
+      sweep_comm_ = comm_.duplicate();
 
     // Chunks of units swept by one task
     chunk_of_.assign(patches_.size(), 0);
@@ -1197,13 +1557,14 @@ public:
 
     // Lagged traces: reflective faces (every direction is read for its
     // reflection) and interface faces read in a LAGGED state
-    std::map<std::pair<int64_t, int64_t>, std::set<int64_t>> lagged;
+    // Key: (unit, face, ghost) of the buffer holding the lagged trace
+    std::map<std::tuple<int64_t, int64_t, bool>, std::set<int64_t>> lagged;
     for (size_t i = 0; i < patches_.size(); i++) {
       const auto& P = patches_[i];
       for (size_t f = 0; f < P.links.size(); f++) {
         const auto& link = P.links[f];
         if (link.type == physics::BoundaryType::REFLECTIVE) {
-          auto& dirs = lagged[{static_cast<int64_t>(i), f}];
+          auto& dirs = lagged[{static_cast<int64_t>(i), f, false}];
           for (int64_t d = 0; d < num_directions; d++)
             dirs.insert(d);
         } else if (link.type == physics::BoundaryType::INTERNAL) {
@@ -1214,7 +1575,9 @@ public:
                                       : sets[a].forward[link.interface];
             if (state != EdgeState::LAGGED)
               continue;
-            auto& dirs = lagged[{link.neighbor, link.neighbor_face}];
+            auto& dirs = link.remote_rank >= 0
+                           ? lagged[{static_cast<int64_t>(i), f, true}]
+                           : lagged[{link.neighbor, link.neighbor_face, false}];
             for (int64_t d : set_directions_[a])
               dirs.insert(d);
           }
@@ -1223,8 +1586,8 @@ public:
     }
     delayed_.clear();
     for (const auto& [key, dirs] : lagged) {
-      delayed_.push_back({key.first, key.second,
-        std::vector<int64_t>(dirs.begin(), dirs.end())});
+      delayed_.push_back({std::get<0>(key), std::get<1>(key),
+        std::vector<int64_t>(dirs.begin(), dirs.end()), std::get<2>(key)});
     }
 
     // Buffers
@@ -1239,6 +1602,16 @@ public:
           P.trace_current[f] =
             torch::zeros({num_directions, num_groups_, Nf}, torch::kFloat64);
           P.trace_previous[f] = torch::zeros_like(P.trace_current[f]);
+        }
+      }
+      P.ghost_current.assign(P.links.size(), torch::Tensor());
+      P.ghost_previous.assign(P.links.size(), torch::Tensor());
+      for (size_t f = 0; f < P.links.size(); f++) {
+        if (P.links[f].remote_rank >= 0) {
+          P.ghost_current[f] = torch::zeros(
+            {num_directions, num_groups_, P.links[f].neighbor_face_dofs},
+            torch::kFloat64);
+          P.ghost_previous[f] = torch::zeros_like(P.ghost_current[f]);
         }
       }
       P.moments = torch::zeros({M, num_groups_, N}, torch::kFloat64);
@@ -1335,8 +1708,9 @@ public:
   typename Solution::Ptr build_solution() const
   {
     const bool angular = config_.store_angular_flux;
-    auto solution = Solution::create(parallel::Communicator::world(), mesh_,
-      qset_, xs_server_, physics::DGTransportAssemblerConfig(),
+    auto solution = Solution::create(serial_ ? parallel::Communicator::self()
+                                             : parallel::Communicator::world(),
+      mesh_, qset_, xs_server_, physics::DGTransportAssemblerConfig(),
       eigenvalue_mode_ ? std::optional<double>(k_) : std::nullopt, angular);
     solution->set_iteration_counts(
       static_cast<int>(num_iterations_), static_cast<int>(num_iterations_));

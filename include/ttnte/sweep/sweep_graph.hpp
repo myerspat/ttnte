@@ -81,6 +81,8 @@ protected:
   int64_t num_directions_ = 0;
   /// Interfaces between sweep units.
   std::vector<SweepInterface> interfaces_;
+  /// Interfaces touching each node.
+  std::vector<std::vector<int64_t>> node_interfaces_;
   /// Angle sets.
   std::vector<AngleSet> angle_sets_;
   /// (N_Omega) angle set of each direction.

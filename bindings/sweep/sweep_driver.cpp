@@ -19,13 +19,17 @@ static void register_SweepDriver_impl(
   py::class_<SweepDriver, typename SweepDriver::Ptr>(m, class_name.c_str())
     // =================================================================
     // Public constructors
-    .def(py::init([](typename SweepDriver::Mesh::Ptr mesh,
-                    ttnte::xs::Server::Ptr xs_server,
-                    const ttnte::parallel::ParallelContext& mpi_context) {
-      return SweepDriver::create(
-        std::move(mesh), std::move(xs_server), mpi_context);
-    }),
-      py::arg("mesh"), py::arg("xs_server"), py::arg("mpi_context"))
+    .def(py::init(
+           [](typename SweepDriver::Mesh::Ptr mesh,
+             ttnte::xs::Server::Ptr xs_server,
+             const ttnte::parallel::ParallelContext& mpi_context, bool serial) {
+             return SweepDriver::create(
+               std::move(mesh), std::move(xs_server), mpi_context, serial);
+           }),
+      py::arg("mesh"), py::arg("xs_server"), py::arg("mpi_context"),
+      py::arg("serial") = false,
+      "serial=True solves the whole mesh on this rank alone (MPI_COMM_SELF); "
+      "otherwise setup() partitions the mesh over all ranks.")
 
     // =================================================================
     // Public methods
@@ -51,6 +55,9 @@ static void register_SweepDriver_impl(
       "holding k_eff.",
       py::arg("k_tol") = 1e-6, py::call_guard<py::gil_scoped_release>())
     .def("build_solution", &SweepDriver::build_solution)
+    .def("set_partition", &SweepDriver::set_partition, py::arg("gid_to_rank"),
+      "Use a fixed partition {GID: MPI rank} for multi-rank sweeps instead "
+      "of METIS (takes effect at the next setup()).")
     .def(
       "set_callback",
       [](SweepDriver& self,

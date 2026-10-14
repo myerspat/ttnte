@@ -186,3 +186,30 @@ def test_push_network_tasks(num_threads):
             for d in ds:
                 assert pos[d] < pos[name], f"{name} ran before {d}"
         assert net_threads == {threading.get_ident()}
+
+
+def test_push_many_network_and_cpu_roots():
+    """CPU roots that release network tasks while network roots are being queued
+    (regression: unsynchronized root queueing)."""
+    import threading
+
+    graph, log, net_threads = TaskGraph(), [], set()
+    names = []
+    for i in range(200):
+        root = graph.create_task(DeviceTarget.NETWORK_ASYNC, f"netroot{i}")
+        root.set_payload(_polling_payload(f"netroot{i}", log, net_threads, 1))
+        cpu = graph.create_task(DeviceTarget.CPU_ASYNC, f"cpu{i}")
+        cpu.set_payload(lambda i=i: (log.append(f"cpu{i}"), TaskStatus.COMPLETED)[1])
+        net = graph.create_task(DeviceTarget.NETWORK_ASYNC, f"net{i}")
+        net.set_payload(_polling_payload(f"net{i}", log, net_threads, 1))
+        graph.add_dependency(net, cpu)
+        names += [f"netroot{i}", f"cpu{i}", f"net{i}"]
+    scheduler = TaskScheduler(8)
+    for _ in range(5):
+        log.clear()
+        graph.reset()
+        scheduler.execute(graph, ExecutionMode.PUSH)
+        assert sorted(log) == sorted(names)
+        pos = {n: k for k, n in enumerate(log)}
+        assert all(pos[f"cpu{i}"] < pos[f"net{i}"] for i in range(200))
+    assert net_threads == {threading.get_ident()}

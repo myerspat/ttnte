@@ -9,6 +9,10 @@ namespace ttnte::linalg::krylov {
 /// @brief Matrix-free operator y = A x on raw vectors of a fixed length.
 using LinearOperator = std::function<void(const double* x, double* y)>;
 
+/// @brief Global sum of a rank-local partial reduction (e.g. an MPI
+/// allreduce), applied to every inner product of a distributed vector.
+using Reducer = std::function<double(double)>;
+
 /// @brief Outcome of a Krylov solve.
 struct KrylovResult {
   /// Operator applications performed.
@@ -32,7 +36,11 @@ struct KrylovResult {
 /// @param restart Krylov subspace size m before restarting (>= 1).
 /// @param tol Relative residual tolerance.
 /// @param max_applies Maximum number of operator applications.
+/// @param reduce Optional global sum of inner products for vectors
+/// distributed across ranks (each rank passes its local slice); empty for
+/// a serial solve.
 KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
-  std::vector<double>& x, int64_t restart, double tol, int64_t max_applies);
+  std::vector<double>& x, int64_t restart, double tol, int64_t max_applies,
+  const Reducer& reduce = {});
 
 } // namespace ttnte::linalg::krylov
