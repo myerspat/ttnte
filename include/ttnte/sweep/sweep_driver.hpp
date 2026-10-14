@@ -178,12 +178,21 @@ private:
   std::vector<std::vector<uint8_t>> group_masks_;
   std::vector<std::vector<uint8_t>> group_complements_;
 
+  /// Directions swept by one task: a block of one angle set's directions
+  /// (SweepConfig::directions_per_task).
+  struct DirectionBlock {
+    size_t set = 0;
+    std::vector<int64_t> directions;
+  };
+  std::vector<DirectionBlock> direction_blocks_;
+
   /// One sweep DAG per group set.
   std::vector<std::unique_ptr<task::TaskGraph>> dags_;
   std::unique_ptr<task::TaskScheduler> scheduler_;
-  /// Flat DAG of patch-range tasks running patch_fn_ (see for_each_patch()).
-  std::unique_ptr<task::TaskGraph> patch_dag_;
-  const std::function<void(PatchState&)>* patch_fn_ = nullptr;
+  /// Flat DAG of index-range tasks running range_fn_ (see parallel_for()).
+  std::unique_ptr<task::TaskGraph> range_dag_;
+  const std::function<void(int64_t)>* range_fn_ = nullptr;
+  int64_t range_size_ = 0;
   bool is_setup_ = false;
   /// Whether any local material is fissile.
   bool has_fission_ = false;
@@ -340,13 +349,15 @@ private:
 
   /// @brief One sweep task: sweep the units of chunk `c` of angle set
   /// `set_index` for group set `group_set`, in upwind order.
-  void run_chunk(size_t set_index, size_t group_set, size_t c)
+  void run_chunk(size_t block_index, size_t group_set, size_t c)
   {
     thread_local SweepWorkspace workspace;
     thread_local std::vector<double> moments;
 
+    const auto& blk = direction_blocks_[block_index];
+    const size_t set_index = blk.set;
     const auto& set = graph_->angle_sets()[set_index];
-    const auto& dirs = set_directions_[set_index];
+    const auto& dirs = blk.directions;
     const auto& groups = group_indices_[group_set];
     const int64_t M = harmonics_.size(1);
     const int64_t ng = static_cast<int64_t>(groups.size());
@@ -412,40 +423,48 @@ private:
   /// @param fixed Include the parts that do not depend on this set's flux:
   /// external and fission sources, and scattering from the other sets.
   /// @param jacobi Take the other sets' flux from the start of the pass.
-  /// @brief Apply `fn` to every patch, in parallel on the scheduler's
-  /// workers (patches are independent; `fn` may use thread_local scratch).
-  void for_each_patch(const std::function<void(PatchState&)>& fn)
+  /// @brief Call `fn(i)` for i in [0, n), in parallel on the scheduler's
+  /// workers (`fn` must be safe for distinct i; it may use thread_local
+  /// scratch). Serial with one thread.
+  void parallel_for(int64_t n, const std::function<void(int64_t)>& fn)
   {
-    if (!patch_dag_) {
-      for (auto& P : patches_)
-        fn(P);
+    if (!range_dag_ || n < 2) {
+      for (int64_t i = 0; i < n; i++)
+        fn(i);
       return;
     }
-    patch_fn_ = &fn;
-    patch_dag_->reset();
-    scheduler_->execute(*patch_dag_, task::ExecutionMode::PUSH);
-    patch_fn_ = nullptr;
+    range_fn_ = &fn;
+    range_size_ = n;
+    range_dag_->reset();
+    scheduler_->execute(*range_dag_, task::ExecutionMode::PUSH);
+    range_fn_ = nullptr;
   }
 
-  /// @brief Build the patch-range tasks of for_each_patch() (none, i.e.
-  /// serial, with one thread).
-  void build_patch_dag()
+  /// @brief Apply `fn` to every patch in parallel (see parallel_for()).
+  void for_each_patch(const std::function<void(PatchState&)>& fn)
   {
-    patch_dag_.reset();
+    parallel_for(static_cast<int64_t>(patches_.size()),
+      [&](int64_t i) { fn(patches_[i]); });
+  }
+
+  /// @brief Build the range tasks of parallel_for(): task c of K handles
+  /// [c n / K, (c + 1) n / K). None (serial) with one thread.
+  void build_range_dag()
+  {
+    range_dag_.reset();
     const int64_t num_threads = std::max<int64_t>(1, config_.num_threads);
-    const int64_t n = static_cast<int64_t>(patches_.size());
-    if (num_threads == 1 || n < 2)
+    if (num_threads == 1)
       return;
-    const int64_t num_chunks = std::min<int64_t>(n, 4 * num_threads);
-    patch_dag_ = std::make_unique<task::TaskGraph>();
+    const int64_t num_chunks = 4 * num_threads;
+    range_dag_ = std::make_unique<task::TaskGraph>();
     for (int64_t c = 0; c < num_chunks; c++) {
-      const int64_t begin = c * n / num_chunks;
-      const int64_t end = (c + 1) * n / num_chunks;
-      auto* task = patch_dag_->create_task(
-        task::DeviceTarget::CPU_ASYNC, "patches_" + std::to_string(c));
-      task->set_payload([this, begin, end]() {
+      auto* task = range_dag_->create_task(
+        task::DeviceTarget::CPU_ASYNC, "range_" + std::to_string(c));
+      task->set_payload([this, c, num_chunks]() {
+        const int64_t begin = c * range_size_ / num_chunks;
+        const int64_t end = (c + 1) * range_size_ / num_chunks;
         for (int64_t i = begin; i < end; i++)
-          (*patch_fn_)(patches_[i]);
+          (*range_fn_)(i);
         return task::TaskStatus::COMPLETED;
       });
     }
@@ -545,7 +564,8 @@ private:
     // Previous traces are read only where they are lagged (reflective faces
     // and LAGGED interface edges, the delayed blocks), so only those
     // directions are carried over
-    for (const auto& blk : delayed_) {
+    parallel_for(static_cast<int64_t>(delayed_.size()), [&](int64_t b) {
+      const auto& blk = delayed_[b];
       auto& P = patches_[blk.local];
       const int64_t Nf = P.trace_current[blk.face].size(2);
       const double* src = P.trace_current[blk.face].template data_ptr<double>();
@@ -554,7 +574,7 @@ private:
         for (int64_t g : groups)
           std::copy(src + (d * G + g) * Nf, src + (d * G + g + 1) * Nf,
             dst + (d * G + g) * Nf);
-    }
+    });
   }
 
   /// @return Length of the GMRES unknown of group set `s`.
@@ -794,18 +814,34 @@ private:
     const auto& sets = graph_->angle_sets();
     for (size_t a = 0; a < sets.size(); a++)
       schedules_.push_back(graph_->schedule(a, chunk_of_));
+
+    // Independent copies of an angle set's DAG over blocks of its
+    // directions expose more concurrent tasks
+    direction_blocks_.clear();
+    for (size_t a = 0; a < sets.size(); a++) {
+      const auto& dirs = set_directions_[a];
+      const int64_t n = static_cast<int64_t>(dirs.size());
+      const int64_t per =
+        config_.directions_per_task > 0 ? config_.directions_per_task : n;
+      for (int64_t d0 = 0; d0 < n; d0 += per) {
+        direction_blocks_.push_back(
+          {a, std::vector<int64_t>(
+                dirs.begin() + d0, dirs.begin() + std::min(d0 + per, n))});
+      }
+    }
+
     for (size_t s = 0; s < group_sets_.size(); s++) {
       auto dag = std::make_unique<task::TaskGraph>();
-      for (size_t a = 0; a < sets.size(); a++) {
-        const auto& chunks = schedules_[a];
+      for (size_t b = 0; b < direction_blocks_.size(); b++) {
+        const auto& chunks = schedules_[direction_blocks_[b].set];
         std::vector<task::Task*> tasks(chunks.size());
         for (size_t c = 0; c < chunks.size(); c++) {
           tasks[c] = dag->create_task(task::DeviceTarget::CPU_ASYNC,
-            "sweep_a" + std::to_string(a) + "_g" + std::to_string(s) + "_c" +
+            "sweep_b" + std::to_string(b) + "_g" + std::to_string(s) + "_c" +
               std::to_string(c));
-          tasks[c]->set_payload([this, a, s, c]() {
+          tasks[c]->set_payload([this, b, s, c]() {
             auto t0 = std::chrono::steady_clock::now();
-            run_chunk(a, s, c);
+            run_chunk(b, s, c);
             task_nanoseconds_ +=
               std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - t0)
@@ -1234,7 +1270,7 @@ public:
     scheduler_ = std::make_unique<task::TaskScheduler>(
       std::max<int64_t>(1, config_.num_threads));
     build_dag();
-    build_patch_dag();
+    build_range_dag();
     is_setup_ = true;
   }
 

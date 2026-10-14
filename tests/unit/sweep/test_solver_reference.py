@@ -28,6 +28,9 @@ VARIANTS = [
     dict(group_set_size=1),
     dict(group_set_size=3, group_iteration=GroupIteration.JACOBI),
     dict(inner_forcing=0.1),
+    dict(directions_per_task=0),
+    dict(directions_per_task=1, num_threads=4),
+    dict(directions_per_task=3, num_threads=4, cache_factorizations=True),
 ]
 
 

@@ -190,6 +190,7 @@ def test_solver_variants_agree():
     for kw in [
         dict(local_solver=LocalSolverType.DENSE_LU),
         dict(num_threads=4),
+        dict(num_threads=4, directions_per_task=2, store_angular_flux=True),
         dict(store_angular_flux=True),
         dict(cache_factorizations=True),
         dict(cache_factorizations=True, local_solver=LocalSolverType.DENSE_LU),

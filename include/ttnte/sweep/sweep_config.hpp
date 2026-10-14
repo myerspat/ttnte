@@ -64,6 +64,11 @@ struct SweepConfig {
   TaskGranularity task_granularity = TaskGranularity::UNIT;
   /// Worker threads of the task scheduler.
   int64_t num_threads = 1;
+  /// Directions swept by one task (<= 0: a whole angle set). Smaller blocks
+  /// give independent copies of the sweep DAG and so more concurrent tasks,
+  /// at the cost of more, shorter tasks (16-32 was best on C5G7 with 64-96
+  /// threads).
+  int64_t directions_per_task = 32;
   /// Number of energy groups per sweep task (<= 0 means all groups in one
   /// task). Smaller group sets expose more concurrent tasks.
   int64_t group_set_size = 0;
