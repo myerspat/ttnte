@@ -72,15 +72,9 @@ KroneckerSolver::Ptr KroneckerSolver::try_create(
     if (std::abs(m[p] - product(p, -1)) > tol * mmax)
       return nullptr;
 
-  auto solver = Ptr(new KroneckerSolver());
-  solver->ndim_ = d;
-  solver->n_ = shape;
-  solver->num_dofs_ = N;
+  std::vector<std::array<std::vector<double>, 2>> A(d);
   for (int64_t i = 0; i < d; i++) {
     const int64_t n = shape[i];
-    // F_i^{-1} (small dense, by Gauss-Jordan on a copy)
-    auto Finv = torch::linalg_inv(
-      torch::from_blob(F[i].data(), {n, n}, torch::kFloat64).clone());
     double fref = 1.0;
     for (int64_t k = 0; k < d; k++)
       if (k != i)
@@ -91,19 +85,46 @@ KroneckerSolver::Ptr KroneckerSolver::try_create(
       auto values = disc.streaming_values(omega)[0].contiguous();
       const double* v = values.data_ptr<double>();
       // Check the Kronecker structure A_i (x) F_others
-      std::vector<double> A = slice(v, i);
-      for (auto& x : A)
+      std::vector<double> Ai = slice(v, i);
+      for (auto& x : Ai)
         x /= fref;
       double vmax = 0.0;
       for (int64_t p = 0; p < P; p++)
         vmax = std::max(vmax, std::abs(v[p]));
       for (int64_t p = 0; p < P; p++) {
         const double expect =
-          A[digit(r[p], i) * n + digit(c[p], i)] * product(p, i);
+          Ai[digit(r[p], i) * n + digit(c[p], i)] * product(p, i);
         if (std::abs(v[p] - expect) > tol * vmax)
           return nullptr;
       }
-      auto T = Finv.mm(torch::from_blob(A.data(), {n, n}, torch::kFloat64))
+      A[i][sign] = std::move(Ai);
+    }
+  }
+  return from_factors(shape, F, A);
+}
+
+KroneckerSolver::Ptr KroneckerSolver::from_factors(
+  const std::vector<int64_t>& shape, const std::vector<std::vector<double>>& F,
+  const std::vector<std::array<std::vector<double>, 2>>& A)
+{
+  const int64_t d = static_cast<int64_t>(shape.size());
+  auto solver = Ptr(new KroneckerSolver());
+  solver->ndim_ = d;
+  solver->n_ = shape;
+  solver->num_dofs_ = 1;
+  for (int64_t n : shape)
+    solver->num_dofs_ *= n;
+  for (int64_t i = 0; i < d; i++) {
+    const int64_t n = shape[i];
+    auto Finv =
+      torch::linalg_inv(torch::from_blob(const_cast<double*>(F[i].data()),
+                          {n, n}, torch::kFloat64)
+                          .clone())
+        .contiguous();
+    for (int sign = 0; sign < 2; sign++) {
+      auto T = Finv
+                 .mm(torch::from_blob(const_cast<double*>(A[i][sign].data()),
+                   {n, n}, torch::kFloat64))
                  .to(torch::kComplexDouble)
                  .contiguous();
       std::vector<cplx> R(n * n), U(n * n);
@@ -111,7 +132,8 @@ KroneckerSolver::Ptr KroneckerSolver::try_create(
         reinterpret_cast<const cplx*>(T.data_ptr<c10::complex<double>>());
       std::copy(t, t + n * n, R.begin());
       if (!linalg::complex_schur(n, R.data(), U.data())) {
-        throw utils::runtime_error("ttnte::sweep::KroneckerSolver::try_create",
+        throw utils::runtime_error(
+          "ttnte::sweep::KroneckerSolver::from_factors",
           "Schur decomposition did not converge");
       }
       // P = U^* F^{-1}
@@ -129,6 +151,67 @@ KroneckerSolver::Ptr KroneckerSolver::try_create(
     }
   }
   return solver;
+}
+
+KroneckerSolver::Ptr KroneckerSolver::parametric_twin(
+  const PatchDiscretization& disc, torch::Tensor& metric, double& measure)
+{
+  const auto& bases = disc.dim_basis();
+  const int64_t d = static_cast<int64_t>(bases.size());
+  std::vector<int64_t> shape;
+  std::vector<std::vector<double>> F(d);
+  std::vector<std::array<std::vector<double>, 2>> A(d);
+  for (int64_t i = 0; i < d; i++) {
+    const auto& b = bases[i];
+    const int64_t n = b.num_functions;
+    const int64_t nq = b.first.size(0);
+    const int64_t p1 = b.values.size(1);
+    const int64_t* first = b.first.data_ptr<int64_t>();
+    const double* N = b.values.data_ptr<double>();
+    const double* D = b.derivs.data_ptr<double>();
+    const double* w = b.weights.data_ptr<double>();
+    std::vector<double> M(n * n, 0.0), K(n * n, 0.0);
+    for (int64_t q = 0; q < nq; q++)
+      for (int64_t s = 0; s < p1; s++)
+        for (int64_t t = 0; t < p1; t++) {
+          const int64_t a = first[q] + s, c = first[q] + t;
+          M[a * n + c] += w[q] * N[q * p1 + s] * N[q * p1 + t];
+          // Streaming tests the derivative: (d R_a, R_c)
+          K[a * n + c] += w[q] * D[q * p1 + s] * N[q * p1 + t];
+        }
+    // Unit velocity along +axis: -K + outflow at the upper end; along
+    // -axis: K + outflow at the lower end (B-splines interpolate the ends)
+    std::vector<double> plus(n * n), minus(n * n);
+    for (int64_t x = 0; x < n * n; x++) {
+      plus[x] = -K[x];
+      minus[x] = K[x];
+    }
+    plus[(n - 1) * n + (n - 1)] += 1.0;
+    minus[0] += 1.0;
+    shape.push_back(n);
+    F[i] = std::move(M);
+    A[i] = {std::move(plus), std::move(minus)};
+  }
+  // Patch averages of |det J| J^{-1} and |det J| over the parametric box
+  auto measure_q = disc.quad_measure();
+  auto param = torch::ones_like(measure_q);
+  {
+    std::vector<int64_t> view(d, 1);
+    auto flat = torch::ones({1}, torch::kFloat64);
+    for (int64_t i = 0; i < d; i++) {
+      std::vector<int64_t> v(d, 1);
+      v[i] = bases[i].weights.size(0);
+      flat = flat * bases[i].weights.reshape(v);
+    }
+    param = flat.reshape({-1});
+  }
+  const double volume = param.sum().item<double>();
+  metric = (measure_q.view({-1, 1, 1}) * disc.quad_inverse_jacobian())
+             .sum(0)
+             .div(volume)
+             .contiguous();
+  measure = measure_q.sum().item<double>() / volume;
+  return from_factors(shape, F, A);
 }
 
 void KroneckerSolver::mode_product(

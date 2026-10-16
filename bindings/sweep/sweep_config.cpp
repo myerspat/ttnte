@@ -12,6 +12,9 @@ void register_SweepConfig(py::module_& m)
       "Banded LU with partial pivoting (patch-discontinuous patches)")
     .value("DENSE_LU", LocalSolverType::DENSE_LU,
       "Dense LU (single-element, fully discontinuous patches)")
+    .value("ITERATIVE", LocalSolverType::ITERATIVE,
+      "SYLVESTER on affine patches; preconditioned matrix-free GMRES (sum "
+      "factorization) on curved ones")
     .value("SYLVESTER", LocalSolverType::SYLVESTER,
       "Kronecker-sum solver on axis-aligned affine patches (one Schur "
       "factorization per patch for all directions and groups); banded LU "
@@ -56,7 +59,8 @@ void register_SweepConfig(py::module_& m)
              int64_t inner_max_iter, int64_t gmres_restart, double tol,
              int64_t max_iter, bool rho_safety, double face_weight_tol,
              bool verbose, TransportSolve transport,
-             const ttnte::cross::CrossConfig& cross) {
+             const ttnte::cross::CrossConfig& cross, double local_tol,
+             int64_t local_restart, int64_t local_max_iter) {
              SweepConfig c;
              c.local_solver = local_solver;
              c.store_angular_flux = store_angular_flux;
@@ -78,6 +82,9 @@ void register_SweepConfig(py::module_& m)
              c.verbose = verbose;
              c.transport = transport;
              c.cross = cross;
+             c.local_tol = local_tol;
+             c.local_restart = local_restart;
+             c.local_max_iter = local_max_iter;
              return c;
            }),
       py::arg("local_solver") = LocalSolverType::BANDED_LU,
@@ -93,7 +100,9 @@ void register_SweepConfig(py::module_& m)
       py::arg("max_iter") = 1000, py::arg("rho_safety") = true,
       py::arg("face_weight_tol") = 1e-12, py::arg("verbose") = true,
       py::arg("transport") = TransportSolve::EXACT,
-      py::arg("cross") = ttnte::cross::CrossConfig())
+      py::arg("cross") = ttnte::cross::CrossConfig(),
+      py::arg("local_tol") = 1e-11, py::arg("local_restart") = 20,
+      py::arg("local_max_iter") = 400)
     .def_readwrite("local_solver", &SweepConfig::local_solver)
     .def_readwrite("store_angular_flux", &SweepConfig::store_angular_flux)
     .def_readwrite("cache_factorizations", &SweepConfig::cache_factorizations)
@@ -113,5 +122,8 @@ void register_SweepConfig(py::module_& m)
     .def_readwrite("face_weight_tol", &SweepConfig::face_weight_tol)
     .def_readwrite("verbose", &SweepConfig::verbose)
     .def_readwrite("transport", &SweepConfig::transport)
+    .def_readwrite("local_tol", &SweepConfig::local_tol)
+    .def_readwrite("local_restart", &SweepConfig::local_restart)
+    .def_readwrite("local_max_iter", &SweepConfig::local_max_iter)
     .def_readwrite("cross", &SweepConfig::cross);
 }

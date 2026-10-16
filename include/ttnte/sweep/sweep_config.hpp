@@ -19,6 +19,10 @@ enum class LocalSolverType : uint8_t {
   /// patches, sharing one Schur factorization per patch among all directions
   /// and groups; other patches fall back to BANDED_LU.
   SYLVESTER,
+  /// SYLVESTER on affine patches; on curved ones GMRES on the matrix-free
+  /// sum-factorized operator, preconditioned by the patch's Kronecker-sum
+  /// parametric twin (see IterativeSolver). No factorization is stored.
+  ITERATIVE,
 };
 
 /// @brief How sweep units are grouped into scheduler tasks.
@@ -69,6 +73,12 @@ struct SweepConfig {
   /// When false only the flux moments and the face traces needed by the
   /// sweep (interfaces and reflective faces) are stored.
   bool store_angular_flux = false;
+  /// ITERATIVE: relative tolerance, restart length and maximum operator
+  /// applications of the local GMRES (a solve that does not converge falls
+  /// back to LU).
+  double local_tol = 1e-11;
+  int64_t local_restart = 20;
+  int64_t local_max_iter = 400;
   /// Factor every (direction, group) local system once and reuse the
   /// factors in later sweeps (the operators do not change between source
   /// iterations). Trades memory -- N_Omega * G * (N * 2kl+ku+1 or N^2)

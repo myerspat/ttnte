@@ -90,6 +90,20 @@ struct KernelView {
   std::vector<FaceView> faces;
 };
 
+/// @brief One parametric dimension's B-spline data on the volume quadrature:
+/// the p + 1 non-vanishing functions at each point (sum factorization).
+struct DimBasis {
+  /// (n_q) index of the first non-vanishing function at each point.
+  torch::Tensor first;
+  /// (n_q, p + 1) values and first derivatives of those functions.
+  torch::Tensor values;
+  torch::Tensor derivs;
+  /// (n_q) parametric quadrature measure.
+  torch::Tensor weights;
+  /// Number of basis functions.
+  int64_t num_functions = 0;
+};
+
 /// @brief Discrete operators of one IGA patch for the discrete-ordinates sweep.
 ///
 /// The patch's local system for direction d and group g is
@@ -138,6 +152,15 @@ protected:
   torch::Tensor dense_index_;
   /// (N) integral of each basis function (load vector of a unit source).
   torch::Tensor basis_integral_;
+  /// Tensor-product data for matrix-free application: per dimension the
+  /// B-spline data, the (N) control weights (undefined if not rational),
+  /// and on the (Q) volume quadrature grid (C order over the dimensions) the
+  /// physical measure |det J| w and the inverse Jacobian (Q, ndim, ndim),
+  /// [q, k, i] = d xi_k / d x_i.
+  std::vector<DimBasis> dim_basis_;
+  torch::Tensor control_weights_;
+  torch::Tensor quad_measure_;
+  torch::Tensor quad_inverse_jacobian_;
   /// Raw pointers into the tensors above.
   KernelView view_;
 
@@ -204,6 +227,16 @@ public:
   const torch::Tensor& basis_integral() const noexcept
   {
     return basis_integral_;
+  }
+  const std::vector<DimBasis>& dim_basis() const noexcept { return dim_basis_; }
+  const torch::Tensor& control_weights() const noexcept
+  {
+    return control_weights_;
+  }
+  const torch::Tensor& quad_measure() const noexcept { return quad_measure_; }
+  const torch::Tensor& quad_inverse_jacobian() const noexcept
+  {
+    return quad_inverse_jacobian_;
   }
   const FaceGeometry& face(size_t dim, bool is_upper) const
   {

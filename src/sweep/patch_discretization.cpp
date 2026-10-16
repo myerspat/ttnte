@@ -209,6 +209,20 @@ PatchDiscretization::PatchDiscretization(const cad::Patch& patch)
   auto Jinv = torch::linalg_inv(J); // (Q, k, i) = dxi_k / dx_i
   auto grad = torch::einsum("qak,qki->qai", {vol.dR, Jinv}); // (Q, A, ndim)
   auto Wq = detJ.abs() * vol.weights;                        // (Q)
+  quad_measure_ = Wq.contiguous();
+  quad_inverse_jacobian_ = Jinv.contiguous();
+  control_weights_ = grid_weights.defined()
+                       ? grid_weights.reshape({num_dofs_}).contiguous()
+                       : torch::Tensor();
+  for (size_t k = 0; k < dims.size(); k++) {
+    DimBasis db;
+    db.first = dims[k].first.to(torch::kInt64).contiguous();
+    db.values = dims[k].basis.select(1, 0).contiguous();
+    db.derivs = dims[k].basis.select(1, 1).contiguous();
+    db.weights = dims[k].weights.contiguous();
+    db.num_functions = shape_[k];
+    dim_basis_.push_back(std::move(db));
+  }
 
   // Pair list over (q, a, b)
   auto rows = vol.index.unsqueeze(2).expand({Q, A, A}).reshape({-1});

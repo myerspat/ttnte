@@ -58,6 +58,25 @@ public:
   /// Kronecker sum to relative accuracy `tol` (curved or skewed patches).
   static Ptr try_create(const PatchDiscretization& disc, double tol = 1e-10);
 
+  /// @brief The solver of L = sigma (F_1 x ... x F_d) + sum_i A_i(Omega_i)
+  /// x F_others from explicit 1-D factors.
+  /// @param F Per dimension the (n_i, n_i) row-major mass factor.
+  /// @param A Per dimension the (n_i, n_i) row-major operators of a unit
+  /// direction along +axis i and -axis i.
+  static Ptr from_factors(const std::vector<int64_t>& shape,
+    const std::vector<std::vector<double>>& F,
+    const std::vector<std::array<std::vector<double>, 2>>& A);
+
+  /// @brief The Kronecker-sum operator of the patch's parametric twin: the
+  /// same 1-D B-spline bases (weights ignored) on the parametric box, with
+  /// the physical metric replaced by its patch averages. Solving it with
+  /// direction metric * Omega and cross section measure * sigma
+  /// approximates the curved patch's operator (a preconditioner).
+  /// @param metric (ndim, ndim) average of |det J| J^{-1} over the patch.
+  /// @param measure Average |det J| over the patch.
+  static Ptr parametric_twin(
+    const PatchDiscretization& disc, torch::Tensor& metric, double& measure);
+
   /// @brief Solve L(omega, sigma) x = b in place.
   /// @param omega (ndim) direction.
   /// @param sigma Total cross section.

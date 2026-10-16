@@ -145,6 +145,8 @@ private:
     torch::Tensor psi;
     /// Kronecker-sum solver (SYLVESTER on an affine patch), or null.
     KroneckerSolver::Ptr kronecker;
+    /// Matrix-free iterative solver (ITERATIVE on a curved patch), or null.
+    IterativeSolver::Ptr iterative;
     /// Factorization cache (see SweepConfig::cache_factorizations).
     torch::Tensor factors;
     torch::Tensor factor_pivots;
@@ -493,6 +495,7 @@ private:
       UnitSweep unit;
       unit.disc = P.disc.get();
       unit.kronecker = P.kronecker.get();
+      unit.iterative = P.iterative.get();
       unit.sigma_t = P.sigma_t.template data_ptr<double>();
       unit.source_moments = P.source_moments.template data_ptr<double>();
       for (size_t f = 0; f < P.links.size(); f++) {
@@ -552,6 +555,7 @@ private:
       UnitSweep unit;
       unit.disc = P.disc.get();
       unit.kronecker = P.kronecker.get();
+      unit.iterative = P.iterative.get();
       unit.sigma_t = P.sigma_t.template data_ptr<double>();
       unit.source_moments = P.source_moments.template data_ptr<double>();
       for (size_t f = 0; f < P.links.size(); f++) {
@@ -1916,10 +1920,16 @@ public:
       P.fission_source = P.fission.defined()
                            ? torch::zeros({num_groups_, N}, torch::kFloat64)
                            : torch::Tensor();
-      P.kronecker = config_.local_solver == LocalSolverType::SYLVESTER
-                      ? KroneckerSolver::try_create(*P.disc)
-                      : nullptr;
-      if (config_.cache_factorizations && !P.kronecker) {
+      const bool structured =
+        config_.local_solver == LocalSolverType::SYLVESTER ||
+        config_.local_solver == LocalSolverType::ITERATIVE;
+      P.kronecker = structured ? KroneckerSolver::try_create(*P.disc) : nullptr;
+      P.iterative =
+        config_.local_solver == LocalSolverType::ITERATIVE && !P.kronecker
+          ? IterativeSolver::create(*P.disc, config_.local_tol,
+              config_.local_restart, config_.local_max_iter)
+          : nullptr;
+      if (config_.cache_factorizations && !P.kronecker && !P.iterative) {
         const bool banded = config_.local_solver != LocalSolverType::DENSE_LU;
         const int64_t size = banded ? N * P.disc->ldab() : N * N;
         P.factors =
@@ -2388,6 +2398,19 @@ public:
   {
     return std::count_if(patches_.begin(), patches_.end(),
       [](const PatchState& P) { return P.kronecker != nullptr; });
+  }
+  /// @return Local solves, GMRES operator applications and solves that fell
+  /// back to LU of the ITERATIVE solver (all patches).
+  std::tuple<int64_t, int64_t, int64_t> iterative_statistics() const
+  {
+    int64_t solves = 0, applies = 0, failures = 0;
+    for (const auto& P : patches_)
+      if (P.iterative) {
+        solves += P.iterative->num_solves();
+        applies += P.iterative->num_iterations();
+        failures += P.iterative->num_failures();
+      }
+    return {solves, applies, failures};
   }
   /// @return Chunk id of each local unit (in local order).
   const std::vector<int64_t>& get_chunks() const noexcept { return chunk_of_; }

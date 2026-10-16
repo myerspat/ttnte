@@ -100,11 +100,11 @@ void sweep_unit(
       // Operator: assembled and factored here, or read from the cache
       double* L = A;
       int64_t* piv = ipiv;
-      if (unit.factors && !kronecker) {
+      if (unit.factors && !kronecker && !unit.iterative) {
         L = unit.factors + (d * G + g) * matrix_size;
         piv = unit.factor_pivots + (d * G + g) * N;
       }
-      if (!cached) {
+      auto assemble_and_factor = [&]() {
         std::fill(L, L + matrix_size, 0.0);
         const double sigma = unit.sigma_t[g];
         for (int64_t p = 0; p < P; p++)
@@ -117,7 +117,9 @@ void sweep_unit(
             "Singular local system (direction " + std::to_string(d) +
               ", group " + std::to_string(g) + ")");
         }
-      }
+      };
+      if (!cached && !unit.iterative)
+        assemble_and_factor();
 
       // Source: sum_m Y_m(d) s_{m,g}
       std::fill(b, b + N, 0.0);
@@ -149,13 +151,24 @@ void sweep_unit(
         }
       }
 
-      // Solve
-      if (kronecker) {
+      // Solve; an iterative solve that does not converge falls back to LU
+      bool solved = false;
+      if (unit.iterative) {
+        ws.saved.assign(b, b + N);
+        solved = unit.iterative->solve(omega, unit.sigma_t[g], b, ws.iterative);
+        if (!solved) {
+          std::copy(ws.saved.begin(), ws.saved.end(), b);
+          assemble_and_factor();
+        }
+      } else if (unit.kronecker) {
         unit.kronecker->solve(omega, unit.sigma_t[g], b, ws.kronecker);
-      } else if (banded) {
-        linalg::banded::lu_solve(L, v.ldab, N, v.kl, v.ku, piv, b);
-      } else {
-        linalg::dense::lu_solve(L, N, piv, b);
+        solved = true;
+      }
+      if (!solved) {
+        if (banded)
+          linalg::banded::lu_solve(L, v.ldab, N, v.kl, v.ku, piv, b);
+        else
+          linalg::dense::lu_solve(L, N, piv, b);
       }
 
       // Outgoing traces, angular flux and moments

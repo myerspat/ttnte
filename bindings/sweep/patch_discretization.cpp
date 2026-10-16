@@ -1,4 +1,5 @@
 #include "ttnte/sweep/patch_discretization.hpp"
+#include "ttnte/sweep/sum_factorization.hpp"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <torch/extension.h>
@@ -32,6 +33,21 @@ void register_PatchDiscretization(py::module_& m)
     .def("to_band", &PatchDiscretization::to_band, py::arg("values"))
     .def("to_dense", &PatchDiscretization::to_dense, py::arg("values"))
     .def("apply_mass", &PatchDiscretization::apply_mass, py::arg("x"))
+    .def(
+      "apply_matrix_free",
+      [](const PatchDiscretization::Ptr& self, const torch::Tensor& omega,
+        double sigma, const torch::Tensor& u) {
+        auto op = ttnte::sweep::SumFactorization::create(*self);
+        auto w = omega.to(torch::kFloat64).contiguous();
+        auto x = u.to(torch::kFloat64).contiguous();
+        auto y = torch::empty_like(x);
+        ttnte::sweep::SumFactorization::Workspace work;
+        op->apply(w.data_ptr<double>(), sigma, x.data_ptr<double>(),
+          y.data_ptr<double>(), work);
+        return y;
+      },
+      "y = L(omega, sigma) u applied matrix-free by sum factorization",
+      py::arg("omega"), py::arg("sigma"), py::arg("u"))
     .def("local_operator", &PatchDiscretization::local_operator,
       py::arg("omega"), py::arg("sigma_t"),
       "Dense (N, N) local operator sigma_t M - Omega . G + sum_f B_f^+.")

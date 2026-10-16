@@ -75,6 +75,10 @@ static void register_SweepDriver_impl(
     .def_property_readonly("local_gids", &SweepDriver::local_gids)
     .def_property_readonly(
       "num_kronecker_units", &SweepDriver::num_kronecker_units)
+    .def_property_readonly("iterative_statistics",
+      &SweepDriver::iterative_statistics,
+      "(local solves, local GMRES applications, LU fallbacks) of the "
+      "ITERATIVE solver")
     .def("get_cross", &SweepDriver::get_cross, py::arg("group_set") = 0,
       "The LayoutCross of a group set (transport = CROSS)")
     .def("get_patch_angular_flux_tt", &SweepDriver::get_patch_angular_flux_tt,
