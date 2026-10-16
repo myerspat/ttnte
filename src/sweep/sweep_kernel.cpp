@@ -168,7 +168,11 @@ void sweep_unit(
       if (unit.psi) {
         std::copy(b, b + N, unit.psi + (d * G + g) * N);
       }
-      for (int64_t m = 0; m < M; m++) {
+      if (unit.fibers) {
+        std::copy(b, b + N,
+          unit.fibers + (unit.fiber_slot[bd] + bg) * unit.fiber_stride);
+      }
+      for (int64_t m = 0; m < M && unit.moments; m++) {
         const double y = Yw[m];
         if (y == 0.0)
           continue;

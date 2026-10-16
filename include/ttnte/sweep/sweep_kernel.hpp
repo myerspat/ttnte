@@ -49,8 +49,14 @@ struct UnitSweep {
   std::array<double*, MAX_FACES> trace_out {};
   /// (N_Omega, G, N) angular flux, or nullptr if not stored.
   double* psi = nullptr;
+  /// Compact angular flux of the swept fibers, or nullptr: the solution of
+  /// (block direction bd, block group bg) is written to
+  /// fibers + (fiber_slot[bd] + bg) * fiber_stride.
+  double* fibers = nullptr;
+  const int64_t* fiber_slot = nullptr;
+  int64_t fiber_stride = 0;
   /// (num_moments, num_block_groups, N) moments ACCUMULATED by the sweep
-  /// (the caller zeroes and reduces it).
+  /// (the caller zeroes and reduces it), or nullptr.
   double* moments = nullptr;
   /// Optional factorization cache: (N_Omega, G, matrix size) factors and
   /// (N_Omega, G, N) pivots, matrix size being N * ldab (banded) or N * N

@@ -44,6 +44,34 @@ static void register_SweepDriver_impl(
       "Run one transport sweep with the current moments as the scattering "
       "source.",
       py::call_guard<py::gil_scoped_release>())
+    .def(
+      "sweep_fibers",
+      [](SweepDriver& self,
+        const std::vector<
+          std::pair<std::vector<int64_t>, std::vector<int64_t>>>& blocks) {
+        std::vector<typename SweepDriver::FiberBlock> request;
+        int64_t num_fibers = 0;
+        for (const auto& [dirs, groups] : blocks) {
+          request.push_back({dirs, groups});
+          num_fibers += static_cast<int64_t>(dirs.size() * groups.size());
+        }
+        auto out =
+          torch::empty({num_fibers, self.fiber_length()}, torch::kFloat64);
+        {
+          py::gil_scoped_release release;
+          self.sweep_fibers(request, out.template data_ptr<double>());
+        }
+        return out;
+      },
+      "Sweep (directions, groups) blocks of fibers with the current sources "
+      "and lagged traces. Returns (num_fibers, fiber_length): block by "
+      "block, direction-major then group; each row holds the local units' "
+      "dofs in local order (see fiber_offsets).",
+      py::arg("blocks"))
+    .def_property_readonly("fiber_length", &SweepDriver::fiber_length)
+    .def_property_readonly("fiber_offsets", &SweepDriver::fiber_offsets)
+    .def_property_readonly("num_fibers", &SweepDriver::num_fibers)
+    .def_property_readonly("local_gids", &SweepDriver::local_gids)
     .def("solve_fixed_source", &SweepDriver::solve_fixed_source,
       "Solve a fixed-source problem with unaccelerated source iteration. "
       "Returns a TransportSolution holding the angular flux "

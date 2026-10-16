@@ -73,6 +73,13 @@ public:
   /// Called after every `frequency`-th outer iteration of a solve.
   using Callback = std::function<void(const SweepDriver&)>;
 
+  /// @brief A block of fibers to sweep: every pair of `directions` x
+  /// `groups`, each returning the angular flux over all local dofs.
+  struct FiberBlock {
+    std::vector<int64_t> directions;
+    std::vector<int64_t> groups;
+  };
+
 private:
   // =================================================================
   // Private types
@@ -203,6 +210,20 @@ private:
   };
   std::vector<DirectionBlock> direction_blocks_;
 
+  /// One task family of a fiber sweep: directions of one angle set and a
+  /// chunk of groups, with the output slot of each (direction, first group).
+  struct FiberTask {
+    size_t set = 0;
+    std::vector<int64_t> directions;
+    std::vector<int64_t> groups;
+    std::vector<int64_t> slots;
+  };
+  std::vector<FiberTask> fiber_tasks_;
+  /// Offset of each local unit in a fiber (units concatenated in local
+  /// order), and the fiber length.
+  std::vector<int64_t> fiber_offsets_;
+  int64_t fiber_length_ = 0;
+
   /// MPI trace exchange of one cross-rank interface for an angle set: the
   /// local unit's face and the remote rank (see build_dag()).
   struct Exchange {
@@ -248,6 +269,8 @@ private:
   std::atomic<int64_t> task_nanoseconds_ {0};
   /// Wall time spent executing sweep DAGs (the parallel part of a sweep).
   int64_t dag_nanoseconds_ = 0;
+  /// Fibers swept by sweep_fibers().
+  int64_t num_fibers_ = 0;
 
   /// Optional per-outer-iteration callback and its frequency.
   Callback callback_;
@@ -487,6 +510,56 @@ private:
             out[v] += src[v];
         }
       }
+    }
+  }
+
+  /// @brief One fiber-sweep task: sweep the units of chunk `c` of task
+  /// family `t`, writing their solutions into `out`.
+  void run_fiber_chunk(size_t t, size_t c, double* out)
+  {
+    thread_local SweepWorkspace workspace;
+    const auto& task = fiber_tasks_[t];
+    const auto& set = graph_->angle_sets()[task.set];
+
+    SweepBlock block;
+    block.directions = task.directions.data();
+    block.num_block_directions = static_cast<int64_t>(task.directions.size());
+    block.groups = task.groups.data();
+    block.num_block_groups = static_cast<int64_t>(task.groups.size());
+    block.num_directions = omega_.size(0);
+    block.num_groups = num_groups_;
+    block.num_moments = harmonics_.size(1);
+    block.omega = omega_.template data_ptr<double>();
+    block.harmonics = harmonics_.template data_ptr<double>();
+    block.weighted_harmonics = weighted_harmonics_.template data_ptr<double>();
+    block.solver = config_.local_solver;
+
+    for (int64_t local : schedules_[task.set][c].units) {
+      auto& P = patches_[local];
+      UnitSweep unit;
+      unit.disc = P.disc.get();
+      unit.sigma_t = P.sigma_t.template data_ptr<double>();
+      unit.source_moments = P.source_moments.template data_ptr<double>();
+      for (size_t f = 0; f < P.links.size(); f++) {
+        unit.inflow[f] = face_inflow(set, local, f);
+        unit.trace_out[f] = P.links[f].has_buffer
+                              ? P.trace_current[f].template data_ptr<double>()
+                              : nullptr;
+      }
+      // Reuse cached factors only when a full sweep has already computed
+      // them for every pair
+      const bool ready = P.factors.defined() &&
+                         std::all_of(P.factors_ready.begin(),
+                           P.factors_ready.end(), [](uint8_t r) { return r; });
+      if (ready) {
+        unit.factors = P.factors.template data_ptr<double>();
+        unit.factor_pivots = P.factor_pivots.template data_ptr<int64_t>();
+        unit.factors_ready = true;
+      }
+      unit.fibers = out + fiber_offsets_[local];
+      unit.fiber_slot = task.slots.data();
+      unit.fiber_stride = fiber_length_;
+      sweep_unit(unit, block, workspace);
     }
   }
 
@@ -1652,12 +1725,151 @@ public:
           : torch::Tensor();
     }
 
+    fiber_offsets_.assign(patches_.size(), 0);
+    fiber_length_ = 0;
+    for (size_t i = 0; i < patches_.size(); i++) {
+      fiber_offsets_[i] = fiber_length_;
+      fiber_length_ += patches_[i].disc->num_dofs();
+    }
+
     scheduler_ = std::make_unique<task::TaskScheduler>(
       std::max<int64_t>(1, config_.num_threads));
     build_dag();
     build_range_dag();
     is_setup_ = true;
   }
+
+  /// @brief Sweep the fibers of `blocks` with the current source moments
+  /// and lagged traces, without changing the iterate: each (direction,
+  /// group) pair is one exact upwind sweep through every local unit.
+  ///
+  /// The fiber of block k, direction i and group j is row
+  /// offset_k + i * |groups_k| + j of `out`, offset_k being the number of
+  /// fibers of the blocks before k. A row holds the local units' dofs in
+  /// local order (see fiber_offsets()). Pairs must not repeat. The
+  /// interface traces of the swept pairs are overwritten.
+  /// @param blocks The fibers to sweep.
+  /// @param out (num_fibers, fiber_length()) output.
+  void sweep_fibers(const std::vector<FiberBlock>& blocks, double* out)
+  {
+    if (!is_setup_)
+      throw utils::runtime_error(ctx("sweep_fibers"), "Call setup() first");
+    // TODO: exchange tasks for multi-rank fiber sweeps
+    if (comm_.size() > 1)
+      throw utils::runtime_error(
+        ctx("sweep_fibers"), "Fiber sweeps are serial in space for now");
+    const auto& direction_set = graph_->direction_set();
+    const int64_t* set_of = direction_set.template data_ptr<int64_t>();
+    const int64_t num_sets = static_cast<int64_t>(graph_->angle_sets().size());
+    const int64_t per = config_.directions_per_task;
+
+    // Direction blocks per angle set, then group chunks so that the request
+    // exposes about four task families per thread
+    struct DirectionRun {
+      size_t block;
+      size_t set;
+      std::vector<int64_t> directions;
+      std::vector<int64_t> rows;
+    };
+    std::vector<DirectionRun> runs;
+    int64_t offset = 0;
+    for (size_t k = 0; k < blocks.size(); k++) {
+      const auto& blk = blocks[k];
+      const int64_t ng = static_cast<int64_t>(blk.groups.size());
+      std::vector<std::vector<int64_t>> by_set(num_sets), rows(num_sets);
+      for (size_t i = 0; i < blk.directions.size(); i++) {
+        const int64_t d = blk.directions[i];
+        if (d < 0 || d >= omega_.size(0))
+          throw utils::runtime_error(
+            ctx("sweep_fibers"), "Direction out of range");
+        by_set[set_of[d]].push_back(d);
+        rows[set_of[d]].push_back(offset + static_cast<int64_t>(i) * ng);
+      }
+      for (int64_t a = 0; a < num_sets; a++) {
+        const int64_t n = static_cast<int64_t>(by_set[a].size());
+        const int64_t step = per > 0 ? per : std::max<int64_t>(n, 1);
+        for (int64_t i0 = 0; i0 < n; i0 += step) {
+          const int64_t i1 = std::min(i0 + step, n);
+          runs.push_back({k, static_cast<size_t>(a),
+            {by_set[a].begin() + i0, by_set[a].begin() + i1},
+            {rows[a].begin() + i0, rows[a].begin() + i1}});
+        }
+      }
+      for (int64_t g : blk.groups)
+        if (g < 0 || g >= num_groups_)
+          throw utils::runtime_error(ctx("sweep_fibers"), "Group out of range");
+      offset += static_cast<int64_t>(blk.directions.size()) * ng;
+    }
+    const int64_t threads = std::max<int64_t>(1, config_.num_threads);
+    const int64_t wanted =
+      (4 * threads + static_cast<int64_t>(runs.size()) - 1) /
+      std::max<int64_t>(1, runs.size());
+    fiber_tasks_.clear();
+    for (const auto& run : runs) {
+      const auto& groups = blocks[run.block].groups;
+      const int64_t ng = static_cast<int64_t>(groups.size());
+      const int64_t parts =
+        std::clamp<int64_t>(wanted, 1, std::max<int64_t>(ng, 1));
+      for (int64_t p = 0; p < parts; p++) {
+        const int64_t g0 = p * ng / parts, g1 = (p + 1) * ng / parts;
+        if (g0 == g1)
+          continue;
+        FiberTask task;
+        task.set = run.set;
+        task.directions = run.directions;
+        task.groups.assign(groups.begin() + g0, groups.begin() + g1);
+        for (int64_t row : run.rows)
+          task.slots.push_back(row + g0);
+        fiber_tasks_.push_back(std::move(task));
+      }
+    }
+
+    task::TaskGraph dag;
+    for (size_t t = 0; t < fiber_tasks_.size(); t++) {
+      const auto& chunks = schedules_[fiber_tasks_[t].set];
+      std::vector<task::Task*> tasks(chunks.size());
+      for (size_t c = 0; c < chunks.size(); c++) {
+        tasks[c] = dag.create_task(task::DeviceTarget::CPU_ASYNC,
+          "fiber_t" + std::to_string(t) + "_c" + std::to_string(c));
+        tasks[c]->set_payload([this, t, c, out]() {
+          run_fiber_chunk(t, c, out);
+          return task::TaskStatus::COMPLETED;
+        });
+      }
+      for (size_t c = 0; c < chunks.size(); c++)
+        for (int64_t u : chunks[c].upstream)
+          tasks[c]->add_dependency(tasks[u]);
+    }
+    const int previous_threads = at::get_num_threads();
+    if (config_.num_threads > 1)
+      at::set_num_threads(1);
+    auto t0 = std::chrono::steady_clock::now();
+    scheduler_->execute(dag, task::ExecutionMode::PUSH);
+    dag_nanoseconds_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - t0)
+                          .count();
+    at::set_num_threads(previous_threads);
+    num_fibers_ += offset;
+  }
+
+  /// @return Length of a fiber (dofs of every local unit).
+  int64_t fiber_length() const noexcept { return fiber_length_; }
+  /// @return Offset of each local unit's dofs in a fiber.
+  const std::vector<int64_t>& fiber_offsets() const noexcept
+  {
+    return fiber_offsets_;
+  }
+  /// @return GID of every local unit, in local (fiber) order.
+  std::vector<int64_t> local_gids() const
+  {
+    std::vector<int64_t> gids;
+    gids.reserve(patches_.size());
+    for (const auto& P : patches_)
+      gids.push_back(P.gid);
+    return gids;
+  }
+  /// @return Fibers swept by sweep_fibers() since setup.
+  int64_t num_fibers() const noexcept { return num_fibers_; }
 
   /// @brief One classic source-iteration step over every group set: every
   /// set sees the moments from before the step (Jacobi) and is swept once.
