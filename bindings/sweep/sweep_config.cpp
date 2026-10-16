@@ -102,7 +102,7 @@ void register_SweepConfig(py::module_& m)
       py::arg("transport") = TransportSolve::EXACT,
       py::arg("cross") = ttnte::cross::CrossConfig(),
       py::arg("local_tol") = 1e-11, py::arg("local_restart") = 20,
-      py::arg("local_max_iter") = 400)
+      py::arg("local_max_iter") = 100)
     .def_readwrite("local_solver", &SweepConfig::local_solver)
     .def_readwrite("store_angular_flux", &SweepConfig::store_angular_flux)
     .def_readwrite("cache_factorizations", &SweepConfig::cache_factorizations)

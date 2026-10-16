@@ -22,6 +22,8 @@ enum class LocalSolverType : uint8_t {
   /// SYLVESTER on affine patches; on curved ones GMRES on the matrix-free
   /// sum-factorized operator, preconditioned by the patch's Kronecker-sum
   /// parametric twin (see IterativeSolver). No factorization is stored.
+  /// Experimental: the averaged-metric preconditioner weakens as curved
+  /// patches grow, and unconverged solves fall back to LU.
   ITERATIVE,
 };
 
@@ -78,7 +80,7 @@ struct SweepConfig {
   /// back to LU).
   double local_tol = 1e-11;
   int64_t local_restart = 20;
-  int64_t local_max_iter = 400;
+  int64_t local_max_iter = 100;
   /// Factor every (direction, group) local system once and reuse the
   /// factors in later sweeps (the operators do not change between source
   /// iterations). Trades memory -- N_Omega * G * (N * 2kl+ku+1 or N^2)
