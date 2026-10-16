@@ -893,6 +893,18 @@ private:
   /// @brief Assign every node to a rank (the user partition, else METIS on
   /// the patch connectivity graph) and cull the mesh to this rank's blocks.
   /// @return The rank of every node.
+  /// TODO: This currently only takes into account space when in reality space
+  /// is not the whole story of how much work a rank does. Two things need to
+  /// be considered in the future:
+  /// (1): Vertex weights (load balance). The real gap. Patches can differ a
+  ///      lot in work, roughly DOFs × directions × groups. For example, the
+  ///      O-grid center patch versus the ring patches, or a locally refined
+  ///      patch. With unit weights, METIS can give one rank far more work than
+  ///      another. A weight of num_dofs per patch, or a measured per-patch
+  ///      sweep time, would fix this.
+  /// (2): Edge weights (communication). The number of face DOFs per interface,
+  ///      or face area per the identity above. Without them METIS treats a tiny
+  ///      face and a large face as equal cuts.
   std::vector<int> partition(const std::vector<PatchState>& nodes)
   {
     std::vector<int> rank(nodes.size(), comm_.rank());
