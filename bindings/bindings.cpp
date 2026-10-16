@@ -15,6 +15,7 @@ void init_driver(py::module_& m);
 void init_linalg(py::module_& m);
 void init_solvers(py::module_& m);
 void init_sweep(py::module_& m);
+void init_tensor(py::module_& m);
 void init_math(py::module_& m);
 
 void register_python_cleanup(py::module_& m);
@@ -68,6 +69,9 @@ PYBIND11_MODULE(ttnte_python, m)
   m_solvers.attr("AMEnEnrichmentMode") = m_linalg.attr("AMEnEnrichmentMode");
   m_solvers.attr("AMEnPreconditioner") = m_linalg.attr("AMEnPreconditioner");
   m_solvers.attr("AMEnNativeOptions") = m_linalg.attr("AMEnNativeOptions");
+
+  auto m_tensor = m.def_submodule("tensor");
+  init_tensor(m_tensor);
 
   auto m_sweep = m.def_submodule("sweep");
   init_sweep(m_sweep);
