@@ -17,6 +17,9 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+/// Largest patch whose mass Cholesky factor is also kept dense.
+constexpr int64_t DENSE_MASS_MAX = 3000;
+
 double elapsed(Clock::time_point t0)
 {
   return std::chrono::duration<double>(Clock::now() - t0).count();
@@ -175,6 +178,18 @@ LayoutCross::LayoutCross(CrossProblem problem, CrossConfig config)
       }
       mass_factors_.push_back(factor);
       mass_kd_.push_back(kd);
+      // Dense R = L^T from the lower band, when it fits (BLAS-3 batches)
+      const int64_t n = factor.size(0);
+      torch::Tensor dense;
+      if (n <= DENSE_MASS_MAX) {
+        dense = torch::zeros({n, n}, torch::kFloat64);
+        const double* f = factor.data_ptr<double>();
+        double* R = dense.data_ptr<double>();
+        for (int64_t j = 0; j < n; j++)
+          for (int64_t i = j; i <= std::min(n - 1, j + kd); i++)
+            R[j * n + i] = f[j * (kd + 1) + (i - j)];
+      }
+      mass_dense_.push_back(dense);
     }
     if (!mass_factors_.empty() &&
         mass_factors_.size() != P.patch_offsets.size()) {
@@ -276,21 +291,30 @@ void LayoutCross::ensure(std::vector<int64_t> pairs)
   }
   num_swept_ += count;
 
-  // Weight the new samples: sqrt(w_d) / sqrt(du_g) and R_P per patch
-  at::parallel_for(0, count, 1, [&](int64_t b0, int64_t b1) {
-    for (int64_t i = b0; i < b1; i++) {
-      double* f = fibers_.data() + (first + i) * Ns;
-      const int64_t p = new_pairs[i];
-      const double scale = angle_weight_[p / G] * energy_weight_[p % G];
-      for (size_t q = 0; q < mass_factors_.size(); q++)
-        linalg::banded::cholesky_apply_upper(
-          mass_factors_[q].data_ptr<double>(), mass_factors_[q].size(0),
-          mass_kd_[q], f + problem_.patch_offsets[q]);
-      if (scale != 1.0)
-        for (int64_t s = 0; s < Ns; s++)
-          f[s] *= scale;
+  // Weight the new samples: R_P per patch (BLAS-3 on the batch where the
+  // dense factor is held), then sqrt(w_d) / sqrt(du_g)
+  auto F =
+    torch::from_blob(fibers_.data() + first * Ns, {count, Ns}, torch::kFloat64);
+  for (size_t q = 0; q < mass_factors_.size(); q++) {
+    const int64_t off = problem_.patch_offsets[q];
+    const int64_t n = mass_factors_[q].size(0);
+    if (mass_dense_[q].defined()) {
+      auto block = F.narrow(1, off, n);
+      block.copy_(block.mm(mass_dense_[q].t()));
+      continue;
     }
-  });
+    at::parallel_for(0, count, 1, [&](int64_t b0, int64_t b1) {
+      for (int64_t i = b0; i < b1; i++)
+        linalg::banded::cholesky_apply_upper(
+          mass_factors_[q].data_ptr<double>(), n, mass_kd_[q],
+          fibers_.data() + (first + i) * Ns + off);
+    });
+  }
+  std::vector<double> scale(count);
+  for (int64_t i = 0; i < count; i++)
+    scale[i] =
+      angle_weight_[new_pairs[i] / G] * energy_weight_[new_pairs[i] % G];
+  F.mul_(torch::from_blob(scale.data(), {count, 1}, torch::kFloat64));
 }
 
 // =================================================================
@@ -998,13 +1022,23 @@ void LayoutCross::unweight()
       auto flat = moved.reshape({-1, size_[S]});
       double* data = flat.data_ptr<double>();
       const int64_t rows = flat.size(0);
-      at::parallel_for(0, rows, 1, [&](int64_t r0, int64_t r1) {
-        for (int64_t r = r0; r < r1; r++)
-          for (size_t p = 0; p < mass_factors_.size(); p++)
+      for (size_t p = 0; p < mass_factors_.size(); p++) {
+        const int64_t off = problem_.patch_offsets[p];
+        const int64_t n = mass_factors_[p].size(0);
+        if (mass_dense_[p].defined()) {
+          auto block = flat.narrow(1, off, n);
+          block.copy_(torch::linalg_solve_triangular(
+            mass_dense_[p], block.t(), /*upper=*/true)
+              .t());
+          continue;
+        }
+        at::parallel_for(0, rows, 1, [&](int64_t r0, int64_t r1) {
+          for (int64_t r = r0; r < r1; r++)
             linalg::banded::cholesky_solve_upper(
-              mass_factors_[p].data_ptr<double>(), mass_factors_[p].size(0),
-              mass_kd_[p], data + r * size_[S] + problem_.patch_offsets[p]);
-      });
+              mass_factors_[p].data_ptr<double>(), n, mass_kd_[p],
+              data + r * size_[S] + off);
+        });
+      }
       t = moved.movedim(-1, as);
     }
     cores_[k] =

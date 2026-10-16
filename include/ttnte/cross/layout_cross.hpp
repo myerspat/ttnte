@@ -110,6 +110,9 @@ private:
   std::vector<double> energy_weight_;
   std::vector<torch::Tensor> mass_factors_;
   std::vector<int64_t> mass_kd_;
+  /// The same factors as dense upper triangular R_P for patches small enough
+  /// to apply them to batches of fibers with BLAS-3 (undefined otherwise).
+  std::vector<torch::Tensor> mass_dense_;
   /// Separable quadrature weights w_d = w_mu w_gamma.
   torch::Tensor polar_weight_;
   torch::Tensor azimuthal_weight_;
