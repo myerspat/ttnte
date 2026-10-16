@@ -7,6 +7,7 @@ set(LINALG_SRC_REL
     tt_engine.cpp
     matrix_ops.cpp
     banded_lu.cpp
+    banded_cholesky.cpp
     dense_lu.cpp
     krylov.cpp
     tt_ops.cpp

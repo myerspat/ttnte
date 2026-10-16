@@ -9,6 +9,7 @@
 #include "ttnte/parallel/parallel_context.hpp"
 #include "ttnte/physics/boundary_types.hpp"
 #include "ttnte/sweep/angular_moments.hpp"
+#include "ttnte/sweep/fiber_block.hpp"
 #include "ttnte/sweep/patch_discretization.hpp"
 #include "ttnte/sweep/sweep_config.hpp"
 #include "ttnte/sweep/sweep_graph.hpp"
@@ -73,12 +74,7 @@ public:
   /// Called after every `frequency`-th outer iteration of a solve.
   using Callback = std::function<void(const SweepDriver&)>;
 
-  /// @brief A block of fibers to sweep: every pair of `directions` x
-  /// `groups`, each returning the angular flux over all local dofs.
-  struct FiberBlock {
-    std::vector<int64_t> directions;
-    std::vector<int64_t> groups;
-  };
+  using FiberBlock = sweep::FiberBlock;
 
 private:
   // =================================================================

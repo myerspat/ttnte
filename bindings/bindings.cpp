@@ -16,6 +16,7 @@ void init_linalg(py::module_& m);
 void init_solvers(py::module_& m);
 void init_sweep(py::module_& m);
 void init_tensor(py::module_& m);
+void init_cross(py::module_& m);
 void init_math(py::module_& m);
 
 void register_python_cleanup(py::module_& m);
@@ -75,6 +76,9 @@ PYBIND11_MODULE(ttnte_python, m)
 
   auto m_sweep = m.def_submodule("sweep");
   init_sweep(m_sweep);
+
+  auto m_cross = m.def_submodule("cross");
+  init_cross(m_cross);
 
   auto m_math = m.def_submodule("math");
   init_math(m_math);
