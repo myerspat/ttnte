@@ -134,7 +134,7 @@ def test_fixed_source_fdg_cyclic_cut(num_threads):
     qset = _qset(4)
     kw = dict(local_solver=LocalSolverType.DENSE_LU, num_threads=num_threads)
     ref, _, serial = _solve(_quarter_circle(fills, 2, True), xs, qset, True, **kw)
-    assert serial.graph.num_weight_lagged + serial.graph.num_dfs_lagged > 0
+    assert serial.graph.num_weight_lagged + serial.graph.num_cycle_lagged > 0
     mesh = _quarter_circle(fills, 2, True)
     phi, _, _ = _solve(mesh, xs, qset, False, partition=_round_robin(mesh), **kw)
     assert _rel_diff(_gather(phi), ref) < 1e-10

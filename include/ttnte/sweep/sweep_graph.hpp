@@ -56,12 +56,13 @@ struct SweepChunk {
 /// broken and directions grouped into angle sets.
 ///
 /// Curved IGA faces make the upwind graph cyclic for some directions
-/// (Owens et al., JCP 315, 2016). Cycles are broken in two steps:
-///  1. For every face with flow in both directions, keep the edge with the
-///     larger upwind integral w_ij = int (Omega . n)_+ dS and lag the other.
-///     This equals ordering by the face-averaged normal (Owens eq. 48).
-///  2. Any cycle that remains is broken by lagging the back edges of a
-///     depth-first search.
+/// (Owens et al., JCP 315, 2016). Each edge i -> j carries its upwind
+/// integral w_ij = int (Omega . n)_+ dS. Cycles are broken greedily by
+/// weight, a maximum-weight acyclic subgraph heuristic: within each strongly
+/// connected component, edges are kept heaviest first unless they close a
+/// cycle with the edges already kept, in which case they are lagged. A face
+/// with flow both ways (a two-cycle) thus keeps its larger edge (Owens'
+/// rule, eq. 48), and a longer cycle lags its lightest edges.
 /// Each patch is solved exactly once per direction per sweep; lagged edges
 /// read last iteration's face trace (Owens' "solve once" variant). Directions
 /// whose final edge states are identical share a dependency DAG and are
@@ -87,12 +88,12 @@ protected:
   std::vector<AngleSet> angle_sets_;
   /// (N_Omega) angle set of each direction.
   torch::Tensor direction_set_;
-  /// Number of edges lagged by the larger-weight rule (summed over
+  /// Number of lagged edges on faces with flow both ways (summed over
   /// directions).
   int64_t num_weight_lagged_ = 0;
-  /// Number of edges lagged by the depth-first search (summed over
-  /// directions).
-  int64_t num_dfs_lagged_ = 0;
+  /// Number of other lagged edges, which break cycles through several
+  /// faces (summed over directions).
+  int64_t num_cycle_lagged_ = 0;
 
   // =================================================================
   // Protected constructors
@@ -143,7 +144,7 @@ public:
   }
   const torch::Tensor& direction_set() const noexcept { return direction_set_; }
   int64_t num_weight_lagged() const noexcept { return num_weight_lagged_; }
-  int64_t num_dfs_lagged() const noexcept { return num_dfs_lagged_; }
+  int64_t num_cycle_lagged() const noexcept { return num_cycle_lagged_; }
 };
 
 } // namespace ttnte::sweep

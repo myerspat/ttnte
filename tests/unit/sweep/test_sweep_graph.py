@@ -31,7 +31,7 @@ def test_chain_has_no_lag():
         3, [_itf(0, 1, [1.0, 0.0], [0.0, 1.0]), _itf(1, 2, [1.0, 0.0], [0.0, 1.0])], 2
     )
     assert len(g.angle_sets) == 2
-    assert g.num_weight_lagged == 0 and g.num_dfs_lagged == 0
+    assert g.num_weight_lagged == 0 and g.num_cycle_lagged == 0
     s0 = int(g.direction_set[0])
     assert (
         g.upstream(s0, 0) == []
@@ -49,17 +49,66 @@ def test_two_way_face_keeps_larger_weight():
     assert g.num_weight_lagged == 1 and _is_acyclic(g, 0)
 
 
-def test_three_cycle_is_broken_by_dfs():
-    # 0 -> 1 -> 2 -> 0 with one-way faces: only the DFS can break it
+def test_three_cycle_lags_lightest_edge():
+    # 0 -> 1 -> 2 -> 0 with one-way faces: the lightest edge, 1 -> 2, is lagged
     g = SweepGraph(
         3,
-        [_itf(0, 1, [1.0], [0.0]), _itf(1, 2, [1.0], [0.0]), _itf(0, 2, [0.0], [1.0])],
+        [_itf(0, 1, [1.0], [0.0]), _itf(1, 2, [0.2], [0.0]), _itf(0, 2, [0.0], [0.5])],
         1,
     )
-    assert g.num_dfs_lagged == 1
+    assert g.num_cycle_lagged == 1 and g.num_weight_lagged == 0
     assert _is_acyclic(g, 0)
-    states = list(g.angle_sets[0].forward) + list(g.angle_sets[0].backward)
-    assert states.count(EdgeState.LAGGED) == 1
+    s = g.angle_sets[0]
+    assert s.forward[1] == EdgeState.LAGGED
+    assert (
+        s.forward[0] == EdgeState.DEPENDENCY and s.backward[2] == EdgeState.DEPENDENCY
+    )
+    assert g.topological_order(0) == [2, 0, 1]
+
+
+def test_cycle_lag_follows_weight_not_node_order():
+    """A -> B light, B -> C and C -> A heavy: sweep B -> C -> A and lag A -> B, even
+    though a search from A would reach B first and lag C -> A."""
+    A, B, C = 0, 1, 2
+    g = SweepGraph(
+        3,
+        [_itf(A, B, [0.1], [0.0]), _itf(B, C, [0.7], [0.0]), _itf(C, A, [0.9], [0.0])],
+        1,
+    )
+    s = g.angle_sets[0]
+    assert s.forward[0] == EdgeState.LAGGED
+    assert s.forward[1] == EdgeState.DEPENDENCY and s.forward[2] == EdgeState.DEPENDENCY
+    assert g.topological_order(0) == [B, C, A]
+
+
+def test_two_way_face_inside_larger_cycle():
+    """A two-way face on a three-cycle 0 -> 1 -> 2 -> 0 (weights 1.0, 0.8, 0.9): the
+    face keeps 0 -> 1 over 1 -> 0 (0.5), and the cycle lags its lightest edge, 1 ->
+    2."""
+    g = SweepGraph(
+        3,
+        [_itf(0, 1, [1.0], [0.5]), _itf(1, 2, [0.8], [0.0]), _itf(2, 0, [0.9], [0.0])],
+        1,
+    )
+    s = g.angle_sets[0]
+    assert s.forward[0] == EdgeState.DEPENDENCY and s.backward[0] == EdgeState.LAGGED
+    assert s.forward[2] == EdgeState.DEPENDENCY and s.forward[1] == EdgeState.LAGGED
+    assert g.num_weight_lagged == 1 and g.num_cycle_lagged == 1
+    assert _is_acyclic(g, 0)
+
+
+def test_lagging_is_independent_of_interface_order():
+    itfs = [
+        _itf(0, 1, [0.1], [0.0]),
+        _itf(1, 2, [0.7], [0.0]),
+        _itf(2, 0, [0.9], [0.0]),
+    ]
+    lagged = []
+    for perm in ([0, 1, 2], [2, 1, 0], [1, 2, 0]):
+        g = SweepGraph(3, [itfs[i] for i in perm], 1)
+        s = g.angle_sets[0]
+        lagged.append([perm[k] for k in range(3) if s.forward[k] == EdgeState.LAGGED])
+    assert lagged == [[0], [0], [0]]
 
 
 def test_identical_directions_share_an_angle_set():

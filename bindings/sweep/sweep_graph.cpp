@@ -59,5 +59,5 @@ void register_SweepGraph(py::module_& m)
     .def_property_readonly("angle_sets", &SweepGraph::angle_sets)
     .def_property_readonly("direction_set", &SweepGraph::direction_set)
     .def_property_readonly("num_weight_lagged", &SweepGraph::num_weight_lagged)
-    .def_property_readonly("num_dfs_lagged", &SweepGraph::num_dfs_lagged);
+    .def_property_readonly("num_cycle_lagged", &SweepGraph::num_cycle_lagged);
 }
