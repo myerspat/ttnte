@@ -146,6 +146,36 @@ def octant_sphere(num_groups, reflective=False, fissile=False, split=True):
     return _finish(mesh, 3, reflective), xs
 
 
+def boxes(num_dim, num_groups, reflective=False, fissile=False):
+    """Axis-aligned rectangular patches (Kronecker-sum operators): a fueled corner box
+    and moderator boxes, 2 x 2 in 2-D and 2 x 1 x 2 in 3-D."""
+    if num_dim == 1:
+        return slab(num_groups, reflective, fissile)
+    import numpy as np
+
+    fills, xs = multigroup_xs(num_groups, fissile)
+    mesh = IGAMesh(mpi_context)
+    counts = [2, 2] if num_dim == 2 else [2, 1, 2]
+    sizes = [1.0, 1.5, 1.2][:num_dim]
+    for index in np.ndindex(*counts):
+        lo = [i * h for i, h in zip(index, sizes)]
+        hi = [(i + 1) * h for i, h in zip(index, sizes)]
+        corners = np.zeros((2,) * num_dim + (3,))
+        for c in np.ndindex(*(2,) * num_dim):
+            corners[c][:num_dim] = [hi[k] if c[k] else lo[k] for k in range(num_dim)]
+        shape = cad.bilinear(corners) if num_dim == 2 else cad.trilinear(corners)
+        patch = Patch.from_igakit(
+            cad.refine(shape, 3, 2),
+            device=CPU,
+            dtype=torch.float64,
+            fill=fills[0 if sum(index) == 0 else 1].label,
+        )
+        if sum(index) == 0 and not fissile:
+            patch.source = _source(num_groups)
+        mesh.add_block(patch)
+    return _finish(mesh, num_dim, reflective), xs
+
+
 BUILDERS = {1: slab, 2: quarter_circle, 3: octant_sphere}
 
 

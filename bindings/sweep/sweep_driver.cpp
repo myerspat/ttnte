@@ -73,6 +73,8 @@ static void register_SweepDriver_impl(
     .def_property_readonly("fiber_offsets", &SweepDriver::fiber_offsets)
     .def_property_readonly("num_fibers", &SweepDriver::num_fibers)
     .def_property_readonly("local_gids", &SweepDriver::local_gids)
+    .def_property_readonly(
+      "num_kronecker_units", &SweepDriver::num_kronecker_units)
     .def("get_cross", &SweepDriver::get_cross, py::arg("group_set") = 0,
       "The LayoutCross of a group set (transport = CROSS)")
     .def("get_patch_angular_flux_tt", &SweepDriver::get_patch_angular_flux_tt,
@@ -84,6 +86,9 @@ static void register_SweepDriver_impl(
     .def_property_readonly("cross_fibers", &SweepDriver::get_cross_fibers)
     .def_property_readonly("cross_max_ranks", &SweepDriver::get_cross_max_ranks)
     .def_property_readonly("cross_errors", &SweepDriver::get_cross_errors)
+    .def_property_readonly("cross_seconds", &SweepDriver::get_cross_seconds)
+    .def_property_readonly(
+      "cross_sweep_seconds", &SweepDriver::get_cross_sweep_seconds)
     .def("solve_fixed_source", &SweepDriver::solve_fixed_source,
       "Solve a fixed-source problem with unaccelerated source iteration. "
       "Returns a TransportSolution holding the angular flux "

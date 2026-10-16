@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ttnte/sweep/kronecker_solver.hpp"
 #include "ttnte/sweep/patch_discretization.hpp"
 #include "ttnte/sweep/sweep_config.hpp"
 #include <array>
@@ -39,6 +40,9 @@ struct FaceInflow {
 /// @brief Raw views of everything one unit's sweep reads and writes.
 struct UnitSweep {
   const PatchDiscretization* disc = nullptr;
+  /// Kronecker-sum solver of the unit (affine patches with SYLVESTER), or
+  /// nullptr for the LU path.
+  const KroneckerSolver* kronecker = nullptr;
   /// (G) total cross section.
   const double* sigma_t = nullptr;
   /// (num_moments, G, N) scattering + external source moments.
@@ -90,6 +94,7 @@ struct SweepBlock {
 
 /// @brief Scratch memory reused across units and tasks (one per worker).
 struct SweepWorkspace {
+  KroneckerSolver::Workspace kronecker;
   std::vector<double> values;
   std::vector<double> matrix;
   std::vector<double> rhs;

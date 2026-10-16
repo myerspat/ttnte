@@ -12,6 +12,10 @@ void register_SweepConfig(py::module_& m)
       "Banded LU with partial pivoting (patch-discontinuous patches)")
     .value("DENSE_LU", LocalSolverType::DENSE_LU,
       "Dense LU (single-element, fully discontinuous patches)")
+    .value("SYLVESTER", LocalSolverType::SYLVESTER,
+      "Kronecker-sum solver on axis-aligned affine patches (one Schur "
+      "factorization per patch for all directions and groups); banded LU "
+      "elsewhere")
     .export_values();
 
   py::enum_<TaskGranularity>(m, "TaskGranularity")

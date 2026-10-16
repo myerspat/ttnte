@@ -15,6 +15,10 @@ enum class LocalSolverType : uint8_t {
   /// Batched dense LU -- the natural choice for single-element (FDG) patches
   /// with (p + 1)^d unknowns.
   DENSE_LU,
+  /// Kronecker-sum solver (see KroneckerSolver) on axis-aligned affine
+  /// patches, sharing one Schur factorization per patch among all directions
+  /// and groups; other patches fall back to BANDED_LU.
+  SYLVESTER,
 };
 
 /// @brief How sweep units are grouped into scheduler tasks.

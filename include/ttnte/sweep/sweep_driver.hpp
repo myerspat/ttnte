@@ -143,6 +143,8 @@ private:
     torch::Tensor pass_moments;
     /// (N_Omega, G, N) angular flux, if stored.
     torch::Tensor psi;
+    /// Kronecker-sum solver (SYLVESTER on an affine patch), or null.
+    KroneckerSolver::Ptr kronecker;
     /// Factorization cache (see SweepConfig::cache_factorizations).
     torch::Tensor factors;
     torch::Tensor factor_pivots;
@@ -278,6 +280,9 @@ private:
   std::vector<int64_t> cross_fibers_;
   std::vector<int64_t> cross_max_ranks_;
   std::vector<double> cross_errors_;
+  /// Wall time of the crosses and of their fiber sweeps (last solve).
+  double cross_seconds_ = 0.0;
+  double cross_sweep_seconds_ = 0.0;
 
   /// Optional per-outer-iteration callback and its frequency.
   Callback callback_;
@@ -487,6 +492,7 @@ private:
 
       UnitSweep unit;
       unit.disc = P.disc.get();
+      unit.kronecker = P.kronecker.get();
       unit.sigma_t = P.sigma_t.template data_ptr<double>();
       unit.source_moments = P.source_moments.template data_ptr<double>();
       for (size_t f = 0; f < P.links.size(); f++) {
@@ -545,6 +551,7 @@ private:
       auto& P = patches_[local];
       UnitSweep unit;
       unit.disc = P.disc.get();
+      unit.kronecker = P.kronecker.get();
       unit.sigma_t = P.sigma_t.template data_ptr<double>();
       unit.source_moments = P.source_moments.template data_ptr<double>();
       for (size_t f = 0; f < P.links.size(); f++) {
@@ -728,6 +735,8 @@ private:
     cross_fibers_.push_back(cr.num_fibers());
     cross_max_ranks_.push_back(*std::max_element(ranks.begin(), ranks.end()));
     cross_errors_.push_back(cr.holdout_error());
+    cross_seconds_ += cr.seconds();
+    cross_sweep_seconds_ += cr.sweep_seconds();
     group_set_sweeps_++;
     equivalent_sweeps_ += static_cast<double>(cr.num_fibers()) /
                           static_cast<double>(omega_.size(0) * G);
@@ -1134,6 +1143,8 @@ private:
     cross_fibers_.clear();
     cross_max_ranks_.clear();
     cross_errors_.clear();
+    cross_seconds_ = 0.0;
+    cross_sweep_seconds_ = 0.0;
     for (auto& P : patches_) {
       P.moments.zero_();
       if (unit_scalar_flux)
@@ -1905,8 +1916,11 @@ public:
       P.fission_source = P.fission.defined()
                            ? torch::zeros({num_groups_, N}, torch::kFloat64)
                            : torch::Tensor();
-      if (config_.cache_factorizations) {
-        const bool banded = config_.local_solver == LocalSolverType::BANDED_LU;
+      P.kronecker = config_.local_solver == LocalSolverType::SYLVESTER
+                      ? KroneckerSolver::try_create(*P.disc)
+                      : nullptr;
+      if (config_.cache_factorizations && !P.kronecker) {
+        const bool banded = config_.local_solver != LocalSolverType::DENSE_LU;
         const int64_t size = banded ? N * P.disc->ldab() : N * N;
         P.factors =
           torch::empty({num_directions, num_groups_, size}, torch::kFloat64);
@@ -2085,6 +2099,11 @@ public:
   const std::vector<int64_t>& get_cross_max_ranks() const noexcept
   {
     return cross_max_ranks_;
+  }
+  double get_cross_seconds() const noexcept { return cross_seconds_; }
+  double get_cross_sweep_seconds() const noexcept
+  {
+    return cross_sweep_seconds_;
   }
   const std::vector<double>& get_cross_errors() const noexcept
   {
@@ -2363,6 +2382,12 @@ public:
         bytes += P.factors.numel() * 8 + P.factor_pivots.numel() * 8;
     }
     return bytes;
+  }
+  /// @return Number of local units solved by the Kronecker-sum solver.
+  int64_t num_kronecker_units() const noexcept
+  {
+    return std::count_if(patches_.begin(), patches_.end(),
+      [](const PatchState& P) { return P.kronecker != nullptr; });
   }
   /// @return Chunk id of each local unit (in local order).
   const std::vector<int64_t>& get_chunks() const noexcept { return chunk_of_; }

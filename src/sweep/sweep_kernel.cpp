@@ -39,7 +39,8 @@ void sweep_unit(
   const int64_t G = block.num_groups;
   const int64_t num_faces = static_cast<int64_t>(v.faces.size());
   const int64_t Qmax = v.max_face_points;
-  const bool banded = block.solver == LocalSolverType::BANDED_LU;
+  const bool banded = block.solver != LocalSolverType::DENSE_LU;
+  const bool kronecker = unit.kronecker != nullptr;
   const int64_t matrix_size = banded ? N * v.ldab : N * N;
   const int64_t* index = banded ? v.band_index : v.dense_index;
 
@@ -58,7 +59,7 @@ void sweep_unit(
   for (int64_t bd = 0; bd < block.num_block_directions; bd++) {
     const int64_t d = block.directions[bd];
     const double* omega = block.omega + d * ndim;
-    const bool cached = unit.factors && unit.factors_ready;
+    const bool cached = kronecker || (unit.factors && unit.factors_ready);
 
     // Streaming + outflow pair values (group independent), not needed when
     // the factors are cached
@@ -99,7 +100,7 @@ void sweep_unit(
       // Operator: assembled and factored here, or read from the cache
       double* L = A;
       int64_t* piv = ipiv;
-      if (unit.factors) {
+      if (unit.factors && !kronecker) {
         L = unit.factors + (d * G + g) * matrix_size;
         piv = unit.factor_pivots + (d * G + g) * N;
       }
@@ -149,7 +150,9 @@ void sweep_unit(
       }
 
       // Solve
-      if (banded) {
+      if (kronecker) {
+        unit.kronecker->solve(omega, unit.sigma_t[g], b, ws.kronecker);
+      } else if (banded) {
         linalg::banded::lu_solve(L, v.ldab, N, v.kl, v.ku, piv, b);
       } else {
         linalg::dense::lu_solve(L, N, piv, b);
