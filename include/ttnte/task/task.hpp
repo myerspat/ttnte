@@ -150,6 +150,11 @@ public:
   const Label& get_label() const noexcept { return label_; }
   /// @return The target device for this task.
   const DeviceTarget& get_target() const noexcept { return target_; }
+  /// @return The tasks this task waits for.
+  const std::vector<Task*>& get_dependencies() const noexcept
+  {
+    return dependencies_;
+  }
   /// @return The status of this task.
   TaskStatus get_status() const noexcept
   {

@@ -1066,6 +1066,77 @@ void Patch::knot_insert_(
   *this = knot_insert(new_knots, reps);
 }
 
+std::vector<Patch::Ptr> Patch::split_elements() const
+{
+  is_finalized_or_error("split_elements");
+
+  const auto& source = get_fixed_source();
+  if (source.has_value() && source->projected_isotropic_source.has_value()) {
+    throw utils::runtime_error(*this, error_context("split_elements"),
+      "A projected fixed source is tied to this patch's basis and cannot be "
+      "carried over to its elements");
+  }
+
+  const int64_t ndim = get_ndim();
+  const auto options = ctrlptsw_.options();
+
+  // Raise every interior knot to multiplicity p + 1
+  c10::SmallVector<torch::Tensor, 3> new_knots;
+  std::vector<int64_t> num_elements;
+  std::vector<int64_t> degrees;
+  bool needs_insert = false;
+  for (int64_t d = 0; d < ndim; d++) {
+    const auto& b = basis_[d];
+    const int64_t p = b.get_degree();
+    auto [unique, mult] = b.get_unique_knots_and_multiplicity();
+    auto interior = unique.slice(0, 1, -1).to(options);
+    auto reps = (p + 1 - mult.slice(0, 1, -1)).clamp_min(0).to(torch::kLong);
+    new_knots.push_back(
+      torch::repeat_interleave(interior, reps.to(interior.device())));
+    needs_insert |= new_knots.back().numel() > 0;
+    num_elements.push_back(unique.size(0) - 1);
+    degrees.push_back(p);
+  }
+  Patch refined = *this;
+  if (needs_insert) {
+    refined = refined.knot_insert(new_knots, 1);
+  }
+  const auto& Pw = refined.get_ctrlptsw();
+
+  // One Bernstein basis per dimension
+  Basis element_basis;
+  for (int64_t d = 0; d < ndim; d++) {
+    const int64_t p = degrees[d];
+    auto knots = torch::cat(
+      {torch::zeros({p + 1}, options), torch::ones({p + 1}, options)});
+    element_basis.push_back(BSplineBasis(knots, p));
+  }
+
+  int64_t total = 1;
+  for (auto e : num_elements)
+    total *= e;
+  std::vector<Ptr> elements;
+  elements.reserve(total);
+  for (int64_t flat = 0; flat < total; flat++) {
+    torch::Tensor block = Pw;
+    int64_t rem = flat;
+    for (int64_t d = ndim - 1; d >= 0; d--) {
+      const int64_t e = rem % num_elements[d];
+      rem /= num_elements[d];
+      block = block.narrow(d, e * (degrees[d] + 1), degrees[d] + 1);
+    }
+    auto element =
+      Patch::create(block.contiguous().clone(), element_basis, is_rational_);
+    element->set_fill_id(get_fill_id());
+    if (source.has_value()) {
+      element->set_source(*source);
+    }
+    element->finalize();
+    elements.push_back(std::move(element));
+  }
+  return elements;
+}
+
 // =================================================================
 // Public Getters / Setters
 const torch::Tensor& Patch::get_ctrlptsw() const

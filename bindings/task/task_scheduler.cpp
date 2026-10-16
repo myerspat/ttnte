@@ -7,6 +7,13 @@ void register_TaskScheduler(py::module_& m)
 {
   using namespace ttnte::task;
 
+  py::enum_<ExecutionMode>(m, "ExecutionMode")
+    .value("POLL", ExecutionMode::POLL,
+      "Main-thread scan of every task (supports every DeviceTarget)")
+    .value("PUSH", ExecutionMode::PUSH,
+      "Dependency counters released by the workers (CPU_ASYNC tasks only)")
+    .export_values();
+
   py::class_<TaskScheduler>(m, "TaskScheduler")
     // =================================================================
     // Public constructor
@@ -16,6 +23,7 @@ void register_TaskScheduler(py::module_& m)
     // =================================================================
     // Public methods
     .def("execute", &TaskScheduler::execute, py::arg("graph"),
+      py::arg("mode") = ExecutionMode::POLL,
       py::call_guard<py::gil_scoped_release>())
 
     .def("get_label", &TaskScheduler::get_label,

@@ -215,6 +215,17 @@ public:
   void knot_insert_(const c10::SmallVector<torch::Tensor, 3>& new_knots,
     const int64_t& reps = 1);
 
+  /// @brief Split the patch into single-element (Bezier) patches, one per
+  /// knot span, by raising every interior knot to multiplicity p + 1. The
+  /// geometry is unchanged; each element patch carries a [0, 1] Bernstein
+  /// basis of the same degree, and inherits this patch's fill and fixed
+  /// source. Used to build fully discontinuous (FDG) meshes from patch
+  /// discontinuous (PDG) ones.
+  /// @return The element patches in C order over the knot spans.
+  /// @throws ttnte::utils::runtime_error If a projected (basis-dependent)
+  /// fixed source is attached, since it cannot be carried over.
+  std::vector<Ptr> split_elements() const;
+
   // // MPI communication
   // template<typename T>
   // void inline pack(

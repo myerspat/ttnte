@@ -124,6 +124,8 @@ public:
   // Factory methods
   /// @return The base communicator for this MPI rank.
   static Communicator world();
+  /// @return A communicator holding only this MPI rank (MPI_COMM_SELF).
+  static Communicator self();
   /// @return A duplicate of the base communicator.
   Communicator duplicate() const;
 
@@ -149,6 +151,8 @@ public:
   // Public methods
   // Memory management methods
   bool is_world_comm() const;
+  /// @return The largest valid message tag (MPI_TAG_UB, at least 32767).
+  int tag_upper_bound() const;
 
   template<typename BufferType>
   void allgather(const BufferType* send_buffer, int send_count,

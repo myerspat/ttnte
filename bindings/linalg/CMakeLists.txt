@@ -6,6 +6,9 @@ set(LINALG_SRC_REL
     state.cpp
     tt_engine.cpp
     matrix_ops.cpp
+    banded_lu.cpp
+    dense_lu.cpp
+    krylov.cpp
     tt_ops.cpp
     amen/qless_tsqr.cpp
     amen/rank1_preconditioner.cpp
@@ -32,6 +35,9 @@ set(LINALG_BINDINGS_REL
     source.cpp
     linear_system.cpp
     matrix_ops.cpp
+    banded_lu.cpp
+    dense_lu.cpp
+    krylov.cpp
     ops.cpp
     tt_ops.cpp)
 
