@@ -101,6 +101,17 @@ void select_block_grams(const torch::Tensor& grams,
     total += trace[u];
   total = std::max(total, 1e-300);
 
+  // With at most r candidate rows the chosen rows can never be r well-
+  // conditioned ones: the loop below would add every block, one
+  // eigendecomposition at a time
+  int64_t all_rows = 0;
+  for (int64_t u = 0; u < nk; u++)
+    all_rows += sizes[u];
+  if (all_rows <= r) {
+    std::fill(picked.begin(), picked.end(), 1);
+    return;
+  }
+
   auto gram = torch::zeros({r, r}, torch::kFloat64);
   int64_t num_rows = 0;
   for (int64_t u = 0; u < nk; u++) {
@@ -148,6 +159,82 @@ void select_block_grams(const torch::Tensor& grams,
     picked[pick] = 1;
     num_rows += sizes[pick];
     gram += grams[pick];
+  }
+}
+
+void select_single_rows(const torch::Tensor& rows,
+  const std::vector<double>& cost, std::vector<uint8_t>& picked, double cond,
+  double near)
+{
+  auto B = rows.to(torch::kFloat64).contiguous();
+  const int64_t m = B.size(0), r = B.size(1);
+  if (m <= r) {
+    std::fill(picked.begin(), picked.end(), 1);
+    return;
+  }
+  auto norms_t = B.square().sum(1).contiguous();
+  std::vector<double> resid(
+    norms_t.data_ptr<double>(), norms_t.data_ptr<double>() + m);
+  double total = 0.0;
+  for (double x : resid)
+    total += x;
+  total = std::max(total, 1e-300);
+  auto Q = torch::empty({r, r}, torch::kFloat64);
+  int64_t q = 0, num_rows = 0;
+
+  // Extend the basis by row i (twice orthogonalized) and update residuals
+  auto add = [&](int64_t i) {
+    num_rows++;
+    if (q >= r)
+      return;
+    auto v = B[i].clone();
+    for (int pass = 0; pass < 2 && q > 0; pass++) {
+      auto Qk = Q.narrow(1, 0, q);
+      v -= Qk.mv(Qk.t().mv(v));
+    }
+    const double nv = v.norm().item<double>();
+    if (nv <= 1e-12 * std::sqrt(std::max(norms_t[i].item<double>(), 1e-300)))
+      return;
+    v /= nv;
+    Q.select(1, q).copy_(v);
+    q++;
+    auto c = B.mv(v).contiguous();
+    const double* cp = c.data_ptr<double>();
+    for (int64_t j = 0; j < m; j++)
+      resid[j] = std::max(resid[j] - cp[j] * cp[j], 0.0);
+  };
+  for (int64_t i = 0; i < m; i++)
+    if (picked[i])
+      add(i);
+
+  while (true) {
+    if (num_rows >= r) {
+      std::vector<int64_t> chosen;
+      for (int64_t i = 0; i < m; i++)
+        if (picked[i])
+          chosen.push_back(i);
+      auto Bc = B.index_select(0, torch::tensor(chosen, torch::kInt64));
+      auto ev = torch::linalg_eigvalsh(Bc.t().mm(Bc)).clamp_min(0.0).sqrt();
+      if (ev[0].item<double>() >= cond * ev[r - 1].item<double>())
+        break;
+    }
+    double best = -1.0;
+    for (int64_t i = 0; i < m; i++)
+      if (!picked[i])
+        best = std::max(best, resid[i] / total);
+    if (best <= 1e-28)
+      break;
+    // Among rows within `near` of the best, the cheapest, then the best
+    int64_t pick = -1;
+    for (int64_t i = 0; i < m; i++) {
+      if (picked[i] || resid[i] / total < near * best)
+        continue;
+      if (pick < 0 || cost[i] < cost[pick] ||
+          (cost[i] == cost[pick] && resid[i] > resid[pick]))
+        pick = i;
+    }
+    picked[pick] = 1;
+    add(pick);
   }
 }
 

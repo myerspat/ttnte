@@ -630,8 +630,15 @@ std::pair<std::vector<int64_t>, torch::Tensor> LayoutCross::select_candidates(
   torch::Tensor T;
   if (single)
     T = torch::einsum("aq,jqr->ajr", {Sv.index_select(0, A_order), K});
-  auto grams = torch::empty({nA, nJ, r, r}, torch::kFloat64);
-  if (single) {
+  bool single_rows = single;
+  for (const auto& g : core_groups)
+    single_rows = single_rows && g.members.size() == 1;
+  // Block Grams, unless every block is one row (selected on the rows)
+  torch::Tensor grams;
+  if (!single_rows)
+    grams = torch::empty({nA, nJ, r, r}, torch::kFloat64);
+  if (single_rows) {
+  } else if (single) {
     for (int64_t J = 0; J < nJ; J++) {
       auto TJ = T.index_select(1, J_index[J]); // (nA, |J|, r)
       grams.select(1, J).copy_(torch::bmm(TJ.transpose(1, 2), TJ));
@@ -648,7 +655,8 @@ std::pair<std::vector<int64_t>, torch::Tensor> LayoutCross::select_candidates(
       grams.select(1, J).copy_(torch::einsum("jqr,aqp,jps->ars", {KJ, H, KJ}));
     }
   }
-  grams = grams.reshape({nb, r, r});
+  if (!single_rows)
+    grams = grams.reshape({nb, r, r});
   std::vector<int64_t> sizes(nb), keys(nb);
   std::vector<double> cost(nb);
   for (int64_t bk = 0; bk < nb; bk++) {
@@ -672,7 +680,17 @@ std::pair<std::vector<int64_t>, torch::Tensor> LayoutCross::select_candidates(
   std::vector<uint8_t> picked(nb, 0);
   for (int64_t b = 0; b < nb; b++)
     picked[b] = std::binary_search(start.begin(), start.end(), keys[b]);
-  select_block_grams(grams, sizes, cost, picked);
+  if (single_rows) {
+    // One row per block: greedy Gram-Schmidt on the rows themselves
+    std::vector<int64_t> core_index(nJ);
+    for (int64_t J = 0; J < nJ; J++)
+      core_index[J] = core_groups[J].members[0];
+    auto rows_t = T.index_select(1, torch::tensor(core_index, torch::kInt64))
+                    .reshape({-1, r});
+    select_single_rows(rows_t, cost, picked);
+  } else {
+    select_block_grams(grams, sizes, cost, picked);
+  }
 
   // The chosen rows, ascending, and the new basis there
   std::vector<int64_t> rows;

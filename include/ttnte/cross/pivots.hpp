@@ -32,6 +32,18 @@ void select_block_grams(const torch::Tensor& grams,
   const std::vector<int64_t>& sizes, const std::vector<double>& cost,
   std::vector<uint8_t>& picked, double cond = 1e-2, double near = 0.25);
 
+/// @brief select_block_grams() for blocks of one row each, by greedy pivoted
+/// Gram-Schmidt: an orthonormal basis of the chosen rows is extended one
+/// vector at a time and every row's residual updated by one product, so the
+/// selection costs O(m r^2) instead of an eigendecomposition and a pass over
+/// every block per step. The conditioning test is the same.
+/// @param rows (m, r) the rows (one block each).
+/// @param cost (m) cost of each row.
+/// @param picked (m) in: forced rows; out: chosen rows.
+void select_single_rows(const torch::Tensor& rows,
+  const std::vector<double>& cost, std::vector<uint8_t>& picked,
+  double cond = 1e-2, double near = 0.25);
+
 /// @brief Whole blocks of rows (rows sharing a key) chosen until B[rows]
 /// has sigma_min / sigma_max >= cond. The next block maximizes the residual
 /// energy of its rows outside the resolved row space, or is a cheaper one
