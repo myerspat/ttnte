@@ -87,58 +87,30 @@ torch::Tensor direction_sketch(int64_t direction, int64_t k, int64_t n)
   return at::randn({k, n}, gen, torch::kFloat64);
 }
 
-std::vector<int64_t> select_blocks(const torch::Tensor& B,
-  const std::vector<int64_t>& keys, const std::function<double(int64_t)>& cost,
-  const std::vector<int64_t>& start, double cond, double near)
+void select_block_grams(const torch::Tensor& grams,
+  const std::vector<int64_t>& sizes, const std::vector<double>& cost,
+  std::vector<uint8_t>& picked, double cond, double near)
 {
-  const int64_t m = B.size(0);
-  const int64_t r = B.size(1);
-  std::vector<int64_t> ukeys(keys.begin(), keys.end());
-  std::sort(ukeys.begin(), ukeys.end());
-  ukeys.erase(std::unique(ukeys.begin(), ukeys.end()), ukeys.end());
-  const int64_t nk = static_cast<int64_t>(ukeys.size());
-  std::vector<int64_t> inv(m);
-  for (int64_t i = 0; i < m; i++)
-    inv[i] =
-      std::lower_bound(ukeys.begin(), ukeys.end(), keys[i]) - ukeys.begin();
-  std::vector<double> kcost(nk);
+  const int64_t nk = grams.size(0);
+  const int64_t r = grams.size(1);
+  auto flat = grams.reshape({nk, r * r}).contiguous();
+  auto trace_t = grams.diagonal(0, 1, 2).sum(1).contiguous();
+  const double* trace = trace_t.data_ptr<double>();
+  double total = 0.0;
   for (int64_t u = 0; u < nk; u++)
-    kcost[u] = cost(ukeys[u]);
-  std::vector<uint8_t> picked(nk, 0);
-  for (int64_t key : start) {
-    auto it = std::lower_bound(ukeys.begin(), ukeys.end(), key);
-    if (it != ukeys.end() && *it == key)
-      picked[it - ukeys.begin()] = 1;
-  }
-  std::vector<uint8_t> rows(m);
-  for (int64_t i = 0; i < m; i++)
-    rows[i] = picked[inv[i]];
+    total += trace[u];
+  total = std::max(total, 1e-300);
 
-  auto Bd = B.to(torch::kFloat64).contiguous();
-  auto row_list = [&](const std::function<bool(int64_t)>& take) {
-    std::vector<int64_t> idx;
-    for (int64_t i = 0; i < m; i++)
-      if (take(i))
-        idx.push_back(i);
-    return idx;
-  };
-  auto as_tensor = [](const std::vector<int64_t>& v) {
-    return torch::tensor(v, torch::kInt64);
-  };
-  auto chosen = row_list([&](int64_t i) { return rows[i] != 0; });
   auto gram = torch::zeros({r, r}, torch::kFloat64);
-  if (!chosen.empty()) {
-    auto Bs = Bd.index_select(0, as_tensor(chosen));
-    gram = Bs.t().mm(Bs);
+  int64_t num_rows = 0;
+  for (int64_t u = 0; u < nk; u++) {
+    if (picked[u]) {
+      gram += grams[u];
+      num_rows += sizes[u];
+    }
   }
-  auto norms_t = Bd.square().sum(1);
-  const double* norms = norms_t.data_ptr<double>();
-  const double total = std::max(norms_t.sum().item<double>(), 1e-300);
-  int64_t num_rows =
-    std::count_if(rows.begin(), rows.end(), [](uint8_t x) { return x; });
-
+  std::vector<double> score(nk);
   while (true) {
-    torch::Tensor resid;
     if (num_rows > 0) {
       auto [ev, V] = torch::linalg_eigh(gram);
       auto s = ev.clamp_min(0.0).sqrt().flip(0);
@@ -147,17 +119,15 @@ std::vector<int64_t> select_blocks(const torch::Tensor& B,
       const double smin = s[r - 1].item<double>();
       if (num_rows >= r && smin >= cond * smax)
         break;
-      auto keep = (s > cond * smax).nonzero().flatten();
-      auto P = Bd.mm(V.index_select(1, keep));
-      resid = norms_t - P.square().sum(1);
+      auto Vk = V.index_select(1, (s > cond * smax).nonzero().flatten());
+      auto proj = flat.mv(Vk.mm(Vk.t()).flatten()).contiguous();
+      const double* pj = proj.data_ptr<double>();
+      for (int64_t u = 0; u < nk; u++)
+        score[u] = std::max(trace[u] - pj[u], 0.0) / total;
     } else {
-      resid = norms_t.clone();
+      for (int64_t u = 0; u < nk; u++)
+        score[u] = trace[u] / total;
     }
-    resid = resid.clamp_min(0.0).contiguous();
-    const double* rs = resid.data_ptr<double>();
-    std::vector<double> score(nk, 0.0);
-    for (int64_t i = 0; i < m; i++)
-      score[inv[i]] += rs[i] / total;
     double best = -1.0;
     for (int64_t u = 0; u < nk; u++) {
       if (picked[u])
@@ -171,21 +141,53 @@ std::vector<int64_t> select_blocks(const torch::Tensor& B,
     for (int64_t u = 0; u < nk; u++) {
       if (score[u] < near * best)
         continue;
-      if (pick < 0 || kcost[u] < kcost[pick] ||
-          (kcost[u] == kcost[pick] && score[u] > score[pick]))
+      if (pick < 0 || cost[u] < cost[pick] ||
+          (cost[u] == cost[pick] && score[u] > score[pick]))
         pick = u;
     }
     picked[pick] = 1;
-    auto fresh = row_list([&](int64_t i) { return inv[i] == pick; });
-    for (int64_t i : fresh)
-      rows[i] = 1;
-    num_rows += static_cast<int64_t>(fresh.size());
-    auto Bn = Bd.index_select(0, as_tensor(fresh));
-    gram += Bn.t().mm(Bn);
+    num_rows += sizes[pick];
+    gram += grams[pick];
   }
+}
+
+std::vector<int64_t> select_blocks(const torch::Tensor& B,
+  const std::vector<int64_t>& keys, const std::function<double(int64_t)>& cost,
+  const std::vector<int64_t>& start, double cond, double near)
+{
+  const int64_t m = B.size(0);
+  std::vector<int64_t> ukeys(keys.begin(), keys.end());
+  std::sort(ukeys.begin(), ukeys.end());
+  ukeys.erase(std::unique(ukeys.begin(), ukeys.end()), ukeys.end());
+  const int64_t nk = static_cast<int64_t>(ukeys.size());
+  std::vector<int64_t> inv(m);
+  std::vector<std::vector<int64_t>> members(nk);
+  for (int64_t i = 0; i < m; i++) {
+    inv[i] =
+      std::lower_bound(ukeys.begin(), ukeys.end(), keys[i]) - ukeys.begin();
+    members[inv[i]].push_back(i);
+  }
+  auto Bd = B.to(torch::kFloat64).contiguous();
+  const int64_t r = Bd.size(1);
+  auto grams = torch::empty({nk, r, r}, torch::kFloat64);
+  std::vector<int64_t> sizes(nk);
+  std::vector<double> kcost(nk);
+  for (int64_t u = 0; u < nk; u++) {
+    auto Bu = Bd.index_select(0, torch::tensor(members[u], torch::kInt64));
+    grams[u].copy_(Bu.t().mm(Bu));
+    sizes[u] = static_cast<int64_t>(members[u].size());
+    kcost[u] = cost(ukeys[u]);
+  }
+  std::vector<uint8_t> picked(nk, 0);
+  for (int64_t key : start) {
+    auto it = std::lower_bound(ukeys.begin(), ukeys.end(), key);
+    if (it != ukeys.end() && *it == key)
+      picked[it - ukeys.begin()] = 1;
+  }
+  select_block_grams(grams, sizes, kcost, picked, cond, near);
   std::vector<int64_t> out;
   for (int64_t i = 0; i < m; i++)
-    if (rows[i])
+    if (picked[inv[i]])
       out.push_back(i);
   return out;
 }

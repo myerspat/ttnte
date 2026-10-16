@@ -26,6 +26,12 @@ truncated_svd(
     std::tie(U, S, Vh) = torch::linalg_svd(R);
     U = torch::mm(Q, U);
 
+  } else if (A.size(1) > 10 * A.size(0)) {
+    // Short and wide matrix: A = R^T Q^T from the QR of A^T
+    auto [Q, R] = torch::linalg_qr(A.t(), "reduced");
+    std::tie(U, S, Vh) = torch::linalg_svd(R.t());
+    Vh = torch::mm(Vh, Q.t());
+
   } else {
     // Normal matrices
     try {

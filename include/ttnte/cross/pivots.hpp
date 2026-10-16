@@ -19,6 +19,19 @@ std::vector<int64_t> pivot_columns(const torch::Tensor& R, double eps);
 /// the rows builds the same sketch without communication.
 torch::Tensor direction_sketch(int64_t direction, int64_t k, int64_t n);
 
+/// @brief Blocks chosen by their Gram matrices G_u = B_u^T B_u until the
+/// chosen rows have sigma_min / sigma_max >= cond: the next block maximizes
+/// its residual energy tr(G_u) - <Pi, G_u> outside the resolved row space
+/// (Pi its projector), or is a cheaper one within `near` of the best. Blocks
+/// marked in `picked` on entry are always taken.
+/// @param grams (nk, r, r) block Grams.
+/// @param sizes (nk) rows per block.
+/// @param cost (nk) cost of each block (fibers it still needs).
+/// @param picked (nk) in: forced blocks; out: chosen blocks.
+void select_block_grams(const torch::Tensor& grams,
+  const std::vector<int64_t>& sizes, const std::vector<double>& cost,
+  std::vector<uint8_t>& picked, double cond = 1e-2, double near = 0.25);
+
 /// @brief Whole blocks of rows (rows sharing a key) chosen until B[rows]
 /// has sigma_min / sigma_max >= cond. The next block maximizes the residual
 /// energy of its rows outside the resolved row space, or is a cheaper one

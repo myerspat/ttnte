@@ -168,15 +168,18 @@ private:
   void init_right();
   IndexSet candidates_left(size_t k, const std::vector<int64_t>& rows) const;
   IndexSet candidates_right(size_t k, const std::vector<int64_t>& rows) const;
-  std::vector<int64_t> candidate_keys_left(size_t k) const;
   std::vector<int64_t> candidate_keys_right(size_t k) const;
   std::vector<int64_t> set_keys(const IndexSet& set) const;
   torch::Tensor superblock(size_t k, bool raw);
   double block_cost(int64_t key) const;
   std::vector<int64_t> forced_keys(uint32_t mask) const;
-  std::vector<int64_t> select(const torch::Tensor& basis,
-    const std::vector<int64_t>& keys, uint32_t mask,
-    const std::vector<int64_t>& keep);
+  /// @brief Choose the next index set of core k among its candidates
+  /// (left: left_[k] x the core's values; right: the core's values x
+  /// right_[k + 1]) by block selection on block Grams, computed in factored
+  /// form when cheaper, and evaluate the new basis at the chosen rows only.
+  /// @return The chosen candidate rows (ascending) and the basis there.
+  std::pair<std::vector<int64_t>, torch::Tensor> select_candidates(size_t k,
+    bool left, const torch::Tensor& core, const std::vector<int64_t>& keep);
   int64_t max_rank() const noexcept;
   void grow_from_residual(const torch::Tensor& col, double total, size_t k,
     uint32_t mask, const IndexSet& current);

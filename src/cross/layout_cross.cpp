@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <numeric>
 #include <set>
 
 namespace ttnte::cross {
@@ -50,6 +51,20 @@ inline void merge(int64_t* out, const int64_t* part)
   for (int m = 0; m < 4; m++)
     if (part[m] >= 0)
       out[m] = part[m];
+}
+
+/// Left inverse (B^T B)^{-1} B^T of a well-conditioned tall B, by Cholesky
+/// of its Gram matrix (block selection keeps sigma_min / sigma_max >= 1e-2);
+/// the pseudo-inverse if the Gram matrix is not safely definite.
+torch::Tensor left_inverse(const torch::Tensor& B)
+{
+  auto [L, info] = torch::linalg_cholesky_ex(B.t().mm(B));
+  if (info.item<int64_t>() == 0) {
+    auto d = L.diagonal();
+    if (d.min().item<double>() > 1e-3 * d.max().item<double>())
+      return torch::cholesky_solve(B.t(), L);
+  }
+  return torch::linalg_pinv(B);
 }
 
 /// Rank-one factors of a nonnegative matrix that must be an outer product.
@@ -324,23 +339,6 @@ LayoutCross::IndexSet LayoutCross::candidates_right(
   return out;
 }
 
-std::vector<int64_t> LayoutCross::candidate_keys_left(size_t k) const
-{
-  const auto& L = left_[k];
-  const int64_t ml = L.size(), nk = n_[k];
-  std::vector<int64_t> keys(ml * nk);
-  at::parallel_for(0, ml, 1, [&](int64_t i0, int64_t i1) {
-    for (int64_t i = i0; i < i1; i++)
-      for (int64_t j = 0; j < nk; j++) {
-        int64_t comp[4];
-        std::copy(&L.comp[i * 4], &L.comp[i * 4] + 4, comp);
-        decode(k, j, comp);
-        keys[i * nk + j] = row_key(comp);
-      }
-  });
-  return keys;
-}
-
 std::vector<int64_t> LayoutCross::candidate_keys_right(size_t k) const
 {
   const auto& R = right_[k + 1];
@@ -536,17 +534,156 @@ std::vector<int64_t> LayoutCross::forced_keys(uint32_t mask) const
   return keys;
 }
 
-std::vector<int64_t> LayoutCross::select(const torch::Tensor& basis,
-  const std::vector<int64_t>& keys, uint32_t mask,
+std::pair<std::vector<int64_t>, torch::Tensor> LayoutCross::select_candidates(
+  size_t k, bool left, const torch::Tensor& core,
   const std::vector<int64_t>& keep)
 {
-  auto start = forced_keys(mask);
+  const IndexSet& side = left ? left_[k] : right_[k + 1];
+  const int64_t ms = side.size();
+  const int64_t nk = n_[k];
+  // Candidate row (a, j) of the new basis is S_a K_j: S the side vectors
+  // (rows of B_k, or columns of C_{k+1}), K_j a slice of the core
+  torch::Tensor Sv, K;
+  if (left) {
+    Sv = B_[k].defined() ? B_[k] : torch::eye(ms, torch::kFloat64);
+    K = core.permute({1, 0, 2});
+  } else {
+    Sv = C_[k + 1].defined() ? C_[k + 1].t() : torch::eye(ms, torch::kFloat64);
+    K = core.permute({1, 2, 0});
+  }
+  Sv = Sv.contiguous();
+  K = K.contiguous();
+  const int64_t q = Sv.size(1), r = K.size(2);
+
+  // Side rows and core values grouped by their (non-space) key parts
+  struct Group {
+    std::array<int64_t, 4> comp;
+    std::vector<int64_t> members;
+  };
+  auto group = [&](int64_t count, auto&& comp_of) {
+    std::vector<Group> groups;
+    std::unordered_map<int64_t, size_t> where;
+    for (int64_t x = 0; x < count; x++) {
+      std::array<int64_t, 4> c;
+      comp_of(x, c.data());
+      c[S] = -1;
+      auto [it, fresh] = where.emplace(row_key(c.data()), groups.size());
+      if (fresh)
+        groups.push_back({c, {}});
+      groups[it->second].members.push_back(x);
+    }
+    return groups;
+  };
+  auto side_groups = group(ms, [&](int64_t a, int64_t* c) {
+    std::copy(&side.comp[a * 4], &side.comp[a * 4] + 4, c);
+  });
+  auto core_groups = group(nk, [&](int64_t j, int64_t* c) {
+    std::fill(c, c + 4, -1);
+    decode(k, j, c);
+  });
+
+  // One block per (side group, core group). Single-row side groups (the
+  // common case) use the candidate rows T[a, j] = S_a K_j directly, batched;
+  // multi-row groups use G = sum_j K_j^T H_A K_j, H_A = S_A^T S_A
+  const int64_t nA = static_cast<int64_t>(side_groups.size());
+  const int64_t nJ = static_cast<int64_t>(core_groups.size());
+  const int64_t nb = nA * nJ;
+  bool single = true;
+  for (const auto& g : side_groups)
+    single = single && g.members.size() == 1;
+  std::vector<torch::Tensor> J_index(nJ);
+  for (int64_t J = 0; J < nJ; J++)
+    J_index[J] = torch::tensor(core_groups[J].members, torch::kInt64);
+  auto A_order = torch::empty({ms}, torch::kInt64);
+  {
+    int64_t pos = 0;
+    auto* o = A_order.data_ptr<int64_t>();
+    for (const auto& g : side_groups)
+      for (int64_t x : g.members)
+        o[pos++] = x;
+  }
+  // Rows of the side reordered by group: T[a, j] for a in group order
+  torch::Tensor T;
+  if (single)
+    T = torch::einsum("aq,jqr->ajr", {Sv.index_select(0, A_order), K});
+  auto grams = torch::empty({nA, nJ, r, r}, torch::kFloat64);
+  if (single) {
+    for (int64_t J = 0; J < nJ; J++) {
+      auto TJ = T.index_select(1, J_index[J]); // (nA, |J|, r)
+      grams.select(1, J).copy_(torch::bmm(TJ.transpose(1, 2), TJ));
+    }
+  } else {
+    auto H = torch::empty({nA, q, q}, torch::kFloat64);
+    for (int64_t A = 0; A < nA; A++) {
+      auto SA = Sv.index_select(
+        0, torch::tensor(side_groups[A].members, torch::kInt64));
+      H[A].copy_(SA.t().mm(SA));
+    }
+    for (int64_t J = 0; J < nJ; J++) {
+      auto KJ = K.index_select(0, J_index[J]); // (|J|, q, r)
+      grams.select(1, J).copy_(torch::einsum("jqr,aqp,jps->ars", {KJ, H, KJ}));
+    }
+  }
+  grams = grams.reshape({nb, r, r});
+  std::vector<int64_t> sizes(nb), keys(nb);
+  std::vector<double> cost(nb);
+  for (int64_t bk = 0; bk < nb; bk++) {
+    const int64_t A = bk / nJ, J = bk % nJ;
+    int64_t c[4];
+    std::copy(side_groups[A].comp.begin(), side_groups[A].comp.end(), c);
+    merge(c, core_groups[J].comp.data());
+    keys[bk] = row_key(c);
+    sizes[bk] = static_cast<int64_t>(
+      side_groups[A].members.size() * core_groups[J].members.size());
+    cost[bk] = block_cost(keys[bk]);
+  }
+  // Forced pairs, the current set and residual-grown blocks are always kept
+  const uint32_t mask = left ? core_mask(0, k) : core_mask(k, K_ - 1);
+  std::vector<int64_t> start = forced_keys(mask);
   start.insert(start.end(), keep.begin(), keep.end());
   auto it = grow_.find(mask);
   if (it != grow_.end())
     start.insert(start.end(), it->second.begin(), it->second.end());
-  return select_blocks(
-    basis, keys, [this](int64_t key) { return block_cost(key); }, start);
+  std::sort(start.begin(), start.end());
+  std::vector<uint8_t> picked(nb, 0);
+  for (int64_t b = 0; b < nb; b++)
+    picked[b] = std::binary_search(start.begin(), start.end(), keys[b]);
+  select_block_grams(grams, sizes, cost, picked);
+
+  // The chosen rows, ascending, and the new basis there
+  std::vector<int64_t> rows;
+  std::vector<torch::Tensor> parts;
+  std::vector<int64_t> group_start(nA + 1, 0);
+  for (int64_t A = 0; A < nA; A++)
+    group_start[A + 1] =
+      group_start[A] + static_cast<int64_t>(side_groups[A].members.size());
+  for (int64_t bk = 0; bk < nb; bk++) {
+    if (!picked[bk])
+      continue;
+    const int64_t A = bk / nJ, J = bk % nJ;
+    for (int64_t a : side_groups[A].members)
+      for (int64_t j : core_groups[J].members)
+        rows.push_back(left ? a * nk + j : j * ms + a);
+    torch::Tensor part;
+    if (single) {
+      part = T.narrow(0, group_start[A], 1).index_select(1, J_index[J]);
+    } else {
+      auto SA = Sv.index_select(
+        0, torch::tensor(side_groups[A].members, torch::kInt64));
+      part = torch::einsum("aq,jqr->ajr", {SA, K.index_select(0, J_index[J])});
+    }
+    parts.push_back(part.reshape({-1, r}));
+  }
+  auto basis = torch::cat(parts, 0);
+  std::vector<int64_t> order(rows.size());
+  std::iota(order.begin(), order.end(), 0);
+  std::sort(order.begin(), order.end(),
+    [&](int64_t x, int64_t y) { return rows[x] < rows[y]; });
+  std::vector<int64_t> sorted(rows.size());
+  for (size_t i = 0; i < order.size(); i++)
+    sorted[i] = rows[order[i]];
+  basis = basis.index_select(0, torch::tensor(order, torch::kInt64));
+  return {sorted, basis};
 }
 
 void LayoutCross::grow_from_residual(const torch::Tensor& col, double total,
@@ -687,16 +824,14 @@ void LayoutCross::forward()
     const int64_t r = U.size(1);
     auto core = U.reshape({rl, nk, r}).contiguous();
     cores_[k] = core;
-    auto Bc = (B_[k].defined() ? torch::tensordot(B_[k], core, {1}, {0}) : core)
-                .reshape({-1, r});
     // Index sets only grow within a transport solve
     std::vector<int64_t> keep;
     if (left_[k + 1].width == k + 1)
       keep = set_keys(left_[k + 1]);
-    auto rows = select(Bc, candidate_keys_left(k), core_mask(0, k), keep);
+    auto [rows, basis] = select_candidates(k, true, core, keep);
     left_[k + 1] = candidates_left(k, rows);
-    B_[k + 1] = Bc.index_select(0, torch::tensor(rows, torch::kInt64));
-    PL_[k + 1] = torch::linalg_pinv(B_[k + 1]);
+    B_[k + 1] = basis;
+    PL_[k + 1] = left_inverse(B_[k + 1]);
   }
   // Last core, fitted on its superblock; its residual grows the bond
   auto Sraw = superblock(K_ - 1, true);
@@ -725,15 +860,10 @@ void LayoutCross::backward()
     const int64_t r = Vh.size(0);
     auto core = Vh.reshape({r, nk, rr}).contiguous();
     cores_[k] = core;
-    auto Cc =
-      (C_[k + 1].defined() ? torch::tensordot(core, C_[k + 1], {2}, {0}) : core)
-        .permute({1, 2, 0})
-        .reshape({-1, r});
-    auto rows = select(
-      Cc, candidate_keys_right(k), core_mask(k, K_ - 1), set_keys(right_[k]));
+    auto [rows, basis] = select_candidates(k, false, core, set_keys(right_[k]));
     right_[k] = candidates_right(k, rows);
-    C_[k] = Cc.index_select(0, torch::tensor(rows, torch::kInt64)).t();
-    PR_[k] = torch::linalg_pinv(C_[k]);
+    C_[k] = basis.t();
+    PR_[k] = left_inverse(basis).t();
   }
   auto Sraw = superblock(0, true);
   cores_[0] =
