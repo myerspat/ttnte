@@ -13,6 +13,12 @@ using LinearOperator = std::function<void(const double* x, double* y)>;
 /// allreduce), applied to every inner product of a distributed vector.
 using Reducer = std::function<double(double)>;
 
+/// @brief Called before every operator application with the current relative
+/// residual (the Arnoldi estimate, or 1 before a true-residual product, which
+/// should be applied accurately). Lets an inexact operator relax its
+/// accuracy as the residual drops (Simoncini and Szyld, SISC 25, 2003).
+using Progress = std::function<void(double relative_residual)>;
+
 /// @brief Outcome of a Krylov solve.
 struct KrylovResult {
   /// Operator applications performed.
@@ -39,8 +45,9 @@ struct KrylovResult {
 /// @param reduce Optional global sum of inner products for vectors
 /// distributed across ranks (each rank passes its local slice); empty for
 /// a serial solve.
+/// @param progress Optional callback before every application.
 KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
   std::vector<double>& x, int64_t restart, double tol, int64_t max_applies,
-  const Reducer& reduce = {});
+  const Reducer& reduce = {}, const Progress& progress = {});
 
 } // namespace ttnte::linalg::krylov

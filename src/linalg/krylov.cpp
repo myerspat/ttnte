@@ -18,7 +18,7 @@ double dot(const double* a, const double* b, size_t n)
 
 KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
   std::vector<double>& x, int64_t restart, double tol, int64_t max_applies,
-  const Reducer& reduce)
+  const Reducer& reduce, const Progress& progress)
 {
   const size_t n = b.size();
   // Inner products of (possibly distributed) vectors
@@ -53,6 +53,8 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
     if (result.num_applies > 0 && result.num_applies >= max_applies) {
       return result;
     }
+    if (progress)
+      progress(1.0);
     apply(x.data(), w.data());
     result.num_applies++;
     for (size_t i = 0; i < n; i++)
@@ -76,6 +78,8 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
     bool estimate_converged = false;
     for (; k < m && result.num_applies < max_applies; k++) {
       double* vk1 = V.data() + (k + 1) * n;
+      if (progress)
+        progress(std::abs(g[k]) / bnorm);
       apply(V.data() + k * n, vk1);
       result.num_applies++;
 

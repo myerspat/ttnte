@@ -15,7 +15,14 @@ struct CrossConfig {
   /// energy in 1-D).
   tensor::Layout layout;
   /// Relative accuracy of the approximation (L2-weighted when `weighted`).
+  /// Inside the sweep solver it is set per transport solve (see relax).
   double tol = 1e-4;
+  /// Inside the sweep solver's GMRES, relax the accuracy of each product as
+  /// the residual drops, tol_k = min(max_tol, tol_min / max(r_k, tol_min)),
+  /// tol_min being a tenth of the within-group-set tolerance and r_k the
+  /// relative residual (Simoncini and Szyld, SISC 25, 2003).
+  bool relax = true;
+  double max_tol = 1e-2;
   /// Approximate the L2-weighted angular flux sqrt(w_d) (R psi)/sqrt(du_g),
   /// M = R^T R the patch mass matrices and du the lethargy widths, so that
   /// pivots, truncation and the hold-out error are L2 quantities.

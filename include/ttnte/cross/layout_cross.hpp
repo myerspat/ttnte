@@ -236,6 +236,14 @@ public:
   double seconds() const noexcept { return seconds_; }
   const CrossConfig& config() const noexcept { return config_; }
   void set_tolerance(double tol) { config_.tol = tol; }
+  /// @brief Drop the cores of the last run (see CrossConfig::keep_tt).
+  void release() { cores_.clear(); }
+  /// @return Whether the cores of the last run are held.
+  bool has_tt() const noexcept
+  {
+    return static_cast<int64_t>(cores_.size()) == K_ && K_ > 0 &&
+           cores_[0].defined();
+  }
 };
 
 } // namespace ttnte::cross

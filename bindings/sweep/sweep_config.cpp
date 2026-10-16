@@ -36,36 +36,46 @@ void register_SweepConfig(py::module_& m)
       "Restarted GMRES within a group set (one sweep per product)")
     .export_values();
 
+  py::enum_<TransportSolve>(m, "TransportSolve")
+    .value("EXACT", TransportSolve::EXACT, "Sweep every (direction, group)")
+    .value("CROSS", TransportSolve::CROSS,
+      "Sweep the pairs chosen by a TT-cross (low-rank angular flux)")
+    .export_values();
+
   py::class_<SweepConfig>(m, "SweepConfig")
-    .def(py::init([](LocalSolverType local_solver, bool store_angular_flux,
-                    bool cache_factorizations, TaskGranularity task_granularity,
-                    int64_t num_threads, int64_t directions_per_task,
-                    int64_t group_set_size, GroupIteration group_iteration,
-                    InnerSolver inner_solver, double inner_tol,
-                    double inner_forcing, int64_t inner_max_iter,
-                    int64_t gmres_restart, double tol, int64_t max_iter,
-                    bool rho_safety, double face_weight_tol, bool verbose) {
-      SweepConfig c;
-      c.local_solver = local_solver;
-      c.store_angular_flux = store_angular_flux;
-      c.cache_factorizations = cache_factorizations;
-      c.task_granularity = task_granularity;
-      c.num_threads = num_threads;
-      c.directions_per_task = directions_per_task;
-      c.group_set_size = group_set_size;
-      c.group_iteration = group_iteration;
-      c.inner_solver = inner_solver;
-      c.inner_tol = inner_tol;
-      c.inner_forcing = inner_forcing;
-      c.inner_max_iter = inner_max_iter;
-      c.gmres_restart = gmres_restart;
-      c.tol = tol;
-      c.max_iter = max_iter;
-      c.rho_safety = rho_safety;
-      c.face_weight_tol = face_weight_tol;
-      c.verbose = verbose;
-      return c;
-    }),
+    .def(py::init(
+           [](LocalSolverType local_solver, bool store_angular_flux,
+             bool cache_factorizations, TaskGranularity task_granularity,
+             int64_t num_threads, int64_t directions_per_task,
+             int64_t group_set_size, GroupIteration group_iteration,
+             InnerSolver inner_solver, double inner_tol, double inner_forcing,
+             int64_t inner_max_iter, int64_t gmres_restart, double tol,
+             int64_t max_iter, bool rho_safety, double face_weight_tol,
+             bool verbose, TransportSolve transport,
+             const ttnte::cross::CrossConfig& cross) {
+             SweepConfig c;
+             c.local_solver = local_solver;
+             c.store_angular_flux = store_angular_flux;
+             c.cache_factorizations = cache_factorizations;
+             c.task_granularity = task_granularity;
+             c.num_threads = num_threads;
+             c.directions_per_task = directions_per_task;
+             c.group_set_size = group_set_size;
+             c.group_iteration = group_iteration;
+             c.inner_solver = inner_solver;
+             c.inner_tol = inner_tol;
+             c.inner_forcing = inner_forcing;
+             c.inner_max_iter = inner_max_iter;
+             c.gmres_restart = gmres_restart;
+             c.tol = tol;
+             c.max_iter = max_iter;
+             c.rho_safety = rho_safety;
+             c.face_weight_tol = face_weight_tol;
+             c.verbose = verbose;
+             c.transport = transport;
+             c.cross = cross;
+             return c;
+           }),
       py::arg("local_solver") = LocalSolverType::BANDED_LU,
       py::arg("store_angular_flux") = false,
       py::arg("cache_factorizations") = false,
@@ -77,7 +87,9 @@ void register_SweepConfig(py::module_& m)
       py::arg("inner_forcing") = 0.0, py::arg("inner_max_iter") = 1000,
       py::arg("gmres_restart") = 30, py::arg("tol") = 1e-6,
       py::arg("max_iter") = 1000, py::arg("rho_safety") = true,
-      py::arg("face_weight_tol") = 1e-12, py::arg("verbose") = true)
+      py::arg("face_weight_tol") = 1e-12, py::arg("verbose") = true,
+      py::arg("transport") = TransportSolve::EXACT,
+      py::arg("cross") = ttnte::cross::CrossConfig())
     .def_readwrite("local_solver", &SweepConfig::local_solver)
     .def_readwrite("store_angular_flux", &SweepConfig::store_angular_flux)
     .def_readwrite("cache_factorizations", &SweepConfig::cache_factorizations)
@@ -95,5 +107,7 @@ void register_SweepConfig(py::module_& m)
     .def_readwrite("max_iter", &SweepConfig::max_iter)
     .def_readwrite("rho_safety", &SweepConfig::rho_safety)
     .def_readwrite("face_weight_tol", &SweepConfig::face_weight_tol)
-    .def_readwrite("verbose", &SweepConfig::verbose);
+    .def_readwrite("verbose", &SweepConfig::verbose)
+    .def_readwrite("transport", &SweepConfig::transport)
+    .def_readwrite("cross", &SweepConfig::cross);
 }

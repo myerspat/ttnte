@@ -1,5 +1,6 @@
 #include "ttnte/sweep/sweep_driver.hpp"
 #include "ttnte/cad/patch.hpp"
+#include "ttnte/cross/layout_cross.hpp"
 #include "ttnte/parallel/parallel_context.hpp"
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
@@ -72,6 +73,17 @@ static void register_SweepDriver_impl(
     .def_property_readonly("fiber_offsets", &SweepDriver::fiber_offsets)
     .def_property_readonly("num_fibers", &SweepDriver::num_fibers)
     .def_property_readonly("local_gids", &SweepDriver::local_gids)
+    .def("get_cross", &SweepDriver::get_cross, py::arg("group_set") = 0,
+      "The LayoutCross of a group set (transport = CROSS)")
+    .def("get_patch_angular_flux_tt", &SweepDriver::get_patch_angular_flux_tt,
+      py::arg("gid"), py::arg("group_set") = 0,
+      "Cores of a patch's angular flux TT (cross.keep_tt) in the configured "
+      "layout")
+    .def_property_readonly(
+      "cross_tolerances", &SweepDriver::get_cross_tolerances)
+    .def_property_readonly("cross_fibers", &SweepDriver::get_cross_fibers)
+    .def_property_readonly("cross_max_ranks", &SweepDriver::get_cross_max_ranks)
+    .def_property_readonly("cross_errors", &SweepDriver::get_cross_errors)
     .def("solve_fixed_source", &SweepDriver::solve_fixed_source,
       "Solve a fixed-source problem with unaccelerated source iteration. "
       "Returns a TransportSolution holding the angular flux "

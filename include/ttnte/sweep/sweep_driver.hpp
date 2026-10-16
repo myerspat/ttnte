@@ -1,6 +1,8 @@
 #pragma once
 
+#include "ttnte/cross/layout_cross.hpp"
 #include "ttnte/driver/transport_solution.hpp"
+#include "ttnte/linalg/banded_cholesky.hpp"
 #include "ttnte/linalg/krylov.hpp"
 #include "ttnte/math/quadrature_set.hpp"
 #include "ttnte/mesh/mesh.hpp"
@@ -267,6 +269,15 @@ private:
   int64_t dag_nanoseconds_ = 0;
   /// Fibers swept by sweep_fibers().
   int64_t num_fibers_ = 0;
+  /// TransportSolve::CROSS: one cross per group set, the tolerance of the
+  /// next transport solve, and per-solve history (tolerance, fibers, largest
+  /// rank, hold-out error).
+  std::vector<cross::LayoutCross::Ptr> crosses_;
+  double cross_tol_ = 0.0;
+  std::vector<double> cross_tolerances_;
+  std::vector<int64_t> cross_fibers_;
+  std::vector<int64_t> cross_max_ranks_;
+  std::vector<double> cross_errors_;
 
   /// Optional per-outer-iteration callback and its frequency.
   Callback callback_;
@@ -559,6 +570,179 @@ private:
     }
   }
 
+  /// @return Directions swept over all groups to start a cross: per
+  /// quadrant/octant the one closest to the diagonal (1-D: the most and
+  /// least grazing of each sign).
+  std::vector<int64_t> initial_directions() const
+  {
+    const int64_t Nd = omega_.size(0);
+    auto o = omega_.contiguous();
+    const double* w = o.template data_ptr<double>();
+    std::vector<int64_t> out;
+    if (NumDim == 1) {
+      int64_t lo = 0, hi = 0, pos = -1, neg = -1;
+      for (int64_t d = 0; d < Nd; d++) {
+        if (w[d] < w[lo])
+          lo = d;
+        if (w[d] > w[hi])
+          hi = d;
+        if (w[d] > 0 && (pos < 0 || w[d] < w[pos]))
+          pos = d;
+        if (w[d] < 0 && (neg < 0 || w[d] > w[neg]))
+          neg = d;
+      }
+      for (int64_t d : {lo, hi, pos, neg})
+        if (d >= 0 && std::find(out.begin(), out.end(), d) == out.end())
+          out.push_back(d);
+      return out;
+    }
+    std::map<int64_t, std::pair<double, int64_t>> best;
+    for (int64_t d = 0; d < Nd; d++) {
+      int64_t pattern = 0;
+      double lo = 1e300, hi = 0.0;
+      for (int64_t i = 0; i < NumDim; i++) {
+        const double c = w[d * NumDim + i];
+        pattern = 2 * pattern + (c > 0 ? 1 : 0);
+        lo = std::min(lo, std::abs(c));
+        hi = std::max(hi, std::abs(c));
+      }
+      auto it = best.find(pattern);
+      if (it == best.end() || hi - lo < it->second.first)
+        best[pattern] = {hi - lo, d};
+    }
+    for (const auto& [pattern, entry] : best)
+      out.push_back(entry.second);
+    return out;
+  }
+
+  /// @brief One cross per group set (TransportSolve::CROSS).
+  void build_crosses()
+  {
+    crosses_.clear();
+    if (config_.transport != TransportSolve::CROSS)
+      return;
+    // TODO: exchange tasks and reductions for multi-rank crosses
+    if (comm_.size() > 1)
+      throw utils::runtime_error(
+        ctx("setup"), "CROSS transport solves are serial in space for now");
+    const auto modes = angular_modes();
+    cross::CrossProblem base;
+    base.num_dim = NumDim;
+    base.num_polar = modes[0];
+    base.num_azimuthal = NumDim == 1 ? 1 : modes[1];
+    base.num_space = fiber_length_;
+    base.weights = weights_;
+    base.harmonics = harmonics_;
+    base.initial_directions = initial_directions();
+    base.patch_offsets = fiber_offsets_;
+    for (const auto& P : patches_) {
+      base.patch_shapes.push_back(P.disc->shape());
+      if (config_.cross.weighted) {
+        base.mass_bands.push_back(
+          linalg::banded::symmetric_band_from_pairs(P.disc->pair_row(),
+            P.disc->pair_col(), P.disc->mass_values(), P.disc->num_dofs())
+            .first);
+      }
+    }
+    for (size_t s = 0; s < group_sets_.size(); s++) {
+      auto problem = base;
+      problem.num_groups = static_cast<int64_t>(group_indices_[s].size());
+      problem.sweep = [this, s](
+                        const std::vector<FiberBlock>& blocks, double* out) {
+        auto global = blocks;
+        for (auto& b : global)
+          for (auto& g : b.groups)
+            g = group_indices_[s][g];
+        sweep_fibers(global, out);
+      };
+      crosses_.push_back(
+        cross::LayoutCross::create(std::move(problem), config_.cross));
+    }
+  }
+
+  /// @brief Transport solve of group set `s` by the cross: moments into
+  /// moments_next, and the lagged and reflective traces (the delayed
+  /// blocks) and the angular flux, if stored, from the low-rank flux.
+  void cross_group_set(size_t s)
+  {
+    auto& cr = *crosses_[s];
+    const auto& groups = group_indices_[s];
+    const int64_t ng = static_cast<int64_t>(groups.size());
+    const int64_t G = num_groups_;
+    cr.set_tolerance(cross_tol_ > 0 ? cross_tol_ : config_.cross.tol);
+    const int previous_threads = at::get_num_threads();
+    at::set_num_threads(std::max<int64_t>(1, config_.num_threads));
+    cr.run();
+
+    auto moments = cr.moments();
+    const int64_t M = moments.size(0);
+    const double* mom = moments.template data_ptr<double>();
+    std::vector<int64_t> local_groups(ng);
+    std::iota(local_groups.begin(), local_groups.end(), 0);
+    for (size_t i = 0; i < patches_.size(); i++) {
+      auto& P = patches_[i];
+      const int64_t N = P.disc->num_dofs();
+      double* dst = P.moments_next.template data_ptr<double>();
+      for (int64_t m = 0; m < M; m++)
+        for (int64_t bg = 0; bg < ng; bg++) {
+          const double* src =
+            mom + (m * ng + bg) * fiber_length_ + fiber_offsets_[i];
+          std::copy(src, src + N, dst + (m * G + groups[bg]) * N);
+        }
+    }
+    for (const auto& blk : delayed_) {
+      const auto& face = patches_[blk.local].disc->faces()[blk.face];
+      const int64_t Nf = face.num_dofs();
+      auto dofs = (face.dofs + fiber_offsets_[blk.local]).contiguous();
+      std::vector<int64_t> space(dofs.template data_ptr<int64_t>(),
+        dofs.template data_ptr<int64_t>() + Nf);
+      auto values = cr.evaluate(blk.directions, local_groups, space);
+      const double* v = values.template data_ptr<double>();
+      double* buf = delayed_buffer(blk, true).template data_ptr<double>();
+      for (size_t i = 0; i < blk.directions.size(); i++)
+        for (int64_t bg = 0; bg < ng; bg++)
+          std::copy(v + (i * ng + bg) * Nf, v + (i * ng + bg + 1) * Nf,
+            buf + (blk.directions[i] * G + groups[bg]) * Nf);
+    }
+    if (config_.store_angular_flux) {
+      std::vector<int64_t> dirs(omega_.size(0));
+      std::iota(dirs.begin(), dirs.end(), 0);
+      for (size_t i = 0; i < patches_.size(); i++) {
+        auto& P = patches_[i];
+        const int64_t N = P.disc->num_dofs();
+        std::vector<int64_t> space(N);
+        std::iota(space.begin(), space.end(), fiber_offsets_[i]);
+        auto values = cr.evaluate(dirs, local_groups, space);
+        const double* v = values.template data_ptr<double>();
+        double* psi = P.psi.template data_ptr<double>();
+        for (size_t d = 0; d < dirs.size(); d++)
+          for (int64_t bg = 0; bg < ng; bg++)
+            std::copy(v + (d * ng + bg) * N, v + (d * ng + bg + 1) * N,
+              psi + (d * G + groups[bg]) * N);
+      }
+    }
+    at::set_num_threads(previous_threads);
+
+    const auto ranks = cr.ranks();
+    cross_tolerances_.push_back(cr.config().tol);
+    cross_fibers_.push_back(cr.num_fibers());
+    cross_max_ranks_.push_back(*std::max_element(ranks.begin(), ranks.end()));
+    cross_errors_.push_back(cr.holdout_error());
+    group_set_sweeps_++;
+    equivalent_sweeps_ += static_cast<double>(cr.num_fibers()) /
+                          static_cast<double>(omega_.size(0) * G);
+  }
+
+  /// @brief One transport solve of group set `s` with the current sources
+  /// and lagged traces: an exact sweep or a cross.
+  void transport_group_set(size_t s)
+  {
+    if (config_.transport == TransportSolve::CROSS)
+      cross_group_set(s);
+    else
+      sweep_group_set(s);
+  }
+
   /// Which moments feed the within-group-set scattering term.
   enum class Within : uint8_t { NONE, MOMENTS, KRYLOV };
 
@@ -813,13 +997,16 @@ private:
   {
     const int64_t start = group_set_sweeps_;
     const double tol = inner_tolerance();
+    // Cross accuracy: a tenth of the inner tolerance, relaxed in GMRES
+    const double tol_min = 0.1 * tol;
+    cross_tol_ = tol_min;
 
     if (config_.inner_solver == InnerSolver::RICHARDSON) {
       const auto& groups = group_indices_[s];
       for (int64_t it = 0; it < config_.inner_max_iter; it++) {
         double num = 0.0, den = 0.0;
         compute_source(s, Within::MOMENTS, true, jacobi);
-        sweep_group_set(s);
+        transport_group_set(s);
         for (const auto& P : patches_) {
           const int64_t N = P.disc->num_dofs();
           const double* a = P.moments.template data_ptr<double>();
@@ -848,22 +1035,30 @@ private:
     std::fill(tmp.begin(), tmp.end(), 0.0);
     unpack(s, tmp.data(), true);
     compute_source(s, Within::NONE, true, jacobi);
-    sweep_group_set(s);
+    transport_group_set(s);
     pack(s, true, true, b.data());
 
     auto apply = [&](const double* in, double* out) {
       unpack(s, in, true);
       compute_source(s, Within::KRYLOV, false, jacobi);
-      sweep_group_set(s);
+      transport_group_set(s);
       pack(s, true, true, tmp.data());
       for (int64_t i = 0; i < n; i++)
         out[i] = in[i] - tmp[i];
+    };
+    auto progress = [&](double residual) {
+      cross_tol_ = config_.cross.relax
+                     ? std::min(config_.cross.max_tol,
+                         tol_min / std::max(residual, tol_min))
+                     : tol_min;
     };
     auto result = linalg::krylov::gmres(apply, b, x, config_.gmres_restart, tol,
       config_.inner_max_iter,
       comm_.size() > 1
         ? linalg::krylov::Reducer([this](double v) { return global_sum(v); })
-        : linalg::krylov::Reducer());
+        : linalg::krylov::Reducer(),
+      progress);
+    cross_tol_ = tol_min;
     if (!result.converged && config_.verbose && comm_.rank() == 0) {
       std::cout << "-- warning: within-group-set GMRES (set " << s
                 << ") stopped at relative residual " << result.relative_residual
@@ -873,7 +1068,7 @@ private:
     // Consistent final sweep from the solution (traces, angular flux)
     unpack(s, x.data(), false);
     compute_source(s, Within::MOMENTS, true, jacobi);
-    sweep_group_set(s);
+    transport_group_set(s);
     commit_group_set(s);
     return group_set_sweeps_ - start;
   }
@@ -935,6 +1130,10 @@ private:
   /// @brief Reset the iterate: zero traces, and zero or unit scalar flux.
   void reset_state(bool unit_scalar_flux)
   {
+    cross_tolerances_.clear();
+    cross_fibers_.clear();
+    cross_max_ranks_.clear();
+    cross_errors_.clear();
     for (auto& P : patches_) {
       P.moments.zero_();
       if (unit_scalar_flux)
@@ -1355,6 +1554,9 @@ private:
     num_iterations_ = std::min<int64_t>(it, config_.max_iter);
     if (config_.num_threads > 1)
       at::set_num_threads(previous_threads);
+    if (!config_.cross.keep_tt)
+      for (auto& cr : crosses_)
+        cr->release();
     if (verbose) {
       std::cout << "-- " << (converged_ ? "Converged!" : "Failed to Converge!")
                 << " (" << num_iterations_ << " outer iterations, "
@@ -1732,6 +1934,7 @@ public:
       std::max<int64_t>(1, config_.num_threads));
     build_dag();
     build_range_dag();
+    build_crosses();
     is_setup_ = true;
   }
 
@@ -1855,6 +2058,38 @@ public:
   {
     return fiber_offsets_;
   }
+  /// @return The cross of group set `s` (TransportSolve::CROSS), holding
+  /// the TT of the last transport solve.
+  cross::LayoutCross::Ptr get_cross(size_t s = 0) const
+  {
+    if (s >= crosses_.size())
+      throw utils::runtime_error(
+        ctx("get_cross"), "No cross for this group set (transport = CROSS?)");
+    return crosses_[s];
+  }
+  /// @return Cores of patch `gid`'s angular flux TT for group set `s` (last
+  /// transport solve), in the configured layout.
+  std::vector<torch::Tensor> get_patch_angular_flux_tt(
+    int64_t gid, size_t s = 0) const
+  {
+    return get_cross(s)->patch_tt(gid_to_local_.at(gid));
+  }
+  const std::vector<double>& get_cross_tolerances() const noexcept
+  {
+    return cross_tolerances_;
+  }
+  const std::vector<int64_t>& get_cross_fibers() const noexcept
+  {
+    return cross_fibers_;
+  }
+  const std::vector<int64_t>& get_cross_max_ranks() const noexcept
+  {
+    return cross_max_ranks_;
+  }
+  const std::vector<double>& get_cross_errors() const noexcept
+  {
+    return cross_errors_;
+  }
   /// @return GID of every local unit, in local (fiber) order.
   std::vector<int64_t> local_gids() const
   {
@@ -1876,7 +2111,7 @@ public:
     for_each_patch([](PatchState& P) { P.pass_moments.copy_(P.moments); });
     for (size_t s = 0; s < group_sets_.size(); s++) {
       compute_source(s, Within::MOMENTS, true, true);
-      sweep_group_set(s);
+      transport_group_set(s);
       commit_group_set(s);
     }
   }

@@ -915,6 +915,9 @@ torch::Tensor LayoutCross::contract(const std::array<Selector, 4>& select,
   const torch::Tensor& angle_matrix) const
 {
   using Kind = Selector::Kind;
+  if (!has_tt())
+    throw utils::runtime_error(ctx("contract"),
+      "No TT held: run() first, or set keep_tt to keep it after a solve");
   const char letter[4] = {'m', 'g', 's', 'e'};
   int64_t core_of_mode[4] = {-1, -1, -1, -1};
   for (int64_t k = 0; k < K_; k++)
@@ -1092,6 +1095,9 @@ std::vector<torch::Tensor> LayoutCross::patch_tt(size_t p) const
 {
   if (p >= problem_.patch_offsets.size())
     throw utils::runtime_error(ctx("patch_tt"), "Patch out of range");
+  if (!has_tt())
+    throw utils::runtime_error(ctx("patch_tt"),
+      "No TT held: run() first, or set keep_tt to keep it after a solve");
   const int64_t off = problem_.patch_offsets[p];
   const int64_t end = p + 1 < problem_.patch_offsets.size()
                         ? problem_.patch_offsets[p + 1]

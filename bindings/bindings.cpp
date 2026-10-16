@@ -74,11 +74,12 @@ PYBIND11_MODULE(ttnte_python, m)
   auto m_tensor = m.def_submodule("tensor");
   init_tensor(m_tensor);
 
-  auto m_sweep = m.def_submodule("sweep");
-  init_sweep(m_sweep);
-
+  // The cross options are a member of the sweep configuration
   auto m_cross = m.def_submodule("cross");
   init_cross(m_cross);
+
+  auto m_sweep = m.def_submodule("sweep");
+  init_sweep(m_sweep);
 
   auto m_math = m.def_submodule("math");
   init_math(m_math);

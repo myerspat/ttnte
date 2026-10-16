@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ttnte/cross/cross_config.hpp"
+
 #include <cstdint>
 
 namespace ttnte::sweep {
@@ -43,6 +45,16 @@ enum class InnerSolver : uint8_t {
   RICHARDSON,
   /// Restarted GMRES on the moments and the lagged face traces.
   GMRES,
+};
+
+/// @brief How each transport solve (one application of the swept operator)
+/// is carried out.
+enum class TransportSolve : uint8_t {
+  /// Sweep every (direction, group) pair.
+  EXACT,
+  /// Sweep a few pairs chosen by a TT-cross and contract the moments and
+  /// lagged traces from the resulting low-rank angular flux.
+  CROSS,
 };
 
 /// @brief Configuration of the transport sweep solver.
@@ -104,6 +116,10 @@ struct SweepConfig {
   double face_weight_tol = 1e-12;
   /// Print iteration progress.
   bool verbose = true;
+  /// Transport solve of every sweep.
+  TransportSolve transport = TransportSolve::EXACT;
+  /// Options of the TT-cross (TransportSolve::CROSS).
+  cross::CrossConfig cross;
 };
 
 } // namespace ttnte::sweep
