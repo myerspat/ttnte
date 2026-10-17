@@ -90,6 +90,27 @@ static void register_SweepDriver_impl(
     .def_property_readonly("cross_fibers", &SweepDriver::get_cross_fibers)
     .def_property_readonly("cross_max_ranks", &SweepDriver::get_cross_max_ranks)
     .def_property_readonly("cross_errors", &SweepDriver::get_cross_errors)
+    .def_property_readonly("cross_ranks", &SweepDriver::get_cross_ranks,
+      "TT ranks of every transport solve")
+    .def_property_readonly(
+      "cross_histories",
+      [](const SweepDriver& self) {
+        py::list out;
+        for (const auto& run : self.get_cross_histories()) {
+          py::list sweeps;
+          for (const auto& h : run)
+            sweeps.append(
+              py::dict(py::arg("ranks") = h.ranks, py::arg("fibers") = h.fibers,
+                py::arg("holdout_error") = h.holdout_error));
+          out.append(sweeps);
+        }
+        return out;
+      },
+      "Per transport solve, per sweep of its cross: ranks, fibers swept so "
+      "far, hold-out error")
+    .def("angular_solution", &SweepDriver::angular_solution,
+      "The solution with angular dependence: the stored angular flux, or with "
+      "transport = CROSS and cross.keep_tt the TT of the last transport solve")
     .def_property_readonly("cross_seconds", &SweepDriver::get_cross_seconds)
     .def_property_readonly(
       "cross_sweep_seconds", &SweepDriver::get_cross_sweep_seconds)

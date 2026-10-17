@@ -65,6 +65,14 @@ public:
   // Public types
   using Ptr = std::shared_ptr<LayoutCross>;
 
+  /// @brief State after one forward and backward sweep of a run.
+  struct SweepRecord {
+    std::vector<int64_t> ranks;
+    /// Fibers swept so far in the run.
+    int64_t fibers = 0;
+    double holdout_error = 0.0;
+  };
+
   /// Modes of the sampled tensor.
   enum Mode : int { MU = 0, GA = 1, S = 2, E = 3 };
 
@@ -142,6 +150,7 @@ private:
   /// Results of the last run.
   double holdout_error_ = 0.0;
   bool converged_ = false;
+  std::vector<SweepRecord> history_;
   int64_t sweeps_done_ = 0;
   int64_t total_fibers_ = 0;
   double sweep_seconds_ = 0.0;
@@ -236,6 +245,8 @@ public:
   int64_t num_fibers() const noexcept { return num_swept_; }
   int64_t total_fibers() const noexcept { return total_fibers_; }
   double holdout_error() const noexcept { return holdout_error_; }
+  /// @return One record per sweep of the last run.
+  const std::vector<SweepRecord>& history() const noexcept { return history_; }
   bool converged() const noexcept { return converged_; }
   int64_t sweeps_done() const noexcept { return sweeps_done_; }
   double sweep_seconds() const noexcept { return sweep_seconds_; }

@@ -1068,6 +1068,7 @@ void LayoutCross::run()
 {
   auto t0 = Clock::now();
   reset();
+  history_.clear();
   init_right();
   const double accept = config_.holdout_factor * config_.tol;
   double err = std::numeric_limits<double>::infinity();
@@ -1077,6 +1078,7 @@ void LayoutCross::run()
     backward();
     sweeps_done_ = it + 1;
     err = check();
+    history_.push_back({ranks(), num_swept_, err});
     if (err <= accept)
       break;
   }

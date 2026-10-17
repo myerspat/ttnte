@@ -79,6 +79,18 @@ void register_LayoutCross(py::module_& m)
     .def_property_readonly("user_layout",
       [](const LayoutCross& c) { return c.user_layout().to_string(); })
     .def_property_readonly("ranks", &LayoutCross::ranks)
+    .def_property_readonly(
+      "history",
+      [](const LayoutCross& c) {
+        py::list out;
+        for (const auto& h : c.history())
+          out.append(
+            py::dict(py::arg("ranks") = h.ranks, py::arg("fibers") = h.fibers,
+              py::arg("holdout_error") = h.holdout_error));
+        return out;
+      },
+      "Per sweep of the last run: ranks, fibers swept so far, hold-out "
+      "error")
     .def_property_readonly("num_fibers", &LayoutCross::num_fibers)
     .def_property_readonly("total_fibers", &LayoutCross::total_fibers)
     .def_property_readonly("holdout_error", &LayoutCross::holdout_error)

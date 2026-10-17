@@ -18,6 +18,12 @@ void register_PatchDiscretization(py::module_& m)
     .def_readonly("normal", &FaceGeometry::normal)
     .def_readonly("weights", &FaceGeometry::weights)
     .def_readonly("area", &FaceGeometry::area)
+    .def_readonly("pair_q", &FaceGeometry::pair_q,
+      "Face pair list: quadrature point of each (point, test, trial) pair")
+    .def_readonly("pair_a", &FaceGeometry::pair_a)
+    .def_readonly("pair_b", &FaceGeometry::pair_b)
+    .def_readonly("pair_val", &FaceGeometry::pair_val,
+      "R_a(q) R_b(q), face-local dofs a, b")
     .def("upwind_weights", &FaceGeometry::upwind_weights, py::arg("omega"),
       py::arg("outflow"),
       "(D, Qf) clipped, weighted normal components (Omega . n)_+/- w.");

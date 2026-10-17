@@ -128,3 +128,22 @@ def test_store_angular_flux_and_release():
     # keep_tt is off: the TT is released after the solve
     with pytest.raises(RuntimeError):
         cross.get_patch_angular_flux_tt(cross.local_gids[0])
+
+
+@pytest.mark.mpi(min_size=1)
+def test_angular_flux_from_kept_tt_and_histories():
+    exact = _solve(2, True, TransportSolve.EXACT, store_angular_flux=True)
+    cross = _solve(2, True, TransportSolve.CROSS, cross=CrossConfig(keep_tt=True))
+    for gid in exact.local_gids:
+        assert _rel(cross.get_angular_flux(gid), exact.get_angular_flux(gid)) < 1e-4
+    solution = cross.angular_solution()
+    for gid in cross.local_gids:
+        field = solution.get_local_field(gid).as_tt().to_dense()
+        assert _rel(field.reshape(-1), cross.get_angular_flux(gid).reshape(-1)) < 1e-12
+    assert len(cross.cross_ranks) == len(cross.cross_fibers)
+    history = cross.cross_histories
+    assert len(history) == len(cross.cross_fibers)
+    assert all(len(run) >= 1 for run in history)
+    first = history[0]
+    assert first[-1]["ranks"] == cross.cross_ranks[0]
+    assert all(a["fibers"] <= b["fibers"] for a, b in zip(first, first[1:]))

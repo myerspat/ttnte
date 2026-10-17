@@ -282,6 +282,9 @@ private:
   std::vector<int64_t> cross_fibers_;
   std::vector<int64_t> cross_max_ranks_;
   std::vector<double> cross_errors_;
+  /// Per transport solve: the ranks of the TT and the per-sweep history.
+  std::vector<std::vector<int64_t>> cross_ranks_;
+  std::vector<std::vector<cross::LayoutCross::SweepRecord>> cross_histories_;
   /// Wall time of the crosses and of their fiber sweeps (last solve).
   double cross_seconds_ = 0.0;
   double cross_sweep_seconds_ = 0.0;
@@ -739,6 +742,8 @@ private:
     cross_fibers_.push_back(cr.num_fibers());
     cross_max_ranks_.push_back(*std::max_element(ranks.begin(), ranks.end()));
     cross_errors_.push_back(cr.holdout_error());
+    cross_ranks_.push_back(ranks);
+    cross_histories_.push_back(cr.history());
     cross_seconds_ += cr.seconds();
     cross_sweep_seconds_ += cr.sweep_seconds();
     group_set_sweeps_++;
@@ -1147,6 +1152,8 @@ private:
     cross_fibers_.clear();
     cross_max_ranks_.clear();
     cross_errors_.clear();
+    cross_ranks_.clear();
+    cross_histories_.clear();
     cross_seconds_ = 0.0;
     cross_sweep_seconds_ = 0.0;
     for (auto& P : patches_) {
@@ -2115,6 +2122,15 @@ public:
   {
     return cross_sweep_seconds_;
   }
+  const std::vector<std::vector<int64_t>>& get_cross_ranks() const noexcept
+  {
+    return cross_ranks_;
+  }
+  const std::vector<std::vector<cross::LayoutCross::SweepRecord>>&
+  get_cross_histories() const noexcept
+  {
+    return cross_histories_;
+  }
   const std::vector<double>& get_cross_errors() const noexcept
   {
     return cross_errors_;
@@ -2206,6 +2222,25 @@ public:
     return solution;
   }
 
+  /// @brief The solution with its angular dependence, from the stored
+  /// angular flux or, with transport = CROSS and cross.keep_tt, from the TT
+  /// of the last transport solve (e.g. for particle balances).
+  typename Solution::Ptr angular_solution() const
+  {
+    auto solution = Solution::create(serial_ ? parallel::Communicator::self()
+                                             : parallel::Communicator::world(),
+      mesh_, qset_, xs_server_, physics::DGTransportAssemblerConfig(),
+      eigenvalue_mode_ ? std::optional<double>(k_) : std::nullopt, true);
+    solution->set_iteration_counts(
+      static_cast<int>(num_iterations_), static_cast<int>(num_iterations_));
+    for (const auto& P : patches_) {
+      solution->add_local_patch(
+        P.gid, linalg::State(
+                 linalg::TTEngine::from_dense(get_angular_flux(P.gid), 1e-14)));
+    }
+    return solution;
+  }
+
   /// @return The scalar flux of a patch, shape (*ctrlpts_grid, G).
   torch::Tensor get_scalar_flux(int64_t gid) const
   {
@@ -2225,16 +2260,38 @@ public:
   /// (*angular_modes, *ctrlpts_grid, G).
   torch::Tensor get_angular_flux(int64_t gid) const
   {
-    const auto& P = patches_.at(gid_to_local_.at(gid));
-    if (!P.psi.defined()) {
-      throw utils::runtime_error(ctx("get_angular_flux"),
-        "The angular flux is only kept with store_angular_flux = true");
+    const size_t local = gid_to_local_.at(gid);
+    const auto& P = patches_.at(local);
+    torch::Tensor psi = P.psi;
+    if (!psi.defined()) {
+      // A cross that kept its TT evaluates the patch's flux from it
+      const bool held =
+        !crosses_.empty() && std::all_of(crosses_.begin(), crosses_.end(),
+                               [](const auto& c) { return c->has_tt(); });
+      if (!held) {
+        throw utils::runtime_error(ctx("get_angular_flux"),
+          "The angular flux is only kept with store_angular_flux = true, or "
+          "from the TT with transport = CROSS and cross.keep_tt = true");
+      }
+      const int64_t N = P.disc->num_dofs();
+      const int64_t Nd = omega_.size(0);
+      psi = torch::empty({Nd, num_groups_, N}, torch::kFloat64);
+      std::vector<int64_t> dirs(Nd), space(N);
+      std::iota(dirs.begin(), dirs.end(), 0);
+      std::iota(space.begin(), space.end(), fiber_offsets_[local]);
+      for (size_t s = 0; s < crosses_.size(); s++) {
+        const auto& groups = group_indices_[s];
+        std::vector<int64_t> local_groups(groups.size());
+        std::iota(local_groups.begin(), local_groups.end(), 0);
+        auto values = crosses_[s]->evaluate(dirs, local_groups, space);
+        psi.index_copy_(1, torch::tensor(groups, torch::kInt64), values);
+      }
     }
     std::vector<int64_t> shape = angular_modes();
     for (auto s : P.disc->shape())
       shape.push_back(s);
     shape.push_back(num_groups_);
-    return P.psi.permute({0, 2, 1}).reshape(shape).contiguous();
+    return psi.permute({0, 2, 1}).reshape(shape).contiguous();
   }
 
   /// @return The factored angular mode sizes (TT core order).
