@@ -146,4 +146,5 @@ def test_angular_flux_from_kept_tt_and_histories():
     assert all(len(run) >= 1 for run in history)
     first = history[0]
     assert first[-1]["ranks"] == cross.cross_ranks[0]
+    assert [h["phase"] for h in first[:2]] == ["forward", "backward"]
     assert all(a["fibers"] <= b["fibers"] for a, b in zip(first, first[1:]))

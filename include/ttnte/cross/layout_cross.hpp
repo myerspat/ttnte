@@ -65,8 +65,11 @@ public:
   // Public types
   using Ptr = std::shared_ptr<LayoutCross>;
 
-  /// @brief State after one forward and backward sweep of a run.
+  /// @brief State after a half-sweep of a run: forward (interpolation
+  /// ranks, bounded by the index sets) or backward (truncated ranks, then the
+  /// hold-out check).
   struct SweepRecord {
+    bool forward = false;
     std::vector<int64_t> ranks;
     /// Fibers swept so far in the run.
     int64_t fibers = 0;
@@ -245,7 +248,7 @@ public:
   int64_t num_fibers() const noexcept { return num_swept_; }
   int64_t total_fibers() const noexcept { return total_fibers_; }
   double holdout_error() const noexcept { return holdout_error_; }
-  /// @return One record per sweep of the last run.
+  /// @return One record per half-sweep of the last run.
   const std::vector<SweepRecord>& history() const noexcept { return history_; }
   bool converged() const noexcept { return converged_; }
   int64_t sweeps_done() const noexcept { return sweeps_done_; }

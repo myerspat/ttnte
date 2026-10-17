@@ -1075,10 +1075,12 @@ void LayoutCross::run()
   sweeps_done_ = 0;
   for (int64_t it = 0; it < std::max<int64_t>(config_.max_sweeps, 1); it++) {
     forward();
+    history_.push_back(
+      {true, ranks(), num_swept_, std::numeric_limits<double>::quiet_NaN()});
     backward();
     sweeps_done_ = it + 1;
     err = check();
-    history_.push_back({ranks(), num_swept_, err});
+    history_.push_back({false, ranks(), num_swept_, err});
     if (err <= accept)
       break;
   }

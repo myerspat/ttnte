@@ -100,14 +100,15 @@ static void register_SweepDriver_impl(
           py::list sweeps;
           for (const auto& h : run)
             sweeps.append(
-              py::dict(py::arg("ranks") = h.ranks, py::arg("fibers") = h.fibers,
+              py::dict(py::arg("phase") = h.forward ? "forward" : "backward",
+                py::arg("ranks") = h.ranks, py::arg("fibers") = h.fibers,
                 py::arg("holdout_error") = h.holdout_error));
           out.append(sweeps);
         }
         return out;
       },
-      "Per transport solve, per sweep of its cross: ranks, fibers swept so "
-      "far, hold-out error")
+      "Per transport solve, per half-sweep of its cross: phase, ranks, fibers "
+      "swept so far, hold-out error (backward only)")
     .def("angular_solution", &SweepDriver::angular_solution,
       "The solution with angular dependence: the stored angular flux, or with "
       "transport = CROSS and cross.keep_tt the TT of the last transport solve")
