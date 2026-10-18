@@ -37,6 +37,18 @@ void register_PatchDiscretization(py::module_& m)
     .def("streaming_values", &PatchDiscretization::streaming_values,
       py::arg("omega"))
     .def("to_band", &PatchDiscretization::to_band, py::arg("values"))
+    .def_property_readonly("band_order", &PatchDiscretization::band_order,
+      "(N) dof at each band position (None: natural ordering).")
+    .def(
+      "evaluate_face",
+      [](const PatchDiscretization::Ptr& self, int64_t dim, bool is_upper,
+        const torch::Tensor& u) {
+        auto fp = self->evaluate_face(dim, is_upper, u);
+        return py::make_tuple(fp.R, fp.index, fp.x, fp.normal);
+      },
+      py::arg("dim"), py::arg("is_upper"), py::arg("u"),
+      "Face basis values, face-local indices, points and scaled outward "
+      "normals at (Q, ndim - 1) parametric points.")
     .def("to_dense", &PatchDiscretization::to_dense, py::arg("values"))
     .def("apply_mass", &PatchDiscretization::apply_mass, py::arg("x"))
     .def(

@@ -188,6 +188,9 @@ PatchDiscretization::PatchDiscretization(const cad::Patch& patch)
   for (const auto& b : bases) {
     dims.push_back(make_dim_data(b));
   }
+  bases_.assign(bases.begin(), bases.end());
+  ctrlpts_ = ctrlpts.contiguous();
+  orientation_ = patch.get_orientation();
 
   // ===============================================================
   // Volume integrals
@@ -317,26 +320,47 @@ PatchDiscretization::PatchDiscretization(const cad::Patch& patch)
         face.pair_val = (fp.R.unsqueeze(2) * fp.R.unsqueeze(1)).reshape({-1});
       }
 
-      // Locate each face pair in the coalesced volume pair list
-      auto fkeys = face.dofs.index({face.pair_a}) * num_dofs_ +
-                   face.dofs.index({face.pair_b});
-      auto pos = torch::searchsorted(ukeys, fkeys);
-      if (!(ukeys.index({pos.clamp_max(P - 1)}) == fkeys).all().item<bool>()) {
-        throw utils::runtime_error(ctx,
-          "A face pair has no matching volume pair (unexpected basis "
-          "support on the face)");
-      }
-      face.pair_volume_index = pos;
+      locate_face_pairs(face);
     }
   }
 
   // ===============================================================
-  // Band structure
-  auto diff = pair_row_ - pair_col_;
-  kl_ = std::max<int64_t>(0, diff.max().item<int64_t>());
-  ku_ = std::max<int64_t>(0, (-diff).max().item<int64_t>());
+  // Band structure: the natural ordering's bandwidth is set by the
+  // dimensions that vary fastest, so order the largest dimension slowest
+  // when that narrows the band (banded LU costs about N kl (kl + ku))
+  auto bandwidth = [](const torch::Tensor& row, const torch::Tensor& col) {
+    auto diff = row - col;
+    return std::make_pair(std::max<int64_t>(0, diff.max().item<int64_t>()),
+      std::max<int64_t>(0, (-diff).max().item<int64_t>()));
+  };
+  std::tie(kl_, ku_) = bandwidth(pair_row_, pair_col_);
+  auto band_row = pair_row_;
+  auto band_col = pair_col_;
+  std::vector<int64_t> order(ndim_);
+  std::iota(order.begin(), order.end(), int64_t {0});
+  std::stable_sort(order.begin(), order.end(),
+    [&](int64_t a, int64_t b) { return shape_[a] > shape_[b]; });
+  if (ndim_ > 1) {
+    auto band_order = torch::arange(num_dofs_, torch::kInt64)
+                        .reshape(shape_)
+                        .permute(order)
+                        .flatten()
+                        .contiguous();
+    auto position = torch::empty_like(band_order);
+    position.index_put_({band_order}, torch::arange(num_dofs_, torch::kInt64));
+    auto row = position.index({pair_row_});
+    auto col = position.index({pair_col_});
+    auto [kl, ku] = bandwidth(row, col);
+    if (kl * (kl + ku) < kl_ * (kl_ + ku_)) {
+      kl_ = kl;
+      ku_ = ku;
+      band_row = row;
+      band_col = col;
+      band_order_ = band_order;
+    }
+  }
   const int64_t ldab = linalg::banded::factor_ldab(kl_, ku_);
-  band_index_ = pair_col_ * ldab + (kl_ + ku_ + pair_row_ - pair_col_);
+  band_index_ = band_col * ldab + (kl_ + ku_ + band_row - band_col);
   dense_index_ = pair_row_ * num_dofs_ + pair_col_;
 
   // Contiguous storage for raw-array kernels
@@ -345,30 +369,53 @@ PatchDiscretization::PatchDiscretization(const cad::Patch& patch)
       t = t.contiguous();
   };
   for (auto* t : {&pair_row_, &pair_col_, &mass_val_, &grad_val_, &band_index_,
-         &dense_index_, &basis_integral_}) {
+         &dense_index_, &basis_integral_, &band_order_}) {
     own(*t);
   }
+  build_view();
+}
+
+void PatchDiscretization::locate_face_pairs(FaceGeometry& face) const
+{
+  const int64_t P = pair_row_.size(0);
+  auto keys = pair_row_ * num_dofs_ + pair_col_; // sorted (coalesced)
+  auto fkeys =
+    face.dofs.index({face.pair_a}) * num_dofs_ + face.dofs.index({face.pair_b});
+  auto pos = torch::searchsorted(keys, fkeys);
+  if (!(keys.index({pos.clamp_max(P - 1)}) == fkeys).all().item<bool>()) {
+    throw utils::runtime_error("ttnte::sweep::PatchDiscretization",
+      "A face pair has no matching volume pair (unexpected basis support on "
+      "the face)");
+  }
+  face.pair_volume_index = pos;
+}
+
+void PatchDiscretization::build_view()
+{
   for (auto& face : faces_) {
     for (auto* t :
       {&face.dofs, &face.normal, &face.weights, &face.pair_q, &face.pair_a,
         &face.pair_b, &face.pair_val, &face.pair_volume_index}) {
-      own(*t);
+      if (t->defined())
+        *t = t->contiguous();
     }
   }
 
-  // Raw view (tensors are not reassigned after this point)
+  view_ = KernelView();
   view_.ndim = ndim_;
   view_.num_dofs = num_dofs_;
   view_.num_pairs = pair_row_.size(0);
   view_.kl = kl_;
   view_.ku = ku_;
-  view_.ldab = ldab;
+  view_.ldab = linalg::banded::factor_ldab(kl_, ku_);
   view_.pair_row = pair_row_.data_ptr<int64_t>();
   view_.pair_col = pair_col_.data_ptr<int64_t>();
   view_.mass = mass_val_.data_ptr<double>();
   view_.grad = grad_val_.data_ptr<double>();
   view_.band_index = band_index_.data_ptr<int64_t>();
   view_.dense_index = dense_index_.data_ptr<int64_t>();
+  view_.band_order =
+    band_order_.defined() ? band_order_.data_ptr<int64_t>() : nullptr;
   for (const auto& face : faces_) {
     FaceView fv;
     fv.num_dofs = face.dofs.size(0);
@@ -385,6 +432,115 @@ PatchDiscretization::PatchDiscretization(const cad::Patch& patch)
     view_.max_face_points = std::max(view_.max_face_points, fv.num_points);
     view_.faces.push_back(fv);
   }
+}
+
+FacePoints PatchDiscretization::evaluate_face(
+  int64_t dim, bool is_upper, const torch::Tensor& u) const
+{
+  const std::string ctx = "ttnte::sweep::PatchDiscretization::evaluate_face";
+  if (ndim_ < 2) {
+    throw utils::runtime_error(ctx, "1-D patches have point faces");
+  }
+  auto opts = torch::TensorOptions().dtype(torch::kFloat64);
+  const auto& face = faces_.at(2 * dim + (is_upper ? 1 : 0));
+  const int64_t K = ndim_ - 1;
+  const int64_t Q = u.size(0);
+  if (u.dim() != 2 || u.size(1) != K) {
+    throw utils::runtime_error(
+      ctx, "`u` must be (Q, " + std::to_string(K) + ")");
+  }
+  auto uu = u.to(opts);
+
+  // Per tangential dimension: (Q, p + 1) values and derivatives of the
+  // non-vanishing functions, combined into a (Q, A) tensor product
+  auto N = torch::ones({Q, 1}, opts);
+  std::vector<torch::Tensor> dN(K, torch::ones({Q, 1}, opts));
+  auto index = torch::zeros({Q, 1}, torch::kInt64);
+  int64_t k = 0;
+  for (int64_t d = 0; d < ndim_; d++) {
+    if (d == dim)
+      continue;
+    const auto& basis = bases_[d];
+    const int64_t p = basis.get_degree();
+    auto x = uu.select(1, k).contiguous();
+    auto spans = basis.find_spans(x);
+    auto val = basis.evaluate(x, spans, 1).to(opts); // (Q, 2, p + 1)
+    auto local = (spans - p).to(torch::kInt64).unsqueeze(1) +
+                 torch::arange(p + 1, torch::kInt64).unsqueeze(0);
+    auto outer = [&](const torch::Tensor& a, const torch::Tensor& b) {
+      return (a.unsqueeze(2) * b.unsqueeze(1)).reshape({Q, -1});
+    };
+    auto v = val.select(1, 0);
+    auto dv = val.select(1, 1);
+    for (int64_t j = 0; j < K; j++)
+      dN[j] = outer(dN[j], j == k ? dv : v);
+    N = outer(N, v);
+    index = (index.unsqueeze(2) * face.shape[k] + local.unsqueeze(1))
+              .reshape({Q, -1});
+    k++;
+  }
+  auto dNs = torch::stack(dN, -1); // (Q, A, K)
+
+  FacePoints out;
+  out.index = index.contiguous();
+  if (control_weights_.defined()) {
+    // NURBS quotient rule with the face's control weights
+    auto w = control_weights_.index({face.dofs}).index({index});
+    auto W = (w * N).sum(1, true);
+    auto dW = (w.unsqueeze(-1) * dNs).sum(1, true);
+    out.R = w * N / W;
+    dNs =
+      (w.unsqueeze(-1) * dNs * W.unsqueeze(-1) - (w * N).unsqueeze(-1) * dW) /
+      W.square().unsqueeze(-1);
+  } else {
+    out.R = N;
+  }
+
+  // Points, tangents and the scaled outward normal, as in the constructor
+  auto Pf = ctrlpts_.index({face.dofs}).index({index}); // (Q, A, phys)
+  out.x = torch::einsum("qa,qai->qi", {out.R, Pf});
+  auto T = torch::einsum("qak,qai->qki", {dNs, Pf}); // (Q, K, phys)
+  const double sign = orientation_ * (is_upper ? 1.0 : -1.0);
+  const double orient = sign * ((dim % 2 != 0) ? -1.0 : 1.0);
+  if (ndim_ == 2) {
+    auto t = T.select(1, 0);
+    out.normal = orient * torch::stack({t.select(1, 1), -t.select(1, 0)}, 1);
+  } else {
+    out.normal =
+      orient * torch::linalg_cross(T.select(1, 0), T.select(1, 1), -1);
+  }
+  out.R = out.R.contiguous();
+  out.normal = out.normal.contiguous();
+  return out;
+}
+
+void PatchDiscretization::set_face_quadrature(int64_t dim, bool is_upper,
+  const torch::Tensor& u, const torch::Tensor& weights,
+  const torch::Tensor& normal)
+{
+  auto opts = torch::TensorOptions().dtype(torch::kFloat64);
+  auto& face = faces_.at(2 * dim + (is_upper ? 1 : 0));
+  auto fp = evaluate_face(dim, is_upper, u);
+  const int64_t Qf = fp.R.size(0);
+  const int64_t Af = fp.R.size(1);
+  if (weights.numel() != Qf || normal.size(0) != Qf ||
+      normal.size(1) != ndim_) {
+    throw utils::runtime_error(
+      "ttnte::sweep::PatchDiscretization::set_face_quadrature",
+      "`weights` must be (Q) and `normal` (Q, ndim)");
+  }
+  face.normal = normal.to(opts).contiguous();
+  face.weights = weights.to(opts).reshape({Qf}).contiguous();
+  face.area = (face.normal.norm(2, 1) * face.weights).sum().item<double>();
+  face.pair_q = torch::arange(Qf, torch::kInt64)
+                  .view({Qf, 1, 1})
+                  .expand({Qf, Af, Af})
+                  .reshape({-1});
+  face.pair_a = fp.index.unsqueeze(2).expand({Qf, Af, Af}).reshape({-1});
+  face.pair_b = fp.index.unsqueeze(1).expand({Qf, Af, Af}).reshape({-1});
+  face.pair_val = (fp.R.unsqueeze(2) * fp.R.unsqueeze(1)).reshape({-1});
+  locate_face_pairs(face);
+  build_view();
 }
 
 torch::Tensor PatchDiscretization::streaming_values(

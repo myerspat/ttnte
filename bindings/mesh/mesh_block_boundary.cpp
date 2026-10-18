@@ -46,14 +46,15 @@ void register_Boundary(py::module_& m)
 
   // NeighborInfo struct
   py::class_<NeighborInfo>(m, "NeighborInfo")
-    .def(py::init([](int64_t global_id, size_t face_id, int mpi_rank,
-                    size_t dim, bool is_upper, const BoundaryMapping& mapping) {
-      return NeighborInfo {
-        global_id, face_id, mpi_rank, dim, is_upper, mapping};
-    }),
+    .def(py::init(
+           [](int64_t global_id, size_t face_id, int mpi_rank, size_t dim,
+             bool is_upper, const BoundaryMapping& mapping, bool conforming) {
+             return NeighborInfo {global_id, face_id, mpi_rank, dim, is_upper,
+               mapping, conforming};
+           }),
       py::arg("global_id"), py::arg("face_id"), py::arg("mpi_rank"),
       py::arg("dim") = size_t(0), py::arg("is_upper") = false,
-      py::arg("mapping") = BoundaryMapping())
+      py::arg("mapping") = BoundaryMapping(), py::arg("conforming") = true)
     .def("__repr__", &NeighborInfo::to_string)
     .def("__str__",
       [](const NeighborInfo& self) {
@@ -67,7 +68,8 @@ void register_Boundary(py::module_& m)
     .def_readwrite("mpi_rank", &NeighborInfo::mpi_rank)
     .def_readwrite("dim", &NeighborInfo::dim)
     .def_readwrite("is_upper", &NeighborInfo::is_upper)
-    .def_readwrite("mapping", &NeighborInfo::mapping);
+    .def_readwrite("mapping", &NeighborInfo::mapping)
+    .def_readwrite("conforming", &NeighborInfo::conforming);
 
   // Boundary struct
   py::class_<BoundaryInfo>(m, "BoundaryInfo")

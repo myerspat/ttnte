@@ -132,6 +132,11 @@ struct SweepConfig {
   double face_weight_tol = 1e-12;
   /// Print iteration progress.
   bool verbose = true;
+  /// With verbose, also print the within-group-set iterations (residual,
+  /// group set, elapsed time) once at least this many seconds passed since
+  /// the last progress line (0: every iteration, < 0: never). Also prints
+  /// the memory held by the solver after setup.
+  double progress_seconds = 30.0;
   /// Transport solve of every sweep.
   TransportSolve transport = TransportSolve::EXACT;
   /// Options of the TT-cross (TransportSolve::CROSS).

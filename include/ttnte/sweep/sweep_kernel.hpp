@@ -32,6 +32,14 @@ struct FaceInflow {
   int64_t source_face_dofs = 0;
   /// NEIGHBOR: (Nf) source-face index of each of this face's dofs.
   const int64_t* trace_map = nullptr;
+  /// NEIGHBOR across a non-conforming interface (used instead of
+  /// trace_map): pairs of (quadrature point of this face, this face's dof,
+  /// source-face dof) with value R_a(q) R^src_b(q).
+  int64_t num_coupling_pairs = 0;
+  const int64_t* coupling_q = nullptr;
+  const int64_t* coupling_a = nullptr;
+  const int64_t* coupling_b = nullptr;
+  const double* coupling_val = nullptr;
   /// REFLECTIVE: (N_Omega) reflected direction of each direction.
   const int64_t* reflected = nullptr;
   /// REFLECTIVE: specular albedo.
@@ -103,6 +111,7 @@ struct SweepWorkspace {
   std::vector<double> values;
   std::vector<double> matrix;
   std::vector<double> rhs;
+  std::vector<double> permuted;
   std::vector<double> inflow;
   std::vector<int64_t> pivots;
 };

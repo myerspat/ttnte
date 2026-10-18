@@ -1,6 +1,6 @@
 # Define the relative filenames
 set(CAD_BINDINGS_REL bindings.cpp bspline_basis.cpp patch.cpp)
-set(CAD_SRC_REL bspline_basis.cpp patch.cpp)
+set(CAD_SRC_REL bspline_basis.cpp interface_quadrature.cpp patch.cpp)
 
 # Define the directory paths (Use local variables here, then push if needed)
 set(CAD_SRC_DIR "${PROJECT_SOURCE_DIR}/src/cad")

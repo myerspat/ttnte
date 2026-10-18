@@ -1742,11 +1742,27 @@ DGFirstOrderTransportBackend<cad::Patch, Fmt,
     // Extract the boundary block component
     auto boundary_block = block_->get_boundary(dim, is_upper);
 
-    // Create a NumDim - 1 dimensional backend
+    // Create a NumDim - 1 dimensional backend, on the quadrature shared with
+    // the neighbor for a non-conforming interface
     // TODO: Pass the decomposition of control points and weights directly to
     // the backend's cache
-    auto backend = DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim - 1>(
-      std::move(boundary_block), angular_qset_, *material_, *config_);
+    using FaceBackend =
+      DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim - 1>;
+    const auto shared = nonconforming_quadrature(dim, is_upper);
+    std::optional<FaceBackend> face_backend;
+    if (shared) {
+      const auto block_options = torch::TensorOptions()
+                                   .device(block_->get_device())
+                                   .dtype(block_->get_dtype());
+      Tensors points;
+      for (const auto& p : shared->points_first)
+        points.push_back(p.to(block_options));
+      face_backend.emplace(
+        boundary_block, angular_qset_, std::move(points), *config_);
+    } else {
+      face_backend.emplace(boundary_block, angular_qset_, *material_, *config_);
+    }
+    auto& backend = *face_backend;
 
     // Compute the basis and its derivatives (for cache to compute the Jacobian)
     auto basis = backend.assemble_basis_ders()[0];
@@ -1762,6 +1778,11 @@ DGFirstOrderTransportBackend<cad::Patch, Fmt,
     linalg::TTEngine::Tensors mapping;
     mapping.reserve(NumDim - 1);
     for (int64_t i = 0; i < NumDim - 1; i++) {
+      if (shared) {
+        mapping.push_back(
+          shared->weights_first[i].to(options).reshape({1, -1, 1, 1}));
+        continue;
+      }
       const auto& b = boundary_block->get_basis()[i];
       const auto& quad = backend.get_spatial_qset()->get_quads()[i];
 
@@ -1871,11 +1892,23 @@ DGFirstOrderTransportBackend<cad::Patch, Fmt,
                             .device(basis.get_device())
                             .dtype(basis.get_dtype());
 
-    // Get the outflow and inflow boundary operators
+    // Get the outflow and inflow boundary operators; across a
+    // non-conforming interface the inflow tests this face's basis against
+    // the neighbor's (its trace arrives in the neighbor's basis)
     const auto condition = block_->get_boundary_info(dim, is_upper).get_type();
     auto B_out = assemble_outflow_boundary_operator(basis, normal, mapping);
-    auto B_in =
-      assemble_inflow_boundary_operator(basis, normal, mapping, condition);
+    std::optional<linalg::TTEngine> B_in;
+    const auto shared = condition == BoundaryType::INTERNAL
+                          ? nonconforming_quadrature(dim, is_upper)
+                          : std::nullopt;
+    if (shared) {
+      auto trial = neighbor_trial_basis(dim, is_upper, *shared);
+      B_in = project_boundary_mask(
+        assemble_upwind_mask(normal, false), basis, mapping, &trial);
+    } else {
+      B_in =
+        assemble_inflow_boundary_operator(basis, normal, mapping, condition);
+    }
 
     // Create a core for the new dimension with a 1.0 in the spot of
     // the interpolatory control point evaluation
@@ -2282,9 +2315,102 @@ DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim>::assemble_upwind_mask(
 }
 
 template<FormatType Fmt, int64_t NumDim>
+std::optional<cad::InterfaceQuadrature>
+DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim>::nonconforming_quadrature(
+  size_t dim, bool is_upper) const
+{
+  if constexpr (NumDim > 1) {
+    const auto& info = block_->get_boundary_info(dim, is_upper);
+    if (info.get_type() != BoundaryType::INTERNAL ||
+        info.get_connections().size() != 1 ||
+        info.get_connections()[0].conforming) {
+      return std::nullopt;
+    }
+    const auto& conn = info.get_connections()[0];
+    if (!conn.neighbor_face) {
+      throw utils::runtime_error(
+        "ttnte::physics::DGFirstOrderTransportBackend::"
+        "nonconforming_quadrature",
+        "A non-conforming connection carries no neighbor face (connect the "
+        "mesh with Mesh::connect())");
+    }
+    std::vector<cad::BSplineBasis> own, neighbor;
+    for (const auto& b : block_->get_boundary(dim, is_upper)->get_basis())
+      own.push_back(b);
+    for (const auto& b : conn.neighbor_face->get_basis())
+      neighbor.push_back(b);
+    std::vector<int64_t> second_dim;
+    std::vector<bool> flip;
+    size_t k = 0;
+    for (int64_t d = 0; d < NumDim; d++) {
+      if (d == static_cast<int64_t>(dim))
+        continue;
+      const int64_t db = conn.mapping.perm[d];
+      second_dim.push_back(db - (db > static_cast<int64_t>(conn.dim) ? 1 : 0));
+      flip.push_back(conn.mapping.flip[k++]);
+    }
+    return cad::interface_quadrature(own, neighbor, second_dim, flip);
+  }
+  return std::nullopt;
+}
+
+template<FormatType Fmt, int64_t NumDim>
+typename Return<Fmt, NumDim>::Type
+DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim>::neighbor_trial_basis(
+  size_t dim, bool is_upper, const cad::InterfaceQuadrature& iq)
+{
+  if constexpr (Fmt == FormatType::TENSOR_TRAIN && NumDim > 1) {
+    const auto& conn =
+      block_->get_boundary_info(dim, is_upper).get_connections()[0];
+    const auto options = torch::TensorOptions()
+                           .device(block_->get_device())
+                           .dtype(block_->get_dtype());
+    constexpr int64_t K = NumDim - 1;
+
+    // The neighbor's face basis at the shared points, in its own order
+    Tensors points;
+    points.resize(K);
+    for (int64_t k = 0; k < K; k++)
+      points[iq.second_dim[k]] = iq.points_second[k].to(options);
+    DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim - 1> neighbor(
+      conn.neighbor_face, angular_qset_, std::move(points), *config_);
+    auto cores = neighbor.assemble_basis().get_cores();
+
+    // Into this face's order: swap the two cores of a 2-D face whose
+    // parameters are transposed (exact SVD of the merged pair)
+    if (K == 2 && iq.second_dim[0] == 1) {
+      const auto& a = cores[0];
+      const auto& b = cores[1];
+      auto merged = torch::einsum("aqnb,bpmc->apmqnc", {a, b});
+      const int64_t r0 = a.size(0), r2 = b.size(3);
+      auto [U, S, Vh] = torch::linalg_svd(
+        merged.reshape({r0 * b.size(1) * b.size(2), -1}), false);
+      const double cut = S[0].template item<double>() * 1e-14;
+      const int64_t r =
+        std::max<int64_t>(1, (S > cut).sum().template item<int64_t>());
+      auto first = (U.narrow(1, 0, r) * S.narrow(0, 0, r))
+                     .reshape({r0, b.size(1), b.size(2), r});
+      auto second = Vh.narrow(0, 0, r).reshape({r, a.size(1), a.size(2), r2});
+      cores[0] = first.contiguous();
+      cores[1] = second.contiguous();
+    }
+
+    // Reversed parameters: the mapped neighbor state is flipped there too
+    for (int64_t k = 0; k < K; k++)
+      if (iq.flip[k])
+        cores[k] = cores[k].flip(2).contiguous();
+    return linalg::TTEngine(std::move(cores), false);
+  }
+  throw utils::runtime_error("ttnte::physics::DGFirstOrderTransportBackend::"
+                             "neighbor_trial_basis",
+    "This method is only valid for FormatType::TENSOR_TRAIN with NumDim > 1");
+}
+
+template<FormatType Fmt, int64_t NumDim>
 typename Return<Fmt, NumDim>::Type
 DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim>::project_boundary_mask(
-  linalg::TTEngine mask, const ReturnType& basis, const ReturnType& mapping)
+  linalg::TTEngine mask, const ReturnType& basis, const ReturnType& mapping,
+  const ReturnType* trial)
 {
   if constexpr (Fmt == FormatType::TENSOR_TRAIN && NumDim > 1) {
     // Apply the basis
@@ -2299,14 +2425,15 @@ DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim>::project_boundary_mask(
     }
     mask.round_(config_->rounding.eps, config_->rounding.max_rank);
 
-    // Compute the outer product with the mapped basis
+    // Compute the outer product with the mapped (trial) basis
+    const ReturnType& columns = trial ? *trial : basis;
     for (size_t i = 0; i < NumDim - 1; i++) {
       auto& core = mask[i + 2];
-      int64_t rl_b = basis[i].size(0);
+      int64_t rl_b = columns[i].size(0);
       int64_t m = core.size(2);
-      int64_t n = basis[i].size(2);
+      int64_t n = columns[i].size(2);
 
-      auto mapped_basis = basis[i] * mapping[i];
+      auto mapped_basis = columns[i] * mapping[i];
 
       core = torch::einsum("abcd,ebfg->aecfdg", {core, mapped_basis})
                .reshape({core.size(0) * rl_b, m, n, -1});

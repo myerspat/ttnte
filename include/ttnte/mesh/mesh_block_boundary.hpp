@@ -6,11 +6,16 @@
 #include "ttnte/utils/io_formatting.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <ostream>
 #include <sstream>
 #include <string>
 #include <torch/extension.h>
+
+namespace ttnte::cad {
+class Patch;
+} // namespace ttnte::cad
 
 namespace ttnte::mesh {
 
@@ -87,6 +92,14 @@ struct NeighborInfo {
   /// Mapping that must be applied to any data passed from
   /// this neighbor
   BoundaryMapping mapping;
+  /// Whether both faces have the same control points (same knot vectors
+  /// and degrees). A non-conforming connection joins the same surface
+  /// refined differently, whole face to whole face.
+  bool conforming = true;
+  /// Non-conforming connections: the neighbor's face as a patch of one
+  /// dimension less (its knot vectors, degrees and weights are needed to
+  /// integrate the interface after the mesh is distributed over ranks).
+  std::shared_ptr<cad::Patch> neighbor_face;
 
   /// @return To string method for printing
   std::string to_string() const
@@ -94,7 +107,8 @@ struct NeighborInfo {
     std::stringstream ss;
     ss << "NeighborInfo(gid=" << gid << ", fid=" << fid
        << ", mpi_rank=" << mpi_rank << ", dim=" << dim
-       << ", is_upper=" << (is_upper ? "true" : "false") << ")";
+       << ", is_upper=" << (is_upper ? "true" : "false")
+       << ", conforming=" << (conforming ? "true" : "false") << ")";
     return ss.str();
   }
 };

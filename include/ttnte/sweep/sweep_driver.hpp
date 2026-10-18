@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ttnte/cad/interface_quadrature.hpp"
 #include "ttnte/cross/layout_cross.hpp"
 #include "ttnte/driver/transport_solution.hpp"
 #include "ttnte/linalg/banded_cholesky.hpp"
@@ -93,8 +94,15 @@ private:
     /// number of dofs of its face.
     int remote_rank = -1;
     int64_t neighbor_face_dofs = 0;
-    /// INTERNAL: (Nf) neighbor-face index of each of this face's dofs.
+    /// INTERNAL: (Nf) neighbor-face index of each of this face's dofs
+    /// (conforming interfaces).
     torch::Tensor trace_map;
+    /// INTERNAL, non-conforming: (quadrature point, own face dof, neighbor
+    /// face dof, R_a R^nb_b) pairs at the shared interface quadrature.
+    torch::Tensor coupling_q;
+    torch::Tensor coupling_a;
+    torch::Tensor coupling_b;
+    torch::Tensor coupling_val;
     /// INTERNAL: SweepInterface index and whether this patch is its first.
     int64_t interface = -1;
     bool is_first = false;
@@ -124,7 +132,8 @@ private:
     torch::Tensor external;
     std::vector<FaceLink> links;
     /// Per face (N_Omega, G, Nf) outgoing traces of this and the previous
-    /// sweep (undefined if the face has no buffer).
+    /// sweep (undefined if the face has no buffer; the previous one only
+    /// exists where a delayed block reads it).
     std::vector<torch::Tensor> trace_current;
     std::vector<torch::Tensor> trace_previous;
     /// Per face with a remote neighbor: (N_Omega, G, Nf_neighbor) neighbor
@@ -295,6 +304,9 @@ private:
   /// Wall time of the running solve at the last completed outer iteration,
   /// excluding time spent in the callback.
   double solve_seconds_ = 0.0;
+  /// Start of the running solve and time of the last progress line.
+  std::chrono::steady_clock::time_point solve_start_;
+  std::chrono::steady_clock::time_point last_progress_;
 
   /// Whether the running solve is a k-eigenvalue power iteration, and k.
   bool eigenvalue_mode_ = false;
@@ -451,7 +463,15 @@ private:
       in.kind = FaceInflow::Kind::NEIGHBOR;
       in.trace = buffer.template data_ptr<double>();
       in.source_face_dofs = buffer.size(2);
-      in.trace_map = link.trace_map.template data_ptr<int64_t>();
+      if (link.coupling_q.defined()) {
+        in.num_coupling_pairs = link.coupling_q.numel();
+        in.coupling_q = link.coupling_q.template data_ptr<int64_t>();
+        in.coupling_a = link.coupling_a.template data_ptr<int64_t>();
+        in.coupling_b = link.coupling_b.template data_ptr<int64_t>();
+        in.coupling_val = link.coupling_val.template data_ptr<double>();
+      } else {
+        in.trace_map = link.trace_map.template data_ptr<int64_t>();
+      }
     } else if (link.type == physics::BoundaryType::REFLECTIVE) {
       // Reflected directions belong to other angle sets: lag them
       in.kind = FaceInflow::Kind::REFLECTIVE;
@@ -998,6 +1018,30 @@ private:
     }
   }
 
+  /// @brief Print a progress line of the within-group-set iteration when
+  /// SweepConfig::progress_seconds have passed since the last one.
+  void report_progress(size_t s, int64_t iteration, double residual,
+    const char* method, bool force = false)
+  {
+    if (!config_.verbose || config_.progress_seconds < 0 || comm_.rank() != 0)
+      return;
+    auto now = std::chrono::steady_clock::now();
+    if (!force && std::chrono::duration<double>(now - last_progress_).count() <
+                    config_.progress_seconds)
+      return;
+    last_progress_ = now;
+    const auto& groups = group_indices_[s];
+    std::cout << "--   group set " << s + 1 << "/" << group_indices_.size()
+              << " (groups " << groups.front() << "-" << groups.back() << "), "
+              << method << " iteration " << iteration
+              << ": residual = " << std::scientific << std::setprecision(3)
+              << residual << std::defaultfloat << ", sweep time " << std::fixed
+              << std::setprecision(1) << get_dag_seconds() << " s, solve time "
+              << std::setprecision(1)
+              << std::chrono::duration<double>(now - solve_start_).count()
+              << " s" << std::defaultfloat << std::endl;
+  }
+
   /// @return Within-group-set tolerance of the current outer iteration.
   double inner_tolerance() const
   {
@@ -1038,6 +1082,8 @@ private:
         commit_group_set(s);
         num = global_sum(num);
         den = global_sum(den);
+        report_progress(
+          s, it + 1, den == 0.0 ? 0.0 : std::sqrt(num / den), "Richardson");
         if (den == 0.0 || std::sqrt(num / den) < tol)
           break;
       }
@@ -1064,7 +1110,9 @@ private:
       for (int64_t i = 0; i < n; i++)
         out[i] = in[i] - tmp[i];
     };
+    int64_t iteration = 0;
     auto progress = [&](double residual) {
+      report_progress(s, ++iteration, residual, "GMRES");
       cross_tol_ = config_.cross.relax
                      ? std::min(config_.cross.max_tol,
                          tol_min / std::max(residual, tol_min))
@@ -1161,14 +1209,10 @@ private:
       if (unit_scalar_flux)
         P.moments[0].fill_(1.0);
       for (size_t f = 0; f < P.links.size(); f++) {
-        if (P.links[f].has_buffer) {
-          P.trace_current[f].zero_();
-          P.trace_previous[f].zero_();
-        }
-        if (P.ghost_current[f].defined()) {
-          P.ghost_current[f].zero_();
-          P.ghost_previous[f].zero_();
-        }
+        for (auto* t : {&P.trace_current[f], &P.trace_previous[f],
+               &P.ghost_current[f], &P.ghost_previous[f]})
+          if (t->defined())
+            t->zero_();
       }
     }
     errors_.clear();
@@ -1478,6 +1522,8 @@ private:
 
     const bool verbose = config_.verbose && comm_.rank() == 0;
     auto start = std::chrono::high_resolution_clock::now();
+    solve_start_ = std::chrono::steady_clock::now();
+    last_progress_ = solve_start_;
     double callback_seconds = 0.0;
     solve_seconds_ = 0.0;
     double previous_error = -1.0;
@@ -1710,6 +1756,75 @@ public:
     harmonics_ = harmonics_.contiguous();
     omega_ = omega_.contiguous();
 
+    // Non-conforming interfaces: both faces integrate with one shared
+    // quadrature (union of the knot spans, the larger degree), the second
+    // face with the exact negative of the first's normal, so the outflow of
+    // one side is the inflow of the other
+    std::map<std::pair<size_t, int64_t>, std::array<torch::Tensor, 4>>
+      couplings;
+    for (size_t i = 0; i < nodes.size() && NumDim > 1; i++) {
+      auto& P = nodes[i];
+      for (int64_t dim = 0; dim < NumDim; dim++) {
+        for (bool is_upper : {false, true}) {
+          const auto& info = P.block->get_boundary_info(dim, is_upper);
+          if (info.get_type() != physics::BoundaryType::INTERNAL ||
+              info.get_connections().size() != 1)
+            continue;
+          const auto& conn = info.get_connections()[0];
+          if (conn.conforming || P.gid > conn.gid)
+            continue;
+          const size_t j = gid_to_node.at(conn.gid);
+          auto& Q = nodes[j];
+          auto iq = cad::interface_quadrature(
+            *P.block, dim, *Q.block, conn.dim, conn.mapping);
+          auto fa = P.disc->evaluate_face(dim, is_upper, iq.u_first);
+          auto fb = Q.disc->evaluate_face(conn.dim, conn.is_upper, iq.u_second);
+          const double scale = 1.0 + fa.x.abs().max().template item<double>();
+          if ((fa.x - fb.x).abs().max().template item<double>() >
+              1e-8 * scale) {
+            throw utils::runtime_error(ctx("setup"),
+              "The faces of the non-conforming interface between patches " +
+                std::to_string(P.gid) + " and " + std::to_string(conn.gid) +
+                " do not share their parametrization (refine both from one "
+                "patch by knot insertion and degree elevation)");
+          }
+          if (((fa.normal * fb.normal).sum(1) > 0)
+                .any()
+                .template item<bool>()) {
+            throw utils::runtime_error(ctx("setup"),
+              "The normals of a non-conforming interface are not opposite");
+          }
+          P.disc->set_face_quadrature(
+            dim, is_upper, iq.u_first, iq.weights, fa.normal);
+          Q.disc->set_face_quadrature(
+            conn.dim, conn.is_upper, iq.u_second, iq.weights, -fa.normal);
+          auto pairs = [](const FacePoints& own, const FacePoints& src) {
+            const int64_t q = own.R.size(0), na = own.R.size(1),
+                          nb = src.R.size(1);
+            return std::array<torch::Tensor, 4> {torch::arange(q, torch::kInt64)
+                                                   .view({q, 1, 1})
+                                                   .expand({q, na, nb})
+                                                   .reshape({-1})
+                                                   .contiguous(),
+              own.index.unsqueeze(2)
+                .expand({q, na, nb})
+                .reshape({-1})
+                .contiguous(),
+              src.index.unsqueeze(1)
+                .expand({q, na, nb})
+                .reshape({-1})
+                .contiguous(),
+              (own.R.unsqueeze(2) * src.R.unsqueeze(1))
+                .reshape({-1})
+                .contiguous()};
+          };
+          couplings[{i, 2 * dim + (is_upper ? 1 : 0)}] = pairs(fa, fb);
+          couplings[{j, 2 * static_cast<int64_t>(conn.dim) +
+                          (conn.is_upper ? 1 : 0)}] = pairs(fb, fa);
+        }
+      }
+    }
+
     // Face links and interfaces between nodes
     std::vector<SweepInterface> interfaces;
     std::map<std::pair<int64_t, int64_t>, int64_t> owner_face_to_interface;
@@ -1750,9 +1865,17 @@ public:
             link.neighbor_face = 2 * conn.dim + (conn.is_upper ? 1 : 0);
             link.neighbor_face_dofs =
               nodes[link.neighbor].disc->faces()[link.neighbor_face].num_dofs();
-            link.trace_map =
-              build_trace_map(dim, conn, *nodes[link.neighbor].disc)
-                .contiguous();
+            auto coupling = couplings.find({i, f});
+            if (coupling != couplings.end()) {
+              link.coupling_q = coupling->second[0];
+              link.coupling_a = coupling->second[1];
+              link.coupling_b = coupling->second[2];
+              link.coupling_val = coupling->second[3];
+            } else {
+              link.trace_map =
+                build_trace_map(dim, conn, *nodes[link.neighbor].disc)
+                  .contiguous();
+            }
             link.has_buffer = true;
             link.is_first = P.gid < conn.gid;
             if (link.is_first) {
@@ -1860,8 +1983,8 @@ public:
       group_complements_.push_back(std::move(complement));
     }
 
-    // Lagged traces: reflective faces (every direction is read for its
-    // reflection) and interface faces read in a LAGGED state
+    // Lagged traces: reflective faces (the outflow directions, read for
+    // their reflections) and interface faces read in a LAGGED state
     // Key: (unit, face, ghost) of the buffer holding the lagged trace
     std::map<std::tuple<int64_t, int64_t, bool>, std::set<int64_t>> lagged;
     for (size_t i = 0; i < patches_.size(); i++) {
@@ -1870,8 +1993,11 @@ public:
         const auto& link = P.links[f];
         if (link.type == physics::BoundaryType::REFLECTIVE) {
           auto& dirs = lagged[{static_cast<int64_t>(i), f, false}];
+          auto outflow = P.disc->faces()[f].upwind_weights(omega_, true).sum(1);
+          const double* w = outflow.template data_ptr<double>();
           for (int64_t d = 0; d < num_directions; d++)
-            dirs.insert(d);
+            if (w[d] > 0.0)
+              dirs.insert(d);
         } else if (link.type == physics::BoundaryType::INTERNAL) {
           const auto& sets = graph_->angle_sets();
           for (size_t a = 0; a < sets.size(); a++) {
@@ -1895,9 +2021,13 @@ public:
         std::vector<int64_t>(dirs.begin(), dirs.end()), std::get<2>(key)});
     }
 
-    // Buffers
+    // Buffers; previous traces are only read where they are lagged
+    std::set<std::tuple<int64_t, int64_t, bool>> lagged_faces;
+    for (const auto& blk : delayed_)
+      lagged_faces.insert({blk.local, blk.face, blk.ghost});
     const int64_t M = harmonics_.size(1);
-    for (auto& P : patches_) {
+    for (size_t i = 0; i < patches_.size(); i++) {
+      auto& P = patches_[i];
       const int64_t N = P.disc->num_dofs();
       P.trace_current.assign(P.links.size(), torch::Tensor());
       P.trace_previous.assign(P.links.size(), torch::Tensor());
@@ -1906,7 +2036,8 @@ public:
           const int64_t Nf = P.disc->faces()[f].num_dofs();
           P.trace_current[f] =
             torch::zeros({num_directions, num_groups_, Nf}, torch::kFloat64);
-          P.trace_previous[f] = torch::zeros_like(P.trace_current[f]);
+          if (lagged_faces.count({static_cast<int64_t>(i), f, false}))
+            P.trace_previous[f] = torch::zeros_like(P.trace_current[f]);
         }
       }
       P.ghost_current.assign(P.links.size(), torch::Tensor());
@@ -1916,7 +2047,8 @@ public:
           P.ghost_current[f] = torch::zeros(
             {num_directions, num_groups_, P.links[f].neighbor_face_dofs},
             torch::kFloat64);
-          P.ghost_previous[f] = torch::zeros_like(P.ghost_current[f]);
+          if (lagged_faces.count({static_cast<int64_t>(i), f, true}))
+            P.ghost_previous[f] = torch::zeros_like(P.ghost_current[f]);
         }
       }
       P.moments = torch::zeros({M, num_groups_, N}, torch::kFloat64);
@@ -1967,6 +2099,23 @@ public:
     build_range_dag();
     build_crosses();
     is_setup_ = true;
+
+    if (config_.verbose && config_.progress_seconds >= 0 && comm_.rank() == 0) {
+      const auto report = memory_report();
+      int64_t total = 0;
+      std::cout << "-- sweep setup: " << patches_.size() << " units, "
+                << num_directions << " directions, " << num_groups_
+                << " groups in " << group_indices_.size() << " group sets, "
+                << delayed_.size() << " lagged trace blocks; memory (GB):";
+      for (const auto& [key, b] : report) {
+        if (key == "krylov_vector")
+          continue;
+        total += b;
+        std::cout << " " << key << " " << std::fixed << std::setprecision(2)
+                  << b / 1e9;
+      }
+      std::cout << ", total " << total / 1e9 << std::defaultfloat << std::endl;
+    }
   }
 
   /// @brief Sweep the fibers of `blocks` with the current source moments
@@ -2441,6 +2590,43 @@ public:
     dag_nanoseconds_ = 0;
   }
   /// @return Bytes held by the factorization cache (0 if disabled).
+  /// @return Bytes held (or, for GMRES, allocated during a solve) by the
+  /// solver's large buffers on this rank: angular flux, face traces (current
+  /// and previous), ghost traces, moments, factorization cache, and the
+  /// GMRES basis of the largest group set ((restart + 4) Krylov vectors).
+  std::map<std::string, int64_t> memory_report() const
+  {
+    std::map<std::string, int64_t> bytes;
+    auto add = [&](const std::string& key, const torch::Tensor& t) {
+      if (t.defined())
+        bytes[key] += t.numel() * t.element_size();
+    };
+    for (const auto& P : patches_) {
+      add("angular_flux", P.psi);
+      for (const auto& t : P.trace_current)
+        add("traces", t);
+      for (const auto& t : P.trace_previous)
+        add("traces", t);
+      for (const auto& t : P.ghost_current)
+        add("ghost_traces", t);
+      for (const auto& t : P.ghost_previous)
+        add("ghost_traces", t);
+      for (const auto* t : {&P.moments, &P.moments_next, &P.source_moments,
+             &P.krylov_moments, &P.pass_moments, &P.fission_source})
+        add("moments", *t);
+      add("factorizations", P.factors);
+      add("factorizations", P.factor_pivots);
+    }
+    int64_t krylov = 0;
+    for (size_t s = 0; s < group_indices_.size(); s++)
+      krylov = std::max(krylov, krylov_size(s));
+    bytes["krylov_vector"] = krylov * 8;
+    bytes["gmres"] = config_.inner_solver == InnerSolver::GMRES
+                       ? (config_.gmres_restart + 4) * krylov * 8
+                       : 0;
+    return bytes;
+  }
+
   int64_t factorization_bytes() const noexcept
   {
     int64_t bytes = 0;

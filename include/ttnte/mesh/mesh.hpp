@@ -277,17 +277,16 @@ public:
           // Get the boundary mesh block
           const auto& bblock = block->get_boundary(dim, is_upper);
 
-          // Get the bounding box center
-          const torch::Tensor& bbox = bblock->get_bbox().to(torch::kFloat64);
-          const torch::Tensor bbox_center = bbox.sum(0) / 2.0;
-
           // Check if the face is degenerate and set it to be so
           if (is_face_degenerate(bblock->get_coords(), tol)) {
             block->set_boundary_type(
               dim, is_upper, physics::BoundaryType::DEGENERATE);
           } else {
-            // Get the key for this
-            auto key = PointKey(bbox_center, tol);
+            // Key: the face's point at its parametric center, which (unlike
+            // the control-point bounding box) does not depend on how the
+            // face is refined and is invariant under its flips and
+            // permutations
+            auto key = PointKey(sample_face(bblock, {0.5}).reshape({-1}), tol);
             spatial_hash[key].push_back(std::make_tuple(i, dim, is_upper));
           }
         }
@@ -330,8 +329,16 @@ public:
 
           // Call boundary mapping which is a vector of true/false info
           // For D dimensions:
-          const auto& [is_coupled, mapping_a, mapping_b] =
+          // Conforming faces match control point by control point;
+          // otherwise both faces must be the same surface (refined
+          // differently, no T-junctions)
+          auto [is_coupled, mapping_a, mapping_b] =
             get_boundary_mapping(bblock_a, bblock_b, dim_a, dim_b, tol);
+          bool conforming = is_coupled;
+          if (!is_coupled) {
+            std::tie(is_coupled, mapping_a, mapping_b) =
+              get_nonconforming_mapping(bblock_a, bblock_b, dim_a, dim_b, tol);
+          }
 
           if (is_coupled) {
             const size_t face_a_id =
@@ -342,10 +349,12 @@ public:
             // Set the mapping and neighbor information for each boundary
             block_a->add_connection(dim_a, is_upper_a,
               {static_cast<int64_t>(block_b_idx), face_b_id, my_rank_, dim_b,
-                is_upper_b, mapping_a});
+                is_upper_b, mapping_a, conforming,
+                conforming ? nullptr : bblock_b});
             block_b->add_connection(dim_b, is_upper_b,
               {static_cast<int64_t>(block_a_idx), face_a_id, my_rank_, dim_a,
-                is_upper_a, mapping_b});
+                is_upper_a, mapping_b, conforming,
+                conforming ? nullptr : bblock_a});
 
             // We found a match
             found_match = true;
@@ -423,11 +432,77 @@ public:
         !torch::allclose(face_a->get_bbox(), face_b->get_bbox(), tol, tol)) {
       return std::make_tuple(false, mapping_a, mapping_b);
     }
-    int64_t ndim = face_a->get_ndim();
 
     // Get mesh points (N1, ..., ND, xyz)
-    torch::Tensor coords_a = face_a->get_coords();
-    torch::Tensor coords_b = face_b->get_coords();
+    return search_mapping(
+      face_a->get_coords(), face_b->get_coords(), dim_a, dim_b, tol);
+  }
+
+  /// @brief Match two faces that are the same surface but refined
+  /// differently (different knot vectors or degrees, whole face to whole
+  /// face). The faces are compared by their geometry at a grid of
+  /// parametric points symmetric about the center, so flips and
+  /// permutations of the parametric axes are found as in
+  /// get_boundary_mapping(). The faces must share their parametrization up
+  /// to those flips and permutations (e.g. both refined from one patch by
+  /// knot insertion and degree elevation).
+  /// @param face_a  The first boundary represented as another MeshBlock.
+  /// @param face_b  The second boundary represented as another MeshBlock.
+  /// @param dim_a   Parametric dimension of the face in block A (0-based).
+  /// @param dim_b   Parametric dimension of the face in block B (0-based).
+  /// @param tol The tolerance for the geometric checks.
+  /// @return As get_boundary_mapping().
+  static std::tuple<bool, BoundaryMapping, BoundaryMapping>
+  get_nonconforming_mapping(const BlockTypePtr& face_a,
+    const BlockTypePtr& face_b, size_t dim_a, size_t dim_b,
+    const double& tol = 1e-8)
+  {
+    if (face_a->get_ndim() != face_b->get_ndim()) {
+      return std::make_tuple(false, BoundaryMapping(), BoundaryMapping());
+    }
+    const std::vector<double> s = {0.0, 0.137, 0.5, 0.863, 1.0};
+    return search_mapping(
+      sample_face(face_a, s), sample_face(face_b, s), dim_a, dim_b, tol);
+  }
+
+  /// @return The face evaluated on the tensor grid of the normalized
+  /// parametric coordinates `s` in every dimension, shaped (n, ..., n, xyz).
+  static torch::Tensor sample_face(
+    const BlockTypePtr& face, const std::vector<double>& s)
+  {
+    // Point faces (1-D blocks) have no parameters
+    if (face->get_basis().empty()) {
+      return face->get_coords().to(torch::kFloat64).cpu();
+    }
+    c10::SmallVector<torch::Tensor, 3> coords;
+    for (const auto& basis : face->get_basis()) {
+      const auto knots = basis.get_unique_knots();
+      const double lo = knots[0].template item<double>();
+      const double hi = knots[-1].template item<double>();
+      auto u = torch::tensor(s, torch::kFloat64) * (hi - lo) + lo;
+      coords.push_back(u.to(knots.options()));
+    }
+    return face->evaluate(coords).to(torch::kFloat64).cpu();
+  }
+
+  /// @brief Find the permutation and flips of the parametric axes that map
+  /// the points of face B onto those of face A.
+  /// @param coords_a (N1, ..., ND, xyz) points of face A.
+  /// @param coords_b (N1, ..., ND, xyz) points of face B.
+  /// @param dim_a Parametric dimension of the face in block A.
+  /// @param dim_b Parametric dimension of the face in block B.
+  /// @param tol The tolerance for the geometric checks.
+  /// @return As get_boundary_mapping().
+  static std::tuple<bool, BoundaryMapping, BoundaryMapping> search_mapping(
+    const torch::Tensor& coords_a, const torch::Tensor& coords_b, size_t dim_a,
+    size_t dim_b, const double& tol)
+  {
+    BoundaryMapping mapping_a;
+    BoundaryMapping mapping_b;
+    const int64_t ndim = coords_a.dim() - 1;
+    if (coords_b.dim() != coords_a.dim()) {
+      return std::make_tuple(false, mapping_a, mapping_b);
+    }
 
     // Permutation generator
     c10::SmallVector<int64_t, 2> p(ndim);
@@ -458,7 +533,8 @@ public:
         }
 
         // Check for an exact match
-        if (torch::allclose(coords_a, test_b, tol, tol)) {
+        if (coords_a.sizes() == test_b.sizes() &&
+            torch::allclose(coords_a, test_b, tol, tol)) {
           // Compute inverse face-coord permutation (used for mapping_b flip)
           c10::SmallVector<int64_t, 2> p_inv(ndim);
           c10::SmallVector<bool, 2> f_inv(ndim, false);

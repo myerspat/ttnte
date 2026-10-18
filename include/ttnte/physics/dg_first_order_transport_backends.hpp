@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ttnte/cad/interface_quadrature.hpp"
 #include "ttnte/cad/patch.hpp"
 #include "ttnte/linalg/operator.hpp"
 #include "ttnte/linalg/state.hpp"
@@ -10,6 +11,7 @@
 #include "ttnte/physics/fixed_source.hpp"
 #include "ttnte/xs/server.hpp"
 #include <c10/util/SmallVector.h>
+#include <optional>
 
 namespace ttnte::physics::backends {
 
@@ -411,8 +413,26 @@ private:
   /// already applied.
   /// @param basis Per-tangential-dim DG basis matrices.
   /// @param mapping Per-tangential-dim quadrature-weighted affine mapping.
+  /// @param trial Per-tangential-dim trial basis (columns) when it differs
+  /// from the test basis `basis` (rows): the neighbor's face basis at a
+  /// non-conforming interface; nullptr for `basis`.
   auto project_boundary_mask(linalg::TTEngine mask, const ReturnType& basis,
-    const ReturnType& mapping) -> ReturnType;
+    const ReturnType& mapping, const ReturnType* trial = nullptr) -> ReturnType;
+
+  /// @return The quadrature this face shares with its neighbor when it is a
+  /// non-conforming INTERNAL face (see cad::interface_quadrature()), or
+  /// nullopt. Every face integral of such a face (operators, currents,
+  /// leakage) uses it, so both sides integrate the interface flux alike.
+  std::optional<cad::InterfaceQuadrature> nonconforming_quadrature(
+    size_t dim, bool is_upper) const;
+
+  /// @return The neighbor's face basis at the shared quadrature points of a
+  /// non-conforming face, as per-tangential-dim cores (r, q, n, r) in this
+  /// face's tangential order and orientation (the order of the neighbor's
+  /// face state after NeighborCoupling::set_recv_buffer() maps it): the
+  /// trial basis of the inflow operator.
+  auto neighbor_trial_basis(size_t dim, bool is_upper,
+    const cad::InterfaceQuadrature& iq) -> ReturnType;
 
   /// @brief Compute a boundary face's tangential DG basis, pointwise outward
   /// normal (accounting for IGA/NURBS curvature via the Jacobian cross

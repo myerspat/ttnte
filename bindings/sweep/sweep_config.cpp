@@ -60,7 +60,8 @@ void register_SweepConfig(py::module_& m)
              int64_t max_iter, bool rho_safety, double face_weight_tol,
              bool verbose, TransportSolve transport,
              const ttnte::cross::CrossConfig& cross, double local_tol,
-             int64_t local_restart, int64_t local_max_iter) {
+             int64_t local_restart, int64_t local_max_iter,
+             double progress_seconds) {
              SweepConfig c;
              c.local_solver = local_solver;
              c.store_angular_flux = store_angular_flux;
@@ -85,6 +86,7 @@ void register_SweepConfig(py::module_& m)
              c.local_tol = local_tol;
              c.local_restart = local_restart;
              c.local_max_iter = local_max_iter;
+             c.progress_seconds = progress_seconds;
              return c;
            }),
       py::arg("local_solver") = LocalSolverType::BANDED_LU,
@@ -102,7 +104,7 @@ void register_SweepConfig(py::module_& m)
       py::arg("transport") = TransportSolve::EXACT,
       py::arg("cross") = ttnte::cross::CrossConfig(),
       py::arg("local_tol") = 1e-11, py::arg("local_restart") = 20,
-      py::arg("local_max_iter") = 100)
+      py::arg("local_max_iter") = 100, py::arg("progress_seconds") = 30.0)
     .def_readwrite("local_solver", &SweepConfig::local_solver)
     .def_readwrite("store_angular_flux", &SweepConfig::store_angular_flux)
     .def_readwrite("cache_factorizations", &SweepConfig::cache_factorizations)
@@ -121,6 +123,7 @@ void register_SweepConfig(py::module_& m)
     .def_readwrite("rho_safety", &SweepConfig::rho_safety)
     .def_readwrite("face_weight_tol", &SweepConfig::face_weight_tol)
     .def_readwrite("verbose", &SweepConfig::verbose)
+    .def_readwrite("progress_seconds", &SweepConfig::progress_seconds)
     .def_readwrite("transport", &SweepConfig::transport)
     .def_readwrite("local_tol", &SweepConfig::local_tol)
     .def_readwrite("local_restart", &SweepConfig::local_restart)

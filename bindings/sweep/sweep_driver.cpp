@@ -190,6 +190,9 @@ static void register_SweepDriver_impl(
     .def_property_readonly("converged", &SweepDriver::is_converged)
     .def_property_readonly("num_tasks", &SweepDriver::num_tasks)
     .def_property_readonly("chunks", &SweepDriver::get_chunks)
+    .def("memory_report", &SweepDriver::memory_report,
+      "Bytes of the solver's large buffers on this rank, by kind (gmres is "
+      "allocated during a solve).")
     .def_property_readonly("factorization_bytes",
       &SweepDriver::factorization_bytes,
       "Bytes held by the factorization cache (0 if disabled).")

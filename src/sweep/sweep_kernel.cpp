@@ -47,6 +47,7 @@ void sweep_unit(
   ws.values.resize(P);
   ws.matrix.resize(matrix_size);
   ws.rhs.resize(N);
+  ws.permuted.resize(N);
   ws.inflow.resize((num_faces + 1) * Qmax);
   ws.pivots.resize(N);
   double* values = ws.values.data();
@@ -143,6 +144,13 @@ void sweep_unit(
           in.kind == FaceInflow::Kind::REFLECTIVE ? in.reflected[d] : d;
         const double* trace =
           in.trace + (src_dir * G + g) * in.source_face_dofs;
+        if (in.coupling_q) {
+          for (int64_t k = 0; k < in.num_coupling_pairs; k++)
+            b[face.dofs[in.coupling_a[k]]] += c[in.coupling_q[k]] *
+                                              in.coupling_val[k] *
+                                              trace[in.coupling_b[k]];
+          continue;
+        }
         for (int64_t k = 0; k < face.num_pairs; k++) {
           const int64_t u =
             in.trace_map ? in.trace_map[face.pair_b[k]] : face.pair_b[k];
@@ -165,7 +173,14 @@ void sweep_unit(
         solved = true;
       }
       if (!solved) {
-        if (banded)
+        if (banded && v.band_order) {
+          double* x = ws.permuted.data();
+          for (int64_t j = 0; j < N; j++)
+            x[j] = b[v.band_order[j]];
+          linalg::banded::lu_solve(L, v.ldab, N, v.kl, v.ku, piv, x);
+          for (int64_t j = 0; j < N; j++)
+            b[v.band_order[j]] = x[j];
+        } else if (banded)
           linalg::banded::lu_solve(L, v.ldab, N, v.kl, v.ku, piv, b);
         else
           linalg::dense::lu_solve(L, N, piv, b);
