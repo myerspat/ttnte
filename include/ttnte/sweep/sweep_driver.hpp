@@ -1111,8 +1111,14 @@ private:
         out[i] = in[i] - tmp[i];
     };
     int64_t iteration = 0;
+    double last_estimate = 1.0;
     auto progress = [&](double residual) {
-      report_progress(s, ++iteration, residual, "GMRES");
+      // GMRES reports 1 before the true-residual sweep of every restart
+      const bool restart = iteration > 0 && residual == 1.0;
+      if (!restart)
+        last_estimate = residual;
+      report_progress(
+        s, ++iteration, last_estimate, restart ? "GMRES (restart)" : "GMRES");
       cross_tol_ = config_.cross.relax
                      ? std::min(config_.cross.max_tol,
                          tol_min / std::max(residual, tol_min))
