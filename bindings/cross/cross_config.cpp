@@ -13,7 +13,7 @@ void register_CrossConfig(py::module_& m)
            [](const ttnte::tensor::Layout& layout, double tol, bool weighted,
              std::vector<double> lethargy_widths, bool keep_tt, int64_t holdout,
              double holdout_factor, int64_t max_sweeps, int64_t max_rank,
-             uint64_t seed, bool relax, double max_tol) {
+             uint64_t seed, bool relax, double max_tol, int64_t num_threads) {
              CrossConfig c;
              c.layout = layout;
              c.tol = tol;
@@ -27,6 +27,7 @@ void register_CrossConfig(py::module_& m)
              c.seed = seed;
              c.relax = relax;
              c.max_tol = max_tol;
+             c.num_threads = num_threads;
              return c;
            }),
       py::arg("layout") = ttnte::tensor::Layout(), py::arg("tol") = 1e-4,
@@ -35,7 +36,7 @@ void register_CrossConfig(py::module_& m)
       py::arg("keep_tt") = false, py::arg("holdout") = 16,
       py::arg("holdout_factor") = 10.0, py::arg("max_sweeps") = 8,
       py::arg("max_rank") = 0, py::arg("seed") = 0, py::arg("relax") = true,
-      py::arg("max_tol") = 1e-2)
+      py::arg("max_tol") = 1e-2, py::arg("num_threads") = 16)
     .def_readwrite("layout", &CrossConfig::layout,
       "Order and grouping of (polar, azimuthal, space, energy) into cores; a "
       "string or ttnte.tensor.Layout. Empty: polar|azimuthal|space|energy.")
@@ -49,5 +50,8 @@ void register_CrossConfig(py::module_& m)
     .def_readwrite("max_rank", &CrossConfig::max_rank)
     .def_readwrite("seed", &CrossConfig::seed)
     .def_readwrite("relax", &CrossConfig::relax)
-    .def_readwrite("max_tol", &CrossConfig::max_tol);
+    .def_readwrite("max_tol", &CrossConfig::max_tol)
+    .def_readwrite("num_threads", &CrossConfig::num_threads,
+      "Intra-op threads of the cross's linear algebra, capped by the solver's "
+      "num_threads (<= 0: the solver's num_threads).");
 }

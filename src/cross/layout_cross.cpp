@@ -278,6 +278,8 @@ void LayoutCross::ensure(std::vector<int64_t> pairs)
   auto t0 = Clock::now();
   problem_.sweep(blocks, fibers_.data() + first * Ns);
   sweep_seconds_ += elapsed(t0);
+  timings_["sweep"] += elapsed(t0);
+  t0 = Clock::now();
 
   std::vector<int64_t> new_pairs;
   new_pairs.reserve(count);
@@ -315,6 +317,7 @@ void LayoutCross::ensure(std::vector<int64_t> pairs)
     scale[i] =
       angle_weight_[new_pairs[i] / G] * energy_weight_[new_pairs[i] % G];
   F.mul_(torch::from_blob(scale.data(), {count, 1}, torch::kFloat64));
+  timings_["weight"] += elapsed(t0);
 }
 
 // =================================================================
@@ -859,13 +862,18 @@ void LayoutCross::forward()
   }
   const double share = 0.1 / std::sqrt(std::max<double>(K_ - 1, 1));
   for (int64_t k = 0; k + 1 < K_; k++) {
+    auto t0 = Clock::now();
     auto Sb = superblock(k, false);
+    timings_["superblock"] += elapsed(t0);
+    t0 = Clock::now();
     const int64_t rl = Sb.size(0), nk = Sb.size(1), rr = Sb.size(2);
     auto [U, s, Vh, delta, rest] = linalg::truncated_svd(
       Sb.reshape({rl * nk, rr}), share * config_.tol, max_rank(), true);
     const int64_t r = U.size(1);
     auto core = U.reshape({rl, nk, r}).contiguous();
     cores_[k] = core;
+    timings_["svd"] += elapsed(t0);
+    t0 = Clock::now();
     // Index sets only grow within a transport solve
     std::vector<int64_t> keep;
     if (left_[k + 1].width == k + 1)
@@ -874,9 +882,13 @@ void LayoutCross::forward()
     left_[k + 1] = candidates_left(k, rows);
     B_[k + 1] = basis;
     PL_[k + 1] = left_inverse(B_[k + 1]);
+    timings_["select"] += elapsed(t0);
   }
   // Last core, fitted on its superblock; its residual grows the bond
+  auto t0 = Clock::now();
   auto Sraw = superblock(K_ - 1, true);
+  timings_["superblock"] += elapsed(t0);
+  t0 = Clock::now();
   auto core = PL_[K_ - 1].defined()
                 ? torch::tensordot(PL_[K_ - 1], Sraw, {1}, {0})
                 : Sraw;
@@ -889,25 +901,34 @@ void LayoutCross::forward()
     grow_from_residual(col, Sraw.norm().item<double>(), K_ - 1,
       core_mask(K_ - 1, K_ - 1), right_[K_ - 1]);
   }
+  timings_["svd"] += elapsed(t0);
 }
 
 void LayoutCross::backward()
 {
   const double share = 1.0 / std::sqrt(std::max<double>(K_ - 1, 1));
   for (int64_t k = K_ - 1; k >= 1; k--) {
+    auto t0 = Clock::now();
     auto Sb = superblock(k, false);
+    timings_["superblock"] += elapsed(t0);
+    t0 = Clock::now();
     const int64_t rl = Sb.size(0), nk = Sb.size(1), rr = Sb.size(2);
     auto [U, s, Vh, delta, rest] = linalg::truncated_svd(
       Sb.reshape({rl, nk * rr}), share * config_.tol, max_rank(), true);
     const int64_t r = Vh.size(0);
     auto core = Vh.reshape({r, nk, rr}).contiguous();
     cores_[k] = core;
+    timings_["svd"] += elapsed(t0);
+    t0 = Clock::now();
     auto [rows, basis] = select_candidates(k, false, core, set_keys(right_[k]));
     right_[k] = candidates_right(k, rows);
     C_[k] = basis.t();
     PR_[k] = left_inverse(basis).t();
+    timings_["select"] += elapsed(t0);
   }
+  auto t0 = Clock::now();
   auto Sraw = superblock(0, true);
+  timings_["superblock"] += elapsed(t0);
   cores_[0] =
     (PR_[1].defined() ? torch::tensordot(Sraw, PR_[1], {2}, {0}) : Sraw)
       .contiguous();
@@ -1069,7 +1090,9 @@ void LayoutCross::run()
   auto t0 = Clock::now();
   reset();
   history_.clear();
+  auto t1 = Clock::now();
   init_right();
+  timings_["init"] += elapsed(t1);
   const double accept = config_.holdout_factor * config_.tol;
   double err = std::numeric_limits<double>::infinity();
   sweeps_done_ = 0;
@@ -1079,14 +1102,18 @@ void LayoutCross::run()
       {true, ranks(), num_swept_, std::numeric_limits<double>::quiet_NaN()});
     backward();
     sweeps_done_ = it + 1;
+    t1 = Clock::now();
     err = check();
+    timings_["check"] += elapsed(t1);
     history_.push_back({false, ranks(), num_swept_, err});
     if (err <= accept)
       break;
   }
   holdout_error_ = err;
   converged_ = err <= accept;
+  t1 = Clock::now();
   unweight();
+  timings_["unweight"] += elapsed(t1);
   total_fibers_ += num_swept_;
   fibers_.clear();
   fibers_.shrink_to_fit();

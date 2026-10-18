@@ -158,6 +158,8 @@ private:
   int64_t total_fibers_ = 0;
   double sweep_seconds_ = 0.0;
   double seconds_ = 0.0;
+  /// Seconds per phase of run(), accumulated over every run.
+  std::map<std::string, double> timings_;
 
   // =================================================================
   // Protected constructors
@@ -254,6 +256,12 @@ public:
   int64_t sweeps_done() const noexcept { return sweeps_done_; }
   double sweep_seconds() const noexcept { return sweep_seconds_; }
   double seconds() const noexcept { return seconds_; }
+  /// @return Seconds per phase of run() (init, sweep, weight, superblock,
+  /// svd, select, check, unweight), accumulated over every run.
+  const std::map<std::string, double>& timings() const noexcept
+  {
+    return timings_;
+  }
   const CrossConfig& config() const noexcept { return config_; }
   void set_tolerance(double tol) { config_.tol = tol; }
   /// @brief Drop the cores of the last run (see CrossConfig::keep_tt).

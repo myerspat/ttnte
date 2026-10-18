@@ -113,6 +113,7 @@ static void register_SweepDriver_impl(
       "The solution with angular dependence: the stored angular flux, or with "
       "transport = CROSS and cross.keep_tt the TT of the last transport solve")
     .def_property_readonly("cross_seconds", &SweepDriver::get_cross_seconds)
+    .def_property_readonly("cross_timings", &SweepDriver::get_cross_timings)
     .def_property_readonly(
       "cross_sweep_seconds", &SweepDriver::get_cross_sweep_seconds)
     .def("solve_fixed_source", &SweepDriver::solve_fixed_source,

@@ -297,6 +297,9 @@ private:
   /// Wall time of the crosses and of their fiber sweeps (last solve).
   double cross_seconds_ = 0.0;
   double cross_sweep_seconds_ = 0.0;
+  /// Seconds per phase of the cross transport solves outside LayoutCross::run
+  /// (moments, traces, angular flux).
+  std::map<std::string, double> cross_timings_;
 
   /// Optional per-outer-iteration callback and its frequency.
   Callback callback_;
@@ -705,9 +708,18 @@ private:
     const int64_t G = num_groups_;
     cr.set_tolerance(cross_tol_ > 0 ? cross_tol_ : config_.cross.tol);
     const int previous_threads = at::get_num_threads();
-    at::set_num_threads(std::max<int64_t>(1, config_.num_threads));
+    const int64_t solver_threads = std::max<int64_t>(1, config_.num_threads);
+    at::set_num_threads(config_.cross.num_threads > 0
+                          ? std::min(config_.cross.num_threads, solver_threads)
+                          : solver_threads);
     cr.run();
 
+    auto t0 = std::chrono::steady_clock::now();
+    auto lap = [&](const char* phase) {
+      const auto now = std::chrono::steady_clock::now();
+      cross_timings_[phase] += std::chrono::duration<double>(now - t0).count();
+      t0 = now;
+    };
     auto moments = cr.moments();
     const int64_t M = moments.size(0);
     const double* mom = moments.template data_ptr<double>();
@@ -724,6 +736,7 @@ private:
           std::copy(src, src + N, dst + (m * G + groups[bg]) * N);
         }
     }
+    lap("moments");
     for (const auto& blk : delayed_) {
       const auto& face = patches_[blk.local].disc->faces()[blk.face];
       const int64_t Nf = face.num_dofs();
@@ -738,6 +751,7 @@ private:
           std::copy(v + (i * ng + bg) * Nf, v + (i * ng + bg + 1) * Nf,
             buf + (blk.directions[i] * G + groups[bg]) * Nf);
     }
+    lap("traces");
     if (config_.store_angular_flux) {
       std::vector<int64_t> dirs(omega_.size(0));
       std::iota(dirs.begin(), dirs.end(), 0);
@@ -754,6 +768,7 @@ private:
             std::copy(v + (d * ng + bg) * N, v + (d * ng + bg + 1) * N,
               psi + (d * G + groups[bg]) * N);
       }
+      lap("angular_flux");
     }
     at::set_num_threads(previous_threads);
 
@@ -1210,6 +1225,7 @@ private:
     cross_histories_.clear();
     cross_seconds_ = 0.0;
     cross_sweep_seconds_ = 0.0;
+    cross_timings_.clear();
     for (auto& P : patches_) {
       P.moments.zero_();
       if (unit_scalar_flux)
@@ -2273,6 +2289,17 @@ public:
     return cross_max_ranks_;
   }
   double get_cross_seconds() const noexcept { return cross_seconds_; }
+  /// @return Seconds per phase of the cross transport solves: the phases of
+  /// LayoutCross::run summed over the group sets' crosses (see
+  /// LayoutCross::timings()), and moments, traces and angular_flux.
+  std::map<std::string, double> get_cross_timings() const
+  {
+    auto out = cross_timings_;
+    for (const auto& cr : crosses_)
+      for (const auto& [phase, sec] : cr->timings())
+        out[phase] += sec;
+    return out;
+  }
   double get_cross_sweep_seconds() const noexcept
   {
     return cross_sweep_seconds_;

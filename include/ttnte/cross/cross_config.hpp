@@ -42,6 +42,12 @@ struct CrossConfig {
   int64_t max_rank = 0;
   /// Seed of the hold-out sampling.
   uint64_t seed = 0;
+  /// Intra-op threads of the cross's linear algebra inside the sweep solver,
+  /// capped by the solver's num_threads (<= 0: the solver's num_threads). Its
+  /// matrices are small (ranks times the fiber length), so many threads cost
+  /// more in synchronization than they save: 64 threads made a Big Ten cross
+  /// about 40 times slower than 16.
+  int64_t num_threads = 16;
 };
 
 } // namespace ttnte::cross

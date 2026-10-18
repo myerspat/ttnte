@@ -98,5 +98,6 @@ void register_LayoutCross(py::module_& m)
     .def_property_readonly("converged", &LayoutCross::converged)
     .def_property_readonly("sweeps_done", &LayoutCross::sweeps_done)
     .def_property_readonly("sweep_seconds", &LayoutCross::sweep_seconds)
-    .def_property_readonly("seconds", &LayoutCross::seconds);
+    .def_property_readonly("seconds", &LayoutCross::seconds)
+    .def_property_readonly("timings", &LayoutCross::timings);
 }
