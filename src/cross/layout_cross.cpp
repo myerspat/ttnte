@@ -1099,7 +1099,12 @@ void LayoutCross::run()
   reset();
   history_.clear();
   auto t1 = Clock::now();
-  init_right();
+  if (config_.warm_start && !prior_right_.empty()) {
+    for (int64_t k = 1; k < K_; k++)
+      right_[k] = prior_right_[k];
+  } else {
+    init_right();
+  }
   timings_["init"] += elapsed(t1);
   const double accept = config_.holdout_factor * config_.tol;
   double err = std::numeric_limits<double>::infinity();
@@ -1119,6 +1124,8 @@ void LayoutCross::run()
   }
   holdout_error_ = err;
   converged_ = err <= accept;
+  if (config_.warm_start)
+    prior_right_ = right_;
   t1 = Clock::now();
   unweight();
   timings_["unweight"] += elapsed(t1);

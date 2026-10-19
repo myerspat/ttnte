@@ -185,3 +185,46 @@ def test_angular_flux_from_kept_tt_and_histories():
     assert first[-1]["ranks"] == cross.cross_ranks[0]
     assert [h["phase"] for h in first[:2]] == ["forward", "backward"]
     assert all(a["fibers"] <= b["fibers"] for a, b in zip(first, first[1:]))
+
+
+@pytest.mark.mpi(min_size=1)
+@pytest.mark.parametrize("num_dim, reflective", [(1, True), (2, True), (3, False)])
+@pytest.mark.parametrize("correction_form", [False, True])
+def test_warm_start_eigenvalue(num_dim, reflective, correction_form):
+    """Each transport solve starts from the previous one's index sets: same solution,
+    and no more cross sweeps per transport solve (in 1-D a cold cross already needs
+    one)."""
+    exact = _solve(num_dim, reflective, TransportSolve.EXACT, fissile=True)
+    cold = _solve(
+        num_dim,
+        reflective,
+        TransportSolve.CROSS,
+        fissile=True,
+        correction_form=correction_form,
+    )
+    warm = _solve(
+        num_dim,
+        reflective,
+        TransportSolve.CROSS,
+        fissile=True,
+        correction_form=correction_form,
+        cross=CrossConfig(warm_start=True),
+    )
+    assert abs(warm.k_eff - exact.k_eff) < 1e-5
+    assert _rel(_scalar_flux(warm), _scalar_flux(exact)) < 1e-4
+
+    def mean_sweeps(sw):
+        runs = sw.cross_histories
+        return sum(len(run) for run in runs) / len(runs)
+
+    assert mean_sweeps(warm) <= mean_sweeps(cold)
+
+
+@pytest.mark.mpi(min_size=1)
+@pytest.mark.parametrize("num_dim, reflective", [(2, True), (3, False)])
+def test_warm_start_fixed_source(num_dim, reflective):
+    exact = _solve(num_dim, reflective, TransportSolve.EXACT)
+    warm = _solve(
+        num_dim, reflective, TransportSolve.CROSS, cross=CrossConfig(warm_start=True)
+    )
+    assert _rel(_scalar_flux(warm), _scalar_flux(exact)) < 10 * TOL

@@ -14,7 +14,7 @@ void register_CrossConfig(py::module_& m)
              std::vector<double> lethargy_widths, bool keep_tt, int64_t holdout,
              double holdout_factor, int64_t max_sweeps, int64_t max_rank,
              uint64_t seed, bool relax, double max_tol, int64_t num_threads,
-             bool gram_svd, double inner_factor) {
+             bool gram_svd, double inner_factor, bool warm_start) {
              CrossConfig c;
              c.layout = layout;
              c.tol = tol;
@@ -31,6 +31,7 @@ void register_CrossConfig(py::module_& m)
              c.num_threads = num_threads;
              c.gram_svd = gram_svd;
              c.inner_factor = inner_factor;
+             c.warm_start = warm_start;
              return c;
            }),
       py::arg("layout") = ttnte::tensor::Layout(), py::arg("tol") = 1e-4,
@@ -40,7 +41,8 @@ void register_CrossConfig(py::module_& m)
       py::arg("holdout_factor") = 10.0, py::arg("max_sweeps") = 8,
       py::arg("max_rank") = 0, py::arg("seed") = 0, py::arg("relax") = true,
       py::arg("max_tol") = 1e-2, py::arg("num_threads") = 16,
-      py::arg("gram_svd") = false, py::arg("inner_factor") = 0.1)
+      py::arg("gram_svd") = false, py::arg("inner_factor") = 0.1,
+      py::arg("warm_start") = false)
     .def_readwrite("layout", &CrossConfig::layout,
       "Order and grouping of (polar, azimuthal, space, energy) into cores; a "
       "string or ttnte.tensor.Layout. Empty: polar|azimuthal|space|energy.")
@@ -63,5 +65,7 @@ void register_CrossConfig(py::module_& m)
       "(faster, singular values to about 1e-8 relative).")
     .def_readwrite("inner_factor", &CrossConfig::inner_factor,
       "Accuracy of each transport solve inside the sweep solver, as a "
-      "fraction of the within-group-set tolerance (relaxed in GMRES).");
+      "fraction of the within-group-set tolerance (relaxed in GMRES).")
+    .def_readwrite("warm_start", &CrossConfig::warm_start,
+      "Start each run from the previous run's right index sets.");
 }

@@ -132,6 +132,8 @@ private:
   /// Index sets, their bases and pseudo-inverses (undefined: identity).
   std::vector<IndexSet> left_;
   std::vector<IndexSet> right_;
+  /// Right index sets of the last run (CrossConfig::warm_start).
+  std::vector<IndexSet> prior_right_;
   std::vector<torch::Tensor> B_;
   std::vector<torch::Tensor> PL_;
   std::vector<torch::Tensor> C_;

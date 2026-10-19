@@ -56,6 +56,12 @@ struct CrossConfig {
   /// faster, but singular values only to about 1e-8 relative, and it falls
   /// back to the QR path when the truncation threshold is below 1e-7.
   bool gram_svd = false;
+  /// Start each run from the right index sets of the previous run instead of
+  /// the initial directions. Successive transport solves of the sweep solver
+  /// (GMRES products, outer iterations) differ little, so the previous pivots
+  /// give the first sweep the previous ranks. Every fiber is still swept anew
+  /// and the hold-out check is unchanged.
+  bool warm_start = false;
 };
 
 } // namespace ttnte::cross
