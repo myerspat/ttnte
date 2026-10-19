@@ -66,6 +66,29 @@ def test_eigenvalue_matches_exact(num_dim, reflective):
 
 
 @pytest.mark.mpi(min_size=1)
+@pytest.mark.parametrize("num_dim, reflective", [(1, True), (2, True), (3, False)])
+@pytest.mark.parametrize("transport", [TransportSolve.EXACT, TransportSolve.CROSS])
+def test_correction_form_fixed_source(num_dim, reflective, transport):
+    exact = _solve(num_dim, reflective, TransportSolve.EXACT)
+    corr = _solve(num_dim, reflective, transport, correction_form=True)
+    assert _rel(_scalar_flux(corr), _scalar_flux(exact)) < 10 * TOL
+
+
+@pytest.mark.mpi(min_size=1)
+@pytest.mark.parametrize("num_dim, reflective", [(1, True), (2, True), (3, False)])
+@pytest.mark.parametrize("transport", [TransportSolve.EXACT, TransportSolve.CROSS])
+def test_correction_form_eigenvalue(num_dim, reflective, transport):
+    exact = _solve(num_dim, reflective, TransportSolve.EXACT, fissile=True)
+    corr = _solve(num_dim, reflective, transport, fissile=True, correction_form=True)
+    assert abs(corr.k_eff - exact.k_eff) < 1e-5
+    assert _rel(_scalar_flux(corr), _scalar_flux(exact)) < 1e-4
+    # One transport solve per group set per outer (no right-hand side and
+    # final sweeps): fewer group-set sweeps than the standard form
+    if transport == TransportSolve.EXACT:
+        assert corr.equivalent_sweeps < exact.equivalent_sweeps
+
+
+@pytest.mark.mpi(min_size=1)
 @pytest.mark.parametrize(
     "layout",
     [

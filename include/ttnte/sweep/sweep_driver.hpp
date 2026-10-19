@@ -1071,6 +1071,92 @@ private:
     return std::max(floor, config_.inner_forcing * change);
   }
 
+  /// @brief Within-group-set GMRES for the correction to the current
+  /// iterate (SweepConfig::correction_form).
+  /// @param s Group set.
+  /// @param jacobi Take the other sets' flux from the start of the pass.
+  /// @param tol Within-group-set tolerance, relative to ||y0||.
+  /// @param tol_min Accuracy of a CROSS transport solve of the full source.
+  /// @param x Current iterate on entry (packed moments and lagged traces);
+  /// the accepted iterate is written to the moments and lagged traces.
+  /// @param reducer Global sum of inner products (empty in serial).
+  void correction_solve(size_t s, bool jacobi, double tol, double tol_min,
+    std::vector<double>& x, const linalg::krylov::Reducer& reducer)
+  {
+    const int64_t n = static_cast<int64_t>(x.size());
+    auto norm = [&](const std::vector<double>& v) {
+      double sum = 0.0;
+      for (double a : v)
+        sum += a * a;
+      return std::sqrt(reducer ? reducer(sum) : sum);
+    };
+
+    // y0 = T(q + S x0) with the lagged traces of x0, at full accuracy
+    std::vector<double> y(n), r0(n), tmp(n);
+    cross_tol_ = tol_min;
+    unpack(s, x.data(), true);
+    compute_source(s, Within::KRYLOV, true, jacobi);
+    transport_group_set(s);
+    pack(s, true, true, y.data());
+    for (int64_t i = 0; i < n; i++)
+      r0[i] = y[i] - x[i];
+    const double ynorm = norm(y), rnorm = norm(r0);
+
+    std::vector<double> e(n, 0.0);
+    if (rnorm > tol * ynorm) {
+      // (I - T S) e = r0; a zero input needs no transport solve
+      auto apply = [&](const double* in, double* out) {
+        if (std::all_of(in, in + n, [](double v) { return v == 0.0; })) {
+          std::fill(out, out + n, 0.0);
+          return;
+        }
+        unpack(s, in, true);
+        compute_source(s, Within::KRYLOV, false, jacobi);
+        transport_group_set(s);
+        pack(s, true, true, tmp.data());
+        for (int64_t i = 0; i < n; i++)
+          out[i] = in[i] - tmp[i];
+      };
+      // Residuals relative to ||r0||, products accurate to tol_min ||y0||
+      const double scale = rnorm / ynorm;
+      int64_t iteration = 0;
+      double last_estimate = 1.0;
+      auto progress = [&](double residual) {
+        const bool restart = iteration > 0 && residual == 1.0;
+        if (!restart)
+          last_estimate = residual;
+        report_progress(s, ++iteration, last_estimate * scale,
+          restart ? "GMRES (restart)" : "GMRES");
+        const double relative = residual * scale;
+        cross_tol_ = config_.cross.relax
+                       ? std::min(config_.cross.max_tol,
+                           tol_min / std::max(relative, tol_min))
+                       : tol_min;
+      };
+      auto result = linalg::krylov::gmres(apply, r0, e, config_.gmres_restart,
+        tol / scale, config_.inner_max_iter, reducer, progress);
+      if (!result.converged && config_.verbose && comm_.rank() == 0) {
+        std::cout << "-- warning: within-group-set GMRES (set " << s
+                  << ") stopped at relative residual "
+                  << result.relative_residual * scale << std::endl;
+      }
+    }
+    cross_tol_ = tol_min;
+    for (int64_t i = 0; i < n; i++)
+      x[i] += e[i];
+
+    // The stored angular flux and the kept TT come from the last transport
+    // solve: redo it from the accepted iterate when they are wanted
+    const bool keep_tt =
+      config_.transport == TransportSolve::CROSS && config_.cross.keep_tt;
+    if (config_.store_angular_flux || keep_tt) {
+      unpack(s, x.data(), true);
+      compute_source(s, Within::KRYLOV, true, jacobi);
+      transport_group_set(s);
+    }
+    unpack(s, x.data(), false);
+  }
+
   /// @brief Solve group set `s` for its within-set scattering.
   /// @return Group-set sweeps used.
   int64_t inner_solve(size_t s, bool jacobi)
@@ -1112,6 +1198,14 @@ private:
     const int64_t n = krylov_size(s);
     std::vector<double> x(n), b(n), tmp(n);
     pack(s, false, false, x.data()); // warm start from the current iterate
+    const auto reducer =
+      comm_.size() > 1
+        ? linalg::krylov::Reducer([this](double v) { return global_sum(v); })
+        : linalg::krylov::Reducer();
+    if (config_.correction_form) {
+      correction_solve(s, jacobi, tol, tol_min, x, reducer);
+      return group_set_sweeps_ - start;
+    }
 
     // b = sweep of the fixed sources with zero iterate and lagged traces
     std::fill(tmp.begin(), tmp.end(), 0.0);

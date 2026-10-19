@@ -117,6 +117,16 @@ struct SweepConfig {
   int64_t inner_max_iter = 1000;
   /// GMRES restart length.
   int64_t gmres_restart = 30;
+  /// Solve each within-group-set GMRES problem for the correction e to the
+  /// current iterate x0: one transport solve of the full source gives
+  /// y0 = T(q + S x0) and the residual r0 = y0 - x0, GMRES solves
+  /// (I - T S) e = r0 to ||r|| <= tol ||y0||, and x0 + e is accepted without
+  /// a final sweep. One transport solve per group set per outer instead of
+  /// three, and with CROSS the Krylov products only need accuracy relative
+  /// to ||y0|| / ||r0||, which grows as the outer iteration converges.
+  /// Storing the angular flux or keeping the cross's TT costs one more
+  /// transport solve of the accepted iterate per group set.
+  bool correction_form = false;
   /// Relative tolerance on the scalar flux change between outer iterations
   /// (across-group-set passes for fixed source, power iterations for
   /// k-eigenvalue).
