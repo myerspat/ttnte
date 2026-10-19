@@ -114,6 +114,9 @@ static void register_SweepDriver_impl(
       "transport = CROSS and cross.keep_tt the TT of the last transport solve")
     .def_property_readonly("cross_seconds", &SweepDriver::get_cross_seconds)
     .def_property_readonly("cross_timings", &SweepDriver::get_cross_timings)
+    .def_property_readonly("solve_timings", &SweepDriver::get_solve_timings,
+      "Seconds per step of the within-group-set solves: gmres (whole Krylov "
+      "solves), unpack, source, transport, pack.")
     .def_property_readonly(
       "cross_sweep_seconds", &SweepDriver::get_cross_sweep_seconds)
     .def("solve_fixed_source", &SweepDriver::solve_fixed_source,

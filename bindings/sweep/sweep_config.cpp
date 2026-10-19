@@ -61,7 +61,9 @@ void register_SweepConfig(py::module_& m)
              bool verbose, TransportSolve transport,
              const ttnte::cross::CrossConfig& cross, double local_tol,
              int64_t local_restart, int64_t local_max_iter,
-             double progress_seconds, bool correction_form) {
+             double progress_seconds, bool correction_form,
+             bool incremental_transport, double incremental_switch,
+             bool build_solution) {
              SweepConfig c;
              c.local_solver = local_solver;
              c.store_angular_flux = store_angular_flux;
@@ -88,6 +90,9 @@ void register_SweepConfig(py::module_& m)
              c.local_max_iter = local_max_iter;
              c.progress_seconds = progress_seconds;
              c.correction_form = correction_form;
+             c.incremental_transport = incremental_transport;
+             c.incremental_switch = incremental_switch;
+             c.build_solution = build_solution;
              return c;
            }),
       py::arg("local_solver") = LocalSolverType::BANDED_LU,
@@ -106,7 +111,9 @@ void register_SweepConfig(py::module_& m)
       py::arg("cross") = ttnte::cross::CrossConfig(),
       py::arg("local_tol") = 1e-11, py::arg("local_restart") = 20,
       py::arg("local_max_iter") = 100, py::arg("progress_seconds") = 30.0,
-      py::arg("correction_form") = false)
+      py::arg("correction_form") = false,
+      py::arg("incremental_transport") = false,
+      py::arg("incremental_switch") = 0.3, py::arg("build_solution") = true)
     .def_readwrite("local_solver", &SweepConfig::local_solver)
     .def_readwrite("store_angular_flux", &SweepConfig::store_angular_flux)
     .def_readwrite("cache_factorizations", &SweepConfig::cache_factorizations)
@@ -121,6 +128,9 @@ void register_SweepConfig(py::module_& m)
     .def_readwrite("inner_max_iter", &SweepConfig::inner_max_iter)
     .def_readwrite("gmres_restart", &SweepConfig::gmres_restart)
     .def_readwrite("correction_form", &SweepConfig::correction_form)
+    .def_readwrite("incremental_transport", &SweepConfig::incremental_transport)
+    .def_readwrite("incremental_switch", &SweepConfig::incremental_switch)
+    .def_readwrite("build_solution", &SweepConfig::build_solution)
     .def_readwrite("tol", &SweepConfig::tol)
     .def_readwrite("max_iter", &SweepConfig::max_iter)
     .def_readwrite("rho_safety", &SweepConfig::rho_safety)

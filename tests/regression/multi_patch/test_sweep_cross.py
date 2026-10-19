@@ -228,3 +228,39 @@ def test_warm_start_fixed_source(num_dim, reflective):
         num_dim, reflective, TransportSolve.CROSS, cross=CrossConfig(warm_start=True)
     )
     assert _rel(_scalar_flux(warm), _scalar_flux(exact)) < 10 * TOL
+
+
+@pytest.mark.mpi(min_size=1)
+@pytest.mark.parametrize("num_dim, reflective", [(1, True), (2, True), (3, False)])
+@pytest.mark.parametrize("transport", [TransportSolve.EXACT, TransportSolve.CROSS])
+def test_incremental_transport_eigenvalue(num_dim, reflective, transport):
+    """Y0 = y_prev + T(change of the input): T is linear, so the exact sweeper must
+    reproduce its own solution and the cross the exact one."""
+    exact = _solve(num_dim, reflective, TransportSolve.EXACT, fissile=True)
+    inc = _solve(
+        num_dim,
+        reflective,
+        transport,
+        fissile=True,
+        correction_form=True,
+        incremental_transport=True,
+    )
+    assert abs(inc.k_eff - exact.k_eff) < 1e-5
+    assert _rel(_scalar_flux(inc), _scalar_flux(exact)) < 1e-4
+
+
+@pytest.mark.mpi(min_size=1)
+@pytest.mark.parametrize("transport", [TransportSolve.EXACT, TransportSolve.CROSS])
+def test_incremental_transport_fixed_source(transport):
+    exact = _solve(2, True, TransportSolve.EXACT)
+    inc = _solve(2, True, transport, correction_form=True, incremental_transport=True)
+    assert _rel(_scalar_flux(inc), _scalar_flux(exact)) < 10 * TOL
+
+
+@pytest.mark.mpi(min_size=1)
+def test_no_solution():
+    mesh, xs = BUILDERS[2](G, True, False)
+    sw = driver(2, mesh, xs)
+    sw.setup(quadrature(2, 3), SweepConfig(tol=TOL, build_solution=False))
+    assert sw.solve_fixed_source() is None
+    assert sw.converged

@@ -130,6 +130,19 @@ struct SweepConfig {
   /// keeping the cross's TT costs one more transport solve of the accepted
   /// iterate per group set.
   bool correction_form = false;
+  /// Correction form only: transport just the change of the input (sources
+  /// and lagged traces) since the previous outer iteration, y0 = y_prev +
+  /// T(input - input_prev). The change is solved to the same absolute
+  /// accuracy as y0, which relative to its (small) size is crude: a cross
+  /// keeps low ranks as the outer iteration converges. A full transport
+  /// solve is done when the change exceeds incremental_switch times the
+  /// input.
+  bool incremental_transport = false;
+  double incremental_switch = 0.3;
+  /// Return a Solution (each patch's flux compressed into a TT at 1e-14)
+  /// from solve_fixed_source() and solve_eigenvalue(); false returns none
+  /// and skips the compression.
+  bool build_solution = true;
   /// Relative tolerance on the scalar flux change between outer iterations
   /// (across-group-set passes for fixed source, power iterations for
   /// k-eigenvalue).

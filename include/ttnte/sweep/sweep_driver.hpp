@@ -292,6 +292,11 @@ private:
   /// sources, x the solution), which turns tolerances relative to ||b|| into
   /// tolerances relative to ||y0|| ~ ||x|| (0: not measured yet).
   std::vector<double> rhs_ratio_;
+  /// SweepConfig::incremental_transport: per group set, the last full input
+  /// (Krylov vector and source moments of the set) and its transport y.
+  std::vector<std::vector<double>> anchor_x_;
+  std::vector<std::vector<double>> anchor_y_;
+  std::vector<std::vector<double>> anchor_source_;
   std::vector<double> cross_tolerances_;
   std::vector<int64_t> cross_fibers_;
   std::vector<int64_t> cross_max_ranks_;
@@ -305,6 +310,8 @@ private:
   /// Seconds per phase of the cross transport solves outside LayoutCross::run
   /// (moments, traces, angular flux).
   std::map<std::string, double> cross_timings_;
+  /// Seconds per step of the within-group-set solves (see solve_timings()).
+  std::map<std::string, double> solve_timings_;
 
   /// Optional per-outer-iteration callback and its frequency.
   Callback callback_;
@@ -794,6 +801,17 @@ private:
                           static_cast<double>(omega_.size(0) * G);
   }
 
+  /// @brief Run `fn` and add its wall time to solve_timings_[phase].
+  template<typename Fn>
+  void timed(const char* phase, Fn&& fn)
+  {
+    const auto t0 = std::chrono::steady_clock::now();
+    fn();
+    solve_timings_[phase] +=
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
+        .count();
+  }
+
   /// @brief One transport solve of group set `s` with the current sources
   /// and lagged traces: an exact sweep or a cross.
   void transport_group_set(size_t s)
@@ -1099,10 +1117,18 @@ private:
     // y0 = T(q + S x0) with the lagged traces of x0, at full accuracy
     std::vector<double> y(n), r0(n), tmp(n);
     cross_tol_ = tol_min;
-    unpack(s, x.data(), true);
-    compute_source(s, Within::KRYLOV, true, jacobi);
-    transport_group_set(s);
-    pack(s, true, true, y.data());
+    timed("unpack", [&] { unpack(s, x.data(), true); });
+    timed("source", [&] { compute_source(s, Within::KRYLOV, true, jacobi); });
+    if (!incremental_transport(s, x, tol_min, y, reducer)) {
+      if (config_.incremental_transport) {
+        anchor_x_[s] = x;
+        swap_source(s, anchor_source_[s], false);
+      }
+      timed("transport", [&] { transport_group_set(s); });
+      timed("pack", [&] { pack(s, true, true, y.data()); });
+      if (config_.incremental_transport)
+        anchor_y_[s] = y;
+    }
     for (int64_t i = 0; i < n; i++)
       r0[i] = y[i] - x[i];
     const double ynorm = norm(y), rnorm = norm(r0);
@@ -1115,10 +1141,11 @@ private:
           std::fill(out, out + n, 0.0);
           return;
         }
-        unpack(s, in, true);
-        compute_source(s, Within::KRYLOV, false, jacobi);
-        transport_group_set(s);
-        pack(s, true, true, tmp.data());
+        timed("unpack", [&] { unpack(s, in, true); });
+        timed(
+          "source", [&] { compute_source(s, Within::KRYLOV, false, jacobi); });
+        timed("transport", [&] { transport_group_set(s); });
+        timed("pack", [&] { pack(s, true, true, tmp.data()); });
         for (int64_t i = 0; i < n; i++)
           out[i] = in[i] - tmp[i];
       };
@@ -1138,8 +1165,12 @@ private:
                            tol_min / std::max(relative, tol_min))
                        : tol_min;
       };
+      const auto gmres_t0 = std::chrono::steady_clock::now();
       auto result = linalg::krylov::gmres(apply, r0, e, config_.gmres_restart,
         tol / scale, config_.inner_max_iter, reducer, progress);
+      solve_timings_["gmres"] += std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - gmres_t0)
+                                   .count();
       if (!result.converged && config_.verbose && comm_.rank() == 0) {
         std::cout << "-- warning: within-group-set GMRES (set " << s
                   << ") stopped at relative residual "
@@ -1166,6 +1197,82 @@ private:
       transport_group_set(s);
     }
     unpack(s, x.data(), false);
+  }
+
+  /// @brief Store the source moments of group set `s` in `saved` and, when
+  /// `difference`, replace them by their change from the previous `saved`.
+  void swap_source(size_t s, std::vector<double>& saved, bool difference)
+  {
+    const auto& groups = group_indices_[s];
+    const int64_t M = harmonics_.size(1);
+    const int64_t G = num_groups_;
+    int64_t size = 0;
+    for (const auto& P : patches_)
+      size += M * static_cast<int64_t>(groups.size()) * P.disc->num_dofs();
+    if (difference && static_cast<int64_t>(saved.size()) != size)
+      throw utils::runtime_error(
+        ctx("swap_source"), "No previous source of this group set");
+    saved.resize(size);
+    double* prev = saved.data();
+    for (auto& P : patches_) {
+      const int64_t N = P.disc->num_dofs();
+      double* src = P.source_moments.template data_ptr<double>();
+      for (int64_t k = 0; k < M; k++)
+        for (int64_t g : groups) {
+          double* v = src + (k * G + g) * N;
+          for (int64_t i = 0; i < N; i++) {
+            const double cur = v[i];
+            if (difference)
+              v[i] = cur - prev[i];
+            prev[i] = cur;
+          }
+          prev += N;
+        }
+    }
+  }
+
+  /// @brief y0 = T(input) as y_prev + T(input - input_prev) when the change
+  /// since the last full transport solve of group set `s` is small
+  /// (SweepConfig::incremental_transport). The source moments of the
+  /// current input must be computed.
+  /// @return False (nothing done) when a full transport solve is needed.
+  bool incremental_transport(size_t s, const std::vector<double>& x,
+    double tol_min, std::vector<double>& y,
+    const linalg::krylov::Reducer& reducer)
+  {
+    if (!config_.incremental_transport || anchor_x_[s].empty())
+      return false;
+    const int64_t n = static_cast<int64_t>(x.size());
+    const auto& ax = anchor_x_[s];
+    auto& ay = anchor_y_[s];
+    std::vector<double> dx(n);
+    double sums[3] = {0.0, 0.0, 0.0};
+    for (int64_t i = 0; i < n; i++) {
+      dx[i] = x[i] - ax[i];
+      sums[0] += dx[i] * dx[i];
+      sums[1] += x[i] * x[i];
+      sums[2] += ay[i] * ay[i];
+    }
+    for (double& v : sums)
+      v = reducer ? reducer(v) : v;
+    const double dnorm = std::sqrt(sums[0]);
+    if (dnorm > config_.incremental_switch * std::sqrt(sums[1]))
+      return false;
+
+    // The change, solved to the absolute accuracy tol_min ||y||
+    timed("source", [&] { swap_source(s, anchor_source_[s], true); });
+    timed("unpack", [&] { unpack(s, dx.data(), true); });
+    cross_tol_ = dnorm > 0.0 ? std::min(config_.cross.max_tol,
+                                 tol_min * std::sqrt(sums[2]) / dnorm)
+                             : config_.cross.max_tol;
+    timed("transport", [&] { transport_group_set(s); });
+    timed("pack", [&] { pack(s, true, true, y.data()); });
+    cross_tol_ = tol_min;
+    for (int64_t i = 0; i < n; i++)
+      y[i] += ay[i];
+    anchor_x_[s] = x;
+    ay = y;
+    return true;
   }
 
   /// @brief Solve group set `s` for its within-set scattering.
@@ -1224,16 +1331,17 @@ private:
 
     // b = sweep of the fixed sources with zero iterate and lagged traces
     std::fill(tmp.begin(), tmp.end(), 0.0);
-    unpack(s, tmp.data(), true);
-    compute_source(s, Within::NONE, true, jacobi);
-    transport_group_set(s);
-    pack(s, true, true, b.data());
+    timed("unpack", [&] { unpack(s, tmp.data(), true); });
+    timed("source", [&] { compute_source(s, Within::NONE, true, jacobi); });
+    timed("transport", [&] { transport_group_set(s); });
+    timed("pack", [&] { pack(s, true, true, b.data()); });
 
     auto apply = [&](const double* in, double* out) {
-      unpack(s, in, true);
-      compute_source(s, Within::KRYLOV, false, jacobi);
-      transport_group_set(s);
-      pack(s, true, true, tmp.data());
+      timed("unpack", [&] { unpack(s, in, true); });
+      timed(
+        "source", [&] { compute_source(s, Within::KRYLOV, false, jacobi); });
+      timed("transport", [&] { transport_group_set(s); });
+      timed("pack", [&] { pack(s, true, true, tmp.data()); });
       for (int64_t i = 0; i < n; i++)
         out[i] = in[i] - tmp[i];
     };
@@ -1251,12 +1359,16 @@ private:
                          tol_min / std::max(residual, tol_min))
                      : tol_min;
     };
+    const auto gmres_t0 = std::chrono::steady_clock::now();
     auto result = linalg::krylov::gmres(apply, b, x, config_.gmres_restart, tol,
       config_.inner_max_iter,
       comm_.size() > 1
         ? linalg::krylov::Reducer([this](double v) { return global_sum(v); })
         : linalg::krylov::Reducer(),
       progress);
+    solve_timings_["gmres"] +=
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - gmres_t0)
+        .count();
     cross_tol_ = tol_min;
     if (!result.converged && config_.verbose && comm_.rank() == 0) {
       std::cout << "-- warning: within-group-set GMRES (set " << s
@@ -1291,7 +1403,7 @@ private:
       for_each_patch([](PatchState& P) { P.pass_moments.copy_(P.moments); });
     int64_t sweeps = 0;
     for (size_t s = 0; s < group_sets_.size(); s++)
-      sweeps += inner_solve(s, jacobi);
+      timed("inner", [&] { sweeps += inner_solve(s, jacobi); });
     return sweeps;
   }
 
@@ -1348,7 +1460,11 @@ private:
     cross_seconds_ = 0.0;
     cross_sweep_seconds_ = 0.0;
     cross_timings_.clear();
+    solve_timings_.clear();
     rhs_ratio_.assign(group_sets_.size(), 0.0);
+    anchor_x_.assign(group_sets_.size(), {});
+    anchor_y_.assign(group_sets_.size(), {});
+    anchor_source_.assign(group_sets_.size(), {});
     for (auto& P : patches_) {
       P.moments.zero_();
       if (unit_scalar_flux)
@@ -2423,6 +2539,13 @@ public:
         out[phase] += sec;
     return out;
   }
+  /// @return Seconds per step of the within-group-set solves, accumulated:
+  /// inner (whole within-group-set solves), gmres (the Krylov solves within
+  /// them), and unpack, source, transport and pack per transport solve.
+  const std::map<std::string, double>& get_solve_timings() const noexcept
+  {
+    return solve_timings_;
+  }
   double get_cross_sweep_seconds() const noexcept
   {
     return cross_sweep_seconds_;
@@ -2481,7 +2604,7 @@ public:
     eigenvalue_mode_ = false;
     reset_state(false);
     outer_iterations(0.0);
-    return build_solution();
+    return config_.build_solution ? build_solution() : nullptr;
   }
 
   /// @brief Solve the k-eigenvalue problem by power iteration, mirroring
@@ -2505,7 +2628,7 @@ public:
     eigenvalue_mode_ = true;
     reset_state(true);
     outer_iterations(k_tol);
-    return build_solution();
+    return config_.build_solution ? build_solution() : nullptr;
   }
 
   /// @brief Wrap the current flux in a TransportSolution so the existing
