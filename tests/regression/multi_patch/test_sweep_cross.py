@@ -89,6 +89,20 @@ def test_correction_form_eigenvalue(num_dim, reflective, transport):
 
 
 @pytest.mark.mpi(min_size=1)
+@pytest.mark.parametrize("transport", [TransportSolve.EXACT, TransportSolve.CROSS])
+def test_correction_form_with_forcing(transport):
+    # Loose forced inner tolerances skip GMRES in some outers; those must
+    # still take the new fission source (accept y0) and not stall
+    standard = _solve(2, True, TransportSolve.EXACT, fissile=True, inner_forcing=0.1)
+    corr = _solve(
+        2, True, transport, fissile=True, inner_forcing=0.1, correction_form=True
+    )
+    assert abs(corr.k_eff - standard.k_eff) < 1e-5
+    assert _rel(_scalar_flux(corr), _scalar_flux(standard)) < 1e-4
+    assert corr.num_iterations <= standard.num_iterations + 2
+
+
+@pytest.mark.mpi(min_size=1)
 @pytest.mark.parametrize(
     "layout",
     [

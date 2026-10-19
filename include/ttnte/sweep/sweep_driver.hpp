@@ -1142,8 +1142,14 @@ private:
       }
     }
     cross_tol_ = tol_min;
-    for (int64_t i = 0; i < n; i++)
-      x[i] += e[i];
+    if (rnorm > tol * ynorm) {
+      for (int64_t i = 0; i < n; i++)
+        x[i] += e[i];
+    } else {
+      // Already within tolerance: accept y0 = x0 + r0, which carries the
+      // new sources (the standard form's final sweep)
+      x = y;
+    }
 
     // The stored angular flux and the kept TT come from the last transport
     // solve: redo it from the accepted iterate when they are wanted

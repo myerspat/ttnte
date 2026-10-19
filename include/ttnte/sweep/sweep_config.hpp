@@ -121,11 +121,12 @@ struct SweepConfig {
   /// current iterate x0: one transport solve of the full source gives
   /// y0 = T(q + S x0) and the residual r0 = y0 - x0, GMRES solves
   /// (I - T S) e = r0 to ||r|| <= tol ||y0||, and x0 + e is accepted without
-  /// a final sweep. One transport solve per group set per outer instead of
-  /// three, and with CROSS the Krylov products only need accuracy relative
-  /// to ||y0|| / ||r0||, which grows as the outer iteration converges.
-  /// Storing the angular flux or keeping the cross's TT costs one more
-  /// transport solve of the accepted iterate per group set.
+  /// a final sweep (y0 itself when r0 already meets the tolerance). One
+  /// transport solve per group set per outer instead of three, and with CROSS
+  /// the Krylov products only need accuracy relative to ||y0|| / ||r0||, which
+  /// grows as the outer iteration converges. Storing the angular flux or
+  /// keeping the cross's TT costs one more transport solve of the accepted
+  /// iterate per group set.
   bool correction_form = false;
   /// Relative tolerance on the scalar flux change between outer iterations
   /// (across-group-set passes for fixed source, power iterations for
