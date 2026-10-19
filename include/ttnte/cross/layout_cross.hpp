@@ -10,6 +10,7 @@
 #include <memory>
 #include <random>
 #include <torch/extension.h>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -198,6 +199,10 @@ private:
   std::pair<std::vector<int64_t>, torch::Tensor> select_candidates(size_t k,
     bool left, const torch::Tensor& core, const std::vector<int64_t>& keep);
   int64_t max_rank() const noexcept;
+  /// @brief Truncated SVD at relative tolerance `rel_tol` and the rank cap,
+  /// through the Gram matrix when config().gram_svd.
+  std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, double, double> svd(
+    const torch::Tensor& A, double rel_tol) const;
   void grow_from_residual(const torch::Tensor& col, double total, size_t k,
     uint32_t mask, const IndexSet& current);
   void forward();

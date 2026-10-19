@@ -92,6 +92,14 @@ std::pair<torch::Tensor, torch::Tensor> outer_factors(
 // =================================================================
 // Construction and bookkeeping
 
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, double, double>
+LayoutCross::svd(const torch::Tensor& A, double rel_tol) const
+{
+  return config_.gram_svd
+           ? linalg::gram_truncated_svd(A, rel_tol, max_rank(), true)
+           : linalg::truncated_svd(A, rel_tol, max_rank(), true);
+}
+
 int64_t LayoutCross::max_rank() const noexcept
 {
   return config_.max_rank > 0 ? config_.max_rank
@@ -867,8 +875,8 @@ void LayoutCross::forward()
     timings_["superblock"] += elapsed(t0);
     t0 = Clock::now();
     const int64_t rl = Sb.size(0), nk = Sb.size(1), rr = Sb.size(2);
-    auto [U, s, Vh, delta, rest] = linalg::truncated_svd(
-      Sb.reshape({rl * nk, rr}), share * config_.tol, max_rank(), true);
+    auto [U, s, Vh, delta, rest] =
+      svd(Sb.reshape({rl * nk, rr}), share * config_.tol);
     const int64_t r = U.size(1);
     auto core = U.reshape({rl, nk, r}).contiguous();
     cores_[k] = core;
@@ -913,8 +921,8 @@ void LayoutCross::backward()
     timings_["superblock"] += elapsed(t0);
     t0 = Clock::now();
     const int64_t rl = Sb.size(0), nk = Sb.size(1), rr = Sb.size(2);
-    auto [U, s, Vh, delta, rest] = linalg::truncated_svd(
-      Sb.reshape({rl, nk * rr}), share * config_.tol, max_rank(), true);
+    auto [U, s, Vh, delta, rest] =
+      svd(Sb.reshape({rl, nk * rr}), share * config_.tol);
     const int64_t r = Vh.size(0);
     auto core = Vh.reshape({r, nk, rr}).contiguous();
     cores_[k] = core;

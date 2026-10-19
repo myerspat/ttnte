@@ -48,6 +48,11 @@ struct CrossConfig {
   /// more in synchronization than they save: 64 threads made a Big Ten cross
   /// about 40 times slower than 16.
   int64_t num_threads = 16;
+  /// Take the truncated SVDs of tall or wide superblocks through their Gram
+  /// matrices (linalg::gram_truncated_svd) instead of a Householder QR:
+  /// faster, but singular values only to about 1e-8 relative, and it falls
+  /// back to the QR path when the truncation threshold is below 1e-7.
+  bool gram_svd = false;
 };
 
 } // namespace ttnte::cross
