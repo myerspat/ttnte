@@ -287,6 +287,11 @@ private:
   /// rank, hold-out error).
   std::vector<cross::LayoutCross::Ptr> crosses_;
   double cross_tol_ = 0.0;
+  /// SweepConfig::correction_form: ||b|| / ||x|| of each group set from its
+  /// last standard within-group-set solve (b the transport solve of the fixed
+  /// sources, x the solution), which turns tolerances relative to ||b|| into
+  /// tolerances relative to ||y0|| ~ ||x|| (0: not measured yet).
+  std::vector<double> rhs_ratio_;
   std::vector<double> cross_tolerances_;
   std::vector<int64_t> cross_fibers_;
   std::vector<int64_t> cross_max_ranks_;
@@ -1208,8 +1213,12 @@ private:
       comm_.size() > 1
         ? linalg::krylov::Reducer([this](double v) { return global_sum(v); })
         : linalg::krylov::Reducer();
-    if (config_.correction_form) {
-      correction_solve(s, jacobi, tol, tol_min, x, reducer);
+    if (rhs_ratio_.size() != group_sets_.size())
+      rhs_ratio_.assign(group_sets_.size(), 0.0);
+    if (config_.correction_form && rhs_ratio_[s] > 0.0) {
+      // Tolerances relative to ||b|| as in the standard form
+      correction_solve(
+        s, jacobi, tol * rhs_ratio_[s], tol_min * rhs_ratio_[s], x, reducer);
       return group_set_sweeps_ - start;
     }
 
@@ -1253,6 +1262,16 @@ private:
       std::cout << "-- warning: within-group-set GMRES (set " << s
                 << ") stopped at relative residual " << result.relative_residual
                 << std::endl;
+    }
+    if (config_.correction_form) {
+      double bb = 0.0, xx = 0.0;
+      for (int64_t i = 0; i < n; i++) {
+        bb += b[i] * b[i];
+        xx += x[i] * x[i];
+      }
+      bb = reducer ? reducer(bb) : bb;
+      xx = reducer ? reducer(xx) : xx;
+      rhs_ratio_[s] = xx > 0.0 ? std::sqrt(bb / xx) : 0.0;
     }
 
     // Consistent final sweep from the solution (traces, angular flux)
@@ -1329,6 +1348,7 @@ private:
     cross_seconds_ = 0.0;
     cross_sweep_seconds_ = 0.0;
     cross_timings_.clear();
+    rhs_ratio_.assign(group_sets_.size(), 0.0);
     for (auto& P : patches_) {
       P.moments.zero_();
       if (unit_scalar_flux)
