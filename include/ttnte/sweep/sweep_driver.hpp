@@ -662,6 +662,9 @@ private:
     if (comm_.size() > 1)
       throw utils::runtime_error(
         ctx("setup"), "CROSS transport solves are serial in space for now");
+    if (config_.cross.inner_factor <= 0.0)
+      throw utils::runtime_error(
+        ctx("setup"), "cross.inner_factor must be positive");
     const auto modes = angular_modes();
     cross::CrossProblem base;
     base.num_dim = NumDim;
@@ -1074,8 +1077,8 @@ private:
   {
     const int64_t start = group_set_sweeps_;
     const double tol = inner_tolerance();
-    // Cross accuracy: a tenth of the inner tolerance, relaxed in GMRES
-    const double tol_min = 0.1 * tol;
+    // Cross accuracy: a fraction of the inner tolerance, relaxed in GMRES
+    const double tol_min = config_.cross.inner_factor * tol;
     cross_tol_ = tol_min;
 
     if (config_.inner_solver == InnerSolver::RICHARDSON) {
