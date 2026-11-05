@@ -11,6 +11,9 @@ void register_schur(py::module_& m)
   m.def(
     "complex_schur",
     [](const torch::Tensor& a) {
+      if (a.dim() != 2 || a.size(0) != a.size(1))
+        throw ttnte::utils::runtime_error(
+          "ttnte::linalg::complex_schur", "Expected a square (n, n) matrix");
       auto t = a.to(torch::kComplexDouble).contiguous().clone();
       const int64_t n = t.size(0);
       auto q = torch::empty_like(t);

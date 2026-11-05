@@ -68,6 +68,10 @@ enum class TransportSolve : uint8_t {
 };
 
 /// @brief Configuration of the transport sweep solver.
+/// Largest within-set tolerance SweepConfig::global_inner_tolerance may give
+/// a group set.
+inline constexpr double GLOBAL_TOLERANCE_CAP = 0.1;
+
 struct SweepConfig {
   /// Local patch solver.
   LocalSolverType local_solver = LocalSolverType::BANDED_LU;
@@ -85,7 +89,9 @@ struct SweepConfig {
   /// factors in later sweeps (the operators do not change between source
   /// iterations). Trades memory -- N_Omega * G * (N * 2kl+ku+1 or N^2)
   /// doubles per unit, see SweepDriver::factorization_bytes() -- for
-  /// skipping assembly and factorization after the first sweep.
+  /// skipping assembly and factorization after the first sweep. Each pair
+  /// is cached by the first sweep that factors it, exact or (with transport
+  /// = CROSS) a fiber sweep.
   bool cache_factorizations = false;
   /// Grouping of units into tasks (overridden by an explicit chunk map
   /// passed to SweepDriver::setup()).
@@ -107,6 +113,16 @@ struct SweepConfig {
   /// Within-group-set tolerance: GMRES relative residual or Richardson
   /// relative scalar flux change (<= 0 uses 0.1 * tol).
   double inner_tol = 0.0;
+  /// Make every group set's within-set tolerance (and so its cross
+  /// tolerance) relative to the whole scalar flux instead of the set's own:
+  /// multiply it by ||phi|| / ||phi_s|| of the current iterate (the result
+  /// capped at GLOBAL_TOLERANCE_CAP; 1 while the set has no flux), so sets
+  /// holding little of the flux
+  /// are solved more loosely relative to themselves at the same accuracy
+  /// relative to the whole. The outer test is relative to the whole flux.
+  /// With fission the factor is at most P / P_s (the set's share of the
+  /// fission production), so fission-heavy sets with little flux stay tight.
+  bool global_inner_tolerance = false;
   /// Inexact-Newton style forcing of the within-group-set tolerance (<= 0
   /// disables it): outer iteration k solves to max(floor, inner_forcing *
   /// min(e_{k-1}, 1)), e_{k-1} being the previous outer scalar flux change
@@ -135,8 +151,11 @@ struct SweepConfig {
   /// T(input - input_prev). The change is solved to the same absolute
   /// accuracy as y0, which relative to its (small) size is crude: a cross
   /// keeps low ranks as the outer iteration converges. A full transport
-  /// solve is done when the change exceeds incremental_switch times the
-  /// input.
+  /// solve is done when the change of the Krylov input or of the source
+  /// moments exceeds incremental_switch times its size, and after
+  /// 1 / cross_inner_factor increments in a row (each adds up to
+  /// inner_factor of the inner tolerance to y0, so the drift stays within
+  /// it).
   bool incremental_transport = false;
   double incremental_switch = 0.3;
   /// Return a Solution (each patch's flux compressed into a TT at 1e-14)
@@ -167,6 +186,25 @@ struct SweepConfig {
   TransportSolve transport = TransportSolve::EXACT;
   /// Options of the TT-cross (TransportSolve::CROSS).
   cross::CrossConfig cross;
+  /// How the solver drives each CROSS transport solve. Its accuracy is
+  /// tol_min = cross_inner_factor times the within-group-set tolerance; with
+  /// cross_relax, GMRES relaxes each product's accuracy as the residual
+  /// drops, tol_k = min(cross_max_tol, tol_min / max(r_k, tol_min)), r_k the
+  /// relative residual (Simoncini and Szyld, SISC 25, 2003).
+  double cross_inner_factor = 0.1;
+  bool cross_relax = true;
+  double cross_max_tol = 1e-2;
+  /// Intra-op threads of the cross's linear algebra, capped by num_threads
+  /// (<= 0: num_threads). Its matrices are small (ranks times the fiber
+  /// length), so many threads cost more in synchronization than they save:
+  /// 64 threads made a Big Ten cross about 40 times slower than 16.
+  int64_t cross_threads = 16;
+  /// TransportSolve::CROSS: after the outer iteration, one exact transport
+  /// solve of every group set at the converged sources (one full sweep). Its
+  /// moments and traces replace the cross's, and the scalar-flux change (and
+  /// the change in k) is reported as the certification error. The only check
+  /// that sees every (direction, group) pair; off by default.
+  bool certify = false;
 };
 
 } // namespace ttnte::sweep

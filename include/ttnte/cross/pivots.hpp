@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <functional>
 #include <torch/extension.h>
 #include <vector>
 
@@ -28,34 +27,25 @@ torch::Tensor direction_sketch(int64_t direction, int64_t k, int64_t n);
 /// @param sizes (nk) rows per block.
 /// @param cost (nk) cost of each block (fibers it still needs).
 /// @param picked (nk) in: forced blocks; out: chosen blocks.
+/// @param cond, near CrossConfig::select_cond and select_near.
 void select_block_grams(const torch::Tensor& grams,
   const std::vector<int64_t>& sizes, const std::vector<double>& cost,
-  std::vector<uint8_t>& picked, double cond = 1e-2, double near = 0.25);
+  std::vector<uint8_t>& picked, double cond, double near);
 
 /// @brief select_block_grams() for blocks of one row each, by greedy pivoted
 /// Gram-Schmidt: an orthonormal basis of the chosen rows is extended one
-/// vector at a time and every row's residual updated by one product, so the
-/// selection costs O(m r^2) instead of an eigendecomposition and a pass over
-/// every block per step. The conditioning test is the same.
+/// vector at a time and every row's residual updated by one product, so a
+/// step costs O(m r) instead of a pass over every block's Gram. The
+/// conditioning test is the same (an r x r eigenvalue problem per step once
+/// r rows are chosen). Once the chosen rows span all r directions the
+/// residuals are zero, and rows are scored as in select_block_grams() by
+/// their energy in the directions with sigma_j <= cond sigma_max.
 /// @param rows (m, r) the rows (one block each).
 /// @param cost (m) cost of each row.
 /// @param picked (m) in: forced rows; out: chosen rows.
+/// @param cond, near CrossConfig::select_cond and select_near.
 void select_single_rows(const torch::Tensor& rows,
-  const std::vector<double>& cost, std::vector<uint8_t>& picked,
-  double cond = 1e-2, double near = 0.25);
-
-/// @brief Whole blocks of rows (rows sharing a key) chosen until B[rows]
-/// has sigma_min / sigma_max >= cond. The next block maximizes the residual
-/// energy of its rows outside the resolved row space, or is a cheaper one
-/// (lower cost) within `near` of the best. Blocks whose key is in `start`
-/// are always taken.
-/// @param B (m, r) basis evaluated at the candidate rows.
-/// @param keys (m) block key of every row.
-/// @param cost Cost of a block, by key (fibers it still needs).
-/// @param start Keys that are always taken.
-/// @return The chosen rows, ascending.
-std::vector<int64_t> select_blocks(const torch::Tensor& B,
-  const std::vector<int64_t>& keys, const std::function<double(int64_t)>& cost,
-  const std::vector<int64_t>& start, double cond = 1e-2, double near = 0.25);
+  const std::vector<double>& cost, std::vector<uint8_t>& picked, double cond,
+  double near);
 
 } // namespace ttnte::cross

@@ -35,6 +35,22 @@ struct InterfaceQuadrature {
   std::vector<bool> flip;
 };
 
+/// @brief The tangential correspondence of two faces of `ndim`-dimensional
+/// patches from a boundary mapping (see interface_quadrature() on patches).
+/// @return (second_dim, flip) as InterfaceQuadrature holds them.
+std::pair<std::vector<int64_t>, std::vector<bool>> tangential_mapping(
+  int64_t ndim, int64_t dim_first, int64_t dim_second,
+  const mesh::BoundaryMapping& mapping);
+
+/// @brief Throw unless the two faces map the interface quadrature's points
+/// to the same physical points (to `tol` relative to the geometry's size):
+/// interface_quadrature() assumes both faces are one surface refined
+/// differently, with parametrizations related by the boundary mapping.
+/// @param face_first The first face as a patch (its tangential parameters).
+/// @param face_second The second face as a patch.
+void check_shared_parametrization(const Patch& face_first,
+  const Patch& face_second, const InterfaceQuadrature& iq, double tol = 1e-8);
+
 /// @brief Build the quadrature of an interface from the two faces'
 /// tangential bases.
 /// @param first Tangential bases of the first face (natural order).
@@ -51,9 +67,10 @@ InterfaceQuadrature interface_quadrature(const std::vector<BSplineBasis>& first,
 /// T-junctions). Along each tangential parameter the sub-spans are the
 /// union of both sides' knot spans and carry max(p_first, p_second) + 1
 /// Gauss-Legendre points, so the integrals of products of the two sides'
-/// basis functions are exact on affine faces. Both sides of the interface
-/// integrate their fluxes with these points so the outflow of one side is
-/// the inflow of the other to round-off (particle balance).
+/// basis functions are exact on affine, polynomial (non-rational) faces. Both
+/// sides of the interface integrate their fluxes with these points so the
+/// outflow of one side is the inflow of the other to round-off (particle
+/// balance).
 /// @param first The patch owning the first face.
 /// @param dim_first Parametric dimension the first face is normal to.
 /// @param second The patch owning the second face.

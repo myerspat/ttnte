@@ -460,6 +460,9 @@ public:
     if (face_a->get_ndim() != face_b->get_ndim()) {
       return std::make_tuple(false, BoundaryMapping(), BoundaryMapping());
     }
+    // The ends and center, plus two off-center, asymmetric points: on a
+    // symmetric face the symmetric samples alone cannot tell a permutation
+    // or flip of the parameters from the identity
     const std::vector<double> s = {0.0, 0.137, 0.5, 0.863, 1.0};
     return search_mapping(
       sample_face(face_a, s), sample_face(face_b, s), dim_a, dim_b, tol);

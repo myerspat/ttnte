@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ttnte/linalg/krylov.hpp"
 #include "ttnte/sweep/kronecker_solver.hpp"
 #include "ttnte/sweep/sum_factorization.hpp"
 #include <atomic>
@@ -24,7 +25,8 @@ public:
   struct Workspace {
     SumFactorization::Workspace apply;
     KroneckerSolver::Workspace twin;
-    std::vector<double> t;
+    linalg::krylov::Workspace gmres;
+    std::vector<double> t, rhs, y;
   };
 
 private:
@@ -45,7 +47,7 @@ private:
   mutable std::atomic<int64_t> failures_ {0};
 
   // =================================================================
-  // Protected constructors
+  // Private constructors (see the static factories)
   IterativeSolver(const PatchDiscretization& disc, double tol, int64_t restart,
     int64_t max_iter);
 

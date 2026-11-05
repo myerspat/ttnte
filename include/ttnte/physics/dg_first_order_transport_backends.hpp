@@ -360,19 +360,10 @@ private:
       spatial_quads.push_back(
         math::QuadratureSet1D::gauss_legendre(basis.get_degree() + 1));
 
-      // Get the unique knots in the knot vector
-      torch::Tensor unique_knots = basis.get_unique_knots().to(options);
-
-      // Get the start and width of each span
-      torch::Tensor span_starts = unique_knots.slice(0, 0, -1);
-      torch::Tensor span_widths = unique_knots.diff();
-
-      // Map parent element space to parametric space
-      quad_points_.push_back(
-        ((spatial_quads.back()->get_points().unsqueeze(0).to(options) + 1.0) *
-            span_widths.unsqueeze(1) / 2.0 +
-          span_starts.unsqueeze(1))
-          .flatten());
+      // Map parent element space to parametric space, span by span
+      quad_points_.push_back(spatial_quads.back()
+          ->map_to_spans(basis.get_unique_knots().to(options))
+          .first);
     }
 
     spatial_qset_ = math::ProductQuadrature::create(spatial_quads);
@@ -487,14 +478,15 @@ public:
 
   /// @brief Construct a backend with no material and EXTERNALLY supplied
   /// quadrature points, bypassing init_spatial_quadrature_()'s
-  /// self-derivation from this block's own knot vector. Only valid for
-  /// assemble_basis() (spatial_qset_ is left unset, so
-  /// assemble_integral_mapping() and anything depending on it is not valid
-  /// on an instance built this way). Intended for evaluating a DIFFERENT
-  /// patch's basis -- e.g. a differently-refined (more knot spans and/or
-  /// higher polynomial degree) reference solution sharing the same
-  /// parametric domain -- at another patch's own quadrature points, so the
-  /// two can be compared pointwise (see
+  /// self-derivation from this block's own knot vector. Valid for the
+  /// point evaluations assemble_basis(), assemble_basis_ders() and
+  /// assemble_jacobian() (the non-conforming interface terms use these);
+  /// spatial_qset_ is left unset, so assemble_integral_mapping() and
+  /// anything depending on it is not valid on an instance built this way.
+  /// Intended for evaluating a DIFFERENT patch's basis -- e.g. a
+  /// differently-refined (more knot spans and/or higher polynomial degree)
+  /// reference solution sharing the same parametric domain -- at another
+  /// patch's own quadrature points, so the two can be compared pointwise (see
   /// TransportSolution::compute_errors()).
   DGFirstOrderTransportBackend(const cad::Patch::Ptr& block,
     const math::QuadratureSet::Ptr& angular_qset, Tensors quad_points,

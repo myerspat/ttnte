@@ -6,6 +6,19 @@
 
 namespace ttnte::sweep {
 
+namespace {
+
+/// @return Row-major strides of a flat index over `shape`.
+std::vector<int64_t> row_major_strides(const std::vector<int64_t>& shape)
+{
+  std::vector<int64_t> stride(shape.size(), 1);
+  for (int64_t i = static_cast<int64_t>(shape.size()) - 2; i >= 0; i--)
+    stride[i] = stride[i + 1] * shape[i + 1];
+  return stride;
+}
+
+} // namespace
+
 KroneckerSolver::Ptr KroneckerSolver::try_create(
   const PatchDiscretization& disc, double tol)
 {
@@ -19,9 +32,7 @@ KroneckerSolver::Ptr KroneckerSolver::try_create(
   const int64_t* c = cols.data_ptr<int64_t>();
 
   // Multi-indices of every pair, and the reference index of each dimension
-  std::vector<int64_t> stride(d, 1);
-  for (int64_t i = d - 2; i >= 0; i--)
-    stride[i] = stride[i + 1] * shape[i + 1];
+  const auto stride = row_major_strides(shape);
   auto digit = [&](int64_t flat, int64_t i) {
     return (flat / stride[i]) % shape[i];
   };
@@ -108,9 +119,21 @@ KroneckerSolver::Ptr KroneckerSolver::from_factors(
   const std::vector<std::array<std::vector<double>, 2>>& A)
 {
   const int64_t d = static_cast<int64_t>(shape.size());
+  if (d < 1 || d > 3 || static_cast<int64_t>(F.size()) != d ||
+      static_cast<int64_t>(A.size()) != d) {
+    throw utils::runtime_error("ttnte::sweep::KroneckerSolver::from_factors",
+      "Expected 1 to 3 dimensions, with one F and one pair A per dimension");
+  }
+  for (int64_t i = 0; i < d; i++) {
+    const size_t nn = static_cast<size_t>(shape[i] * shape[i]);
+    if (F[i].size() != nn || A[i][0].size() != nn || A[i][1].size() != nn)
+      throw utils::runtime_error("ttnte::sweep::KroneckerSolver::from_factors",
+        "Factor sizes do not match the shape");
+  }
   auto solver = Ptr(new KroneckerSolver());
   solver->ndim_ = d;
   solver->n_ = shape;
+  solver->stride_ = row_major_strides(shape);
   solver->num_dofs_ = 1;
   for (int64_t n : shape)
     solver->num_dofs_ *= n;
@@ -194,17 +217,14 @@ KroneckerSolver::Ptr KroneckerSolver::parametric_twin(
   }
   // Patch averages of |det J| J^{-1} and |det J| over the parametric box
   auto measure_q = disc.quad_measure();
-  auto param = torch::ones_like(measure_q);
-  {
-    std::vector<int64_t> view(d, 1);
-    auto flat = torch::ones({1}, torch::kFloat64);
-    for (int64_t i = 0; i < d; i++) {
-      std::vector<int64_t> v(d, 1);
-      v[i] = bases[i].weights.size(0);
-      flat = flat * bases[i].weights.reshape(v);
-    }
-    param = flat.reshape({-1});
+  // Parametric quadrature weights: the outer product of the 1-D weights
+  auto flat = torch::ones({1}, torch::kFloat64);
+  for (int64_t i = 0; i < d; i++) {
+    std::vector<int64_t> v(d, 1);
+    v[i] = bases[i].weights.size(0);
+    flat = flat * bases[i].weights.reshape(v);
   }
+  const auto param = flat.reshape({-1});
   const double volume = param.sum().item<double>();
   metric = (measure_q.view({-1, 1, 1}) * disc.quad_inverse_jacobian())
              .sum(0)
@@ -218,11 +238,8 @@ void KroneckerSolver::mode_product(
   const cplx* B, int64_t dim, const cplx* in, cplx* out) const
 {
   const int64_t n = n_[dim];
-  int64_t outer = 1, inner = 1;
-  for (int64_t k = 0; k < dim; k++)
-    outer *= n_[k];
-  for (int64_t k = dim + 1; k < ndim_; k++)
-    inner *= n_[k];
+  const int64_t inner = stride_[dim];
+  const int64_t outer = num_dofs_ / (n * inner);
   for (int64_t o = 0; o < outer; o++) {
     const cplx* src = in + o * n * inner;
     cplx* dst = out + o * n * inner;
@@ -241,7 +258,7 @@ void KroneckerSolver::mode_product(
   }
 }
 
-void KroneckerSolver::solve(
+bool KroneckerSolver::solve(
   const double* omega, double sigma, double* b, Workspace& work) const
 {
   const int64_t N = num_dofs_;
@@ -266,9 +283,7 @@ void KroneckerSolver::solve(
 
   // (sigma + sum_i |Omega_i| R_i) w = f, R_i upper triangular: descending
   // flat order sees every larger index of each dimension first
-  std::vector<int64_t> stride(ndim_, 1);
-  for (int64_t i = ndim_ - 2; i >= 0; i--)
-    stride[i] = stride[i + 1] * n_[i + 1];
+  const auto& stride = stride_;
   const cplx* R[3] = {nullptr, nullptr, nullptr};
   for (int64_t i = 0; i < ndim_; i++)
     R[i] = R_[i][sign[i]].data();
@@ -297,6 +312,7 @@ void KroneckerSolver::solve(
   }
   for (int64_t k = 0; k < N; k++)
     b[k] = f[k].real();
+  return true;
 }
 
 } // namespace ttnte::sweep

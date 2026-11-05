@@ -1,4 +1,5 @@
 #include "ttnte/sweep/sweep_config.hpp"
+#include "../utils/kwargs_init.hpp"
 #include <pybind11/pybind11.h>
 
 namespace py = pybind11;
@@ -12,13 +13,13 @@ void register_SweepConfig(py::module_& m)
       "Banded LU with partial pivoting (patch-discontinuous patches)")
     .value("DENSE_LU", LocalSolverType::DENSE_LU,
       "Dense LU (single-element, fully discontinuous patches)")
-    .value("ITERATIVE", LocalSolverType::ITERATIVE,
-      "SYLVESTER on affine patches; preconditioned matrix-free GMRES (sum "
-      "factorization) on curved ones")
     .value("SYLVESTER", LocalSolverType::SYLVESTER,
       "Kronecker-sum solver on axis-aligned affine patches (one Schur "
       "factorization per patch for all directions and groups); banded LU "
       "elsewhere")
+    .value("ITERATIVE", LocalSolverType::ITERATIVE,
+      "SYLVESTER on affine patches; preconditioned matrix-free GMRES (sum "
+      "factorization) on curved ones")
     .export_values();
 
   py::enum_<TaskGranularity>(m, "TaskGranularity")
@@ -50,70 +51,8 @@ void register_SweepConfig(py::module_& m)
     .export_values();
 
   py::class_<SweepConfig>(m, "SweepConfig")
-    .def(py::init(
-           [](LocalSolverType local_solver, bool store_angular_flux,
-             bool cache_factorizations, TaskGranularity task_granularity,
-             int64_t num_threads, int64_t directions_per_task,
-             int64_t group_set_size, GroupIteration group_iteration,
-             InnerSolver inner_solver, double inner_tol, double inner_forcing,
-             int64_t inner_max_iter, int64_t gmres_restart, double tol,
-             int64_t max_iter, bool rho_safety, double face_weight_tol,
-             bool verbose, TransportSolve transport,
-             const ttnte::cross::CrossConfig& cross, double local_tol,
-             int64_t local_restart, int64_t local_max_iter,
-             double progress_seconds, bool correction_form,
-             bool incremental_transport, double incremental_switch,
-             bool build_solution) {
-             SweepConfig c;
-             c.local_solver = local_solver;
-             c.store_angular_flux = store_angular_flux;
-             c.cache_factorizations = cache_factorizations;
-             c.task_granularity = task_granularity;
-             c.num_threads = num_threads;
-             c.directions_per_task = directions_per_task;
-             c.group_set_size = group_set_size;
-             c.group_iteration = group_iteration;
-             c.inner_solver = inner_solver;
-             c.inner_tol = inner_tol;
-             c.inner_forcing = inner_forcing;
-             c.inner_max_iter = inner_max_iter;
-             c.gmres_restart = gmres_restart;
-             c.tol = tol;
-             c.max_iter = max_iter;
-             c.rho_safety = rho_safety;
-             c.face_weight_tol = face_weight_tol;
-             c.verbose = verbose;
-             c.transport = transport;
-             c.cross = cross;
-             c.local_tol = local_tol;
-             c.local_restart = local_restart;
-             c.local_max_iter = local_max_iter;
-             c.progress_seconds = progress_seconds;
-             c.correction_form = correction_form;
-             c.incremental_transport = incremental_transport;
-             c.incremental_switch = incremental_switch;
-             c.build_solution = build_solution;
-             return c;
-           }),
-      py::arg("local_solver") = LocalSolverType::BANDED_LU,
-      py::arg("store_angular_flux") = false,
-      py::arg("cache_factorizations") = false,
-      py::arg("task_granularity") = TaskGranularity::UNIT,
-      py::arg("num_threads") = 1, py::arg("directions_per_task") = 32,
-      py::arg("group_set_size") = 0,
-      py::arg("group_iteration") = GroupIteration::GAUSS_SEIDEL,
-      py::arg("inner_solver") = InnerSolver::GMRES, py::arg("inner_tol") = 0.0,
-      py::arg("inner_forcing") = 0.0, py::arg("inner_max_iter") = 1000,
-      py::arg("gmres_restart") = 30, py::arg("tol") = 1e-6,
-      py::arg("max_iter") = 1000, py::arg("rho_safety") = true,
-      py::arg("face_weight_tol") = 1e-12, py::arg("verbose") = true,
-      py::arg("transport") = TransportSolve::EXACT,
-      py::arg("cross") = ttnte::cross::CrossConfig(),
-      py::arg("local_tol") = 1e-11, py::arg("local_restart") = 20,
-      py::arg("local_max_iter") = 100, py::arg("progress_seconds") = 30.0,
-      py::arg("correction_form") = false,
-      py::arg("incremental_transport") = false,
-      py::arg("incremental_switch") = 0.3, py::arg("build_solution") = true)
+    // Keyword arguments only, each an attribute below; defaults from C++
+    .def(ttnte::bindings::kwargs_init<SweepConfig>())
     .def_readwrite("local_solver", &SweepConfig::local_solver)
     .def_readwrite("store_angular_flux", &SweepConfig::store_angular_flux)
     .def_readwrite("cache_factorizations", &SweepConfig::cache_factorizations)
@@ -138,6 +77,22 @@ void register_SweepConfig(py::module_& m)
     .def_readwrite("verbose", &SweepConfig::verbose)
     .def_readwrite("progress_seconds", &SweepConfig::progress_seconds)
     .def_readwrite("transport", &SweepConfig::transport)
+    .def_readwrite("cross_inner_factor", &SweepConfig::cross_inner_factor,
+      "CROSS transport solves to this fraction of the within-set tolerance.")
+    .def_readwrite("cross_relax", &SweepConfig::cross_relax,
+      "Relax each GMRES product's cross accuracy as the residual drops.")
+    .def_readwrite("cross_max_tol", &SweepConfig::cross_max_tol,
+      "Loosest relaxed cross tolerance.")
+    .def_readwrite("cross_threads", &SweepConfig::cross_threads,
+      "Intra-op threads of the cross's linear algebra (capped by "
+      "num_threads; <= 0: num_threads).")
+    .def_readwrite("global_inner_tolerance",
+      &SweepConfig::global_inner_tolerance,
+      "Within-set tolerances relative to the whole scalar flux: multiplied by "
+      "||phi|| / ||phi_s||, capped at GLOBAL_TOLERANCE_CAP (sweep_config.hpp).")
+    .def_readwrite("certify", &SweepConfig::certify,
+      "CROSS: certify the converged solve with one exact transport solve of "
+      "every group set (see SweepDriver.certification_error).")
     .def_readwrite("local_tol", &SweepConfig::local_tol)
     .def_readwrite("local_restart", &SweepConfig::local_restart)
     .def_readwrite("local_max_iter", &SweepConfig::local_max_iter)

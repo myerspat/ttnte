@@ -1,4 +1,5 @@
 #include "ttnte/task/task.hpp"
+#include "payload_error.hpp"
 #include <torch/extension.h>
 
 namespace py = pybind11;
@@ -37,12 +38,21 @@ void register_Task(py::module_& m)
         // Called from worker threads: hold the GIL only while in Python
         task.set_payload([payload]() {
           py::gil_scoped_acquire gil;
-          return payload().cast<TaskStatus>();
+          try {
+            return payload().cast<TaskStatus>();
+          } catch (...) {
+            // Raised again by TaskScheduler.execute(); later tasks still
+            // run (prototyping only)
+            ttnte::bindings::PayloadError::instance().record(
+              std::current_exception());
+            return TaskStatus::COMPLETED;
+          }
         });
       },
       py::arg("payload"),
       "Set a Python payload returning a TaskStatus (testing and "
-      "prototyping; every call takes the GIL)")
+      "prototyping; every call takes the GIL). An exception it raises is "
+      "raised again by TaskScheduler.execute().")
     .def("add_dependency", &Task::add_dependency, py::arg("dependency"))
 
     .def_property_readonly("target", &Task::get_target)

@@ -1,5 +1,6 @@
 #include "ttnte/linalg/krylov.hpp"
 #include "ttnte/utils/exception.hpp"
+#include <algorithm>
 #include <cmath>
 
 namespace ttnte::linalg::krylov {
@@ -19,6 +20,14 @@ double dot(const double* a, const double* b, size_t n)
 KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
   std::vector<double>& x, int64_t restart, double tol, int64_t max_applies,
   const Reducer& reduce, const Progress& progress)
+{
+  Workspace work;
+  return gmres(apply, b, x, restart, tol, max_applies, work, reduce, progress);
+}
+
+KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
+  std::vector<double>& x, int64_t restart, double tol, int64_t max_applies,
+  Workspace& work, const Reducer& reduce, const Progress& progress)
 {
   const size_t n = b.size();
   // Inner products of (possibly distributed) vectors
@@ -44,8 +53,21 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
   }
 
   const int64_t m = restart;
-  std::vector<double> V((m + 1) * n), H((m + 1) * m, 0.0);
-  std::vector<double> cs(m), sn(m), g(m + 1), w(n), r(n);
+  // resize() keeps the storage of earlier calls of the same size
+  auto& V = work.V;
+  auto& H = work.H;
+  auto& cs = work.cs;
+  auto& sn = work.sn;
+  auto& g = work.g;
+  auto& w = work.w;
+  auto& r = work.r;
+  V.resize((m + 1) * n);
+  H.assign((m + 1) * m, 0.0);
+  cs.resize(m);
+  sn.resize(m);
+  g.resize(m + 1);
+  w.resize(n);
+  r.resize(n);
 
   while (true) {
     // True residual (only if the budget allows another application; the
@@ -53,10 +75,18 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
     if (result.num_applies > 0 && result.num_applies >= max_applies) {
       return result;
     }
-    if (progress)
-      progress(1.0);
-    apply(x.data(), w.data());
-    result.num_applies++;
+    // A zero first guess needs no product: r = b
+    const bool zero =
+      result.num_applies == 0 &&
+      std::all_of(x.begin(), x.end(), [](double v) { return v == 0.0; });
+    if (zero) {
+      std::fill(w.begin(), w.end(), 0.0);
+    } else {
+      if (progress)
+        progress(1.0, true);
+      apply(x.data(), w.data());
+      result.num_applies++;
+    }
     for (size_t i = 0; i < n; i++)
       r[i] = b[i] - w[i];
     double beta = std::sqrt(dot(r.data(), r.data(), n));
@@ -79,7 +109,7 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
     for (; k < m && result.num_applies < max_applies; k++) {
       double* vk1 = V.data() + (k + 1) * n;
       if (progress)
-        progress(std::abs(g[k]) / bnorm);
+        progress(std::abs(g[k]) / bnorm, false);
       apply(V.data() + k * n, vk1);
       result.num_applies++;
 
@@ -122,12 +152,14 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
     }
 
     // Solve the upper-triangular system and update x
-    std::vector<double> y(k, 0.0);
+    auto& y = work.y;
+    y.assign(k, 0.0);
     for (int64_t i = k - 1; i >= 0; i--) {
       double s = g[i];
       for (int64_t j = i + 1; j < k; j++)
         s -= H[i * m + j] * y[j];
-      y[i] = s / H[i * m + i];
+      // A zero pivot (breakdown of a singular A) leaves that direction out
+      y[i] = H[i * m + i] != 0.0 ? s / H[i * m + i] : 0.0;
     }
     for (int64_t j = 0; j < k; j++) {
       const double* vj = V.data() + j * n;

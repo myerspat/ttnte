@@ -51,6 +51,20 @@ std::function<void()> build_worker_init(
 
 namespace {
 
+/// Waits while MPI requests are in flight and nothing else is ready: short
+/// enough not to delay a completing request, long enough not to spin.
+/// @return n, after checking that a scheduler has a worker for CPU tasks.
+size_t at_least_one(size_t n)
+{
+  if (n < 1)
+    throw ttnte::utils::runtime_error("ttnte::task::TaskScheduler",
+      "A scheduler needs at least one worker thread");
+  return n;
+}
+
+constexpr auto PUSH_BACKOFF = std::chrono::microseconds(20);
+constexpr auto POLL_BACKOFF = std::chrono::microseconds(50);
+
 /// @brief State of one ExecutionMode::PUSH execution. Shared (via
 /// shared_from_this) by every queued closure, so a worker still unwinding
 /// after the last completion never touches freed memory.
@@ -62,7 +76,9 @@ struct PushRun : std::enable_shared_from_this<PushRun> {
   std::unique_ptr<std::atomic<int64_t>[]> pending;
   /// Unfinished tasks.
   std::atomic<size_t> remaining {0};
-  /// Whether a CPU payload returned something other than COMPLETED.
+  /// Whether a CPU payload returned something other than COMPLETED. Tasks
+  /// released after that are finished without running, so none consumes
+  /// missing data and the count still reaches zero.
   std::atomic<bool> incomplete {false};
   /// Guards network_ready and done; cv wakes the calling (main) thread.
   std::mutex mutex;
@@ -97,7 +113,7 @@ struct PushRun : std::enable_shared_from_this<PushRun> {
     if (task.get_status() == ttnte::task::TaskStatus::COMPLETED)
       task.count();
     else
-      incomplete.store(true, std::memory_order_relaxed);
+      incomplete.store(true, std::memory_order_release);
 
     int64_t next = -1;
     for (int64_t c : plan->successors[i]) {
@@ -123,8 +139,10 @@ struct PushRun : std::enable_shared_from_this<PushRun> {
   {
     while (i >= 0) {
       auto& task = (*tasks)[i];
-      task.update_status(ttnte::task::TaskStatus::RUNNING);
-      task.execute();
+      if (!incomplete.load(std::memory_order_acquire)) {
+        task.update_status(ttnte::task::TaskStatus::RUNNING);
+        task.execute();
+      }
       i = finish(i, true);
     }
   }
@@ -148,6 +166,11 @@ struct PushRun : std::enable_shared_from_this<PushRun> {
       bool progressed = false;
       for (int64_t i : ready) {
         auto& task = (*tasks)[i];
+        if (incomplete.load(std::memory_order_acquire)) {
+          finish(i, false);
+          progressed = true;
+          continue;
+        }
         task.update_status(TaskStatus::RUNNING);
         task.execute();
         if (task.get_status() == TaskStatus::POLLING) {
@@ -174,7 +197,7 @@ struct PushRun : std::enable_shared_from_this<PushRun> {
       lock.lock();
       if (!progressed && !in_flight.empty()) {
         // Requests in flight: back off briefly unless new work arrives
-        cv.wait_for(lock, std::chrono::microseconds(20),
+        cv.wait_for(lock, PUSH_BACKOFF,
           [this] { return done || !network_ready.empty(); });
       }
     }
@@ -189,12 +212,21 @@ TaskScheduler::TaskScheduler(
   size_t num_threads, std::optional<std::string> label)
   : label_(label.has_value() ? Label::from_string(label.value())
                              : Label::create_internal()),
-    stream_pool_(parallel::StreamPool::create(num_threads)),
+    stream_pool_(parallel::StreamPool::create(at_least_one(num_threads))),
     thread_pool_(num_threads, build_worker_init(stream_pool_))
 {}
 
 void TaskScheduler::execute(TaskGraph& graph, ExecutionMode mode)
 {
+  // A task left COMPLETED by an earlier run is never counted again (POLL
+  // would spin forever): graphs are reset before they run again
+  for (const auto& task : graph.get_tasks()) {
+    if (task.get_status() != TaskStatus::WAITING) {
+      throw utils::runtime_error("ttnte::task::TaskScheduler::execute",
+        "Every task must be WAITING: call graph.reset() before running a "
+        "graph again");
+    }
+  }
   // Lock class from multiple threads trying to execute the same graph
   std::lock_guard<std::mutex> lock(mutex);
   if (mode == ExecutionMode::PUSH)
@@ -213,9 +245,9 @@ void TaskScheduler::execute_push(TaskGraph& graph)
     throw utils::runtime_error("ttnte::task::TaskScheduler::execute",
       "ExecutionMode::PUSH supports CPU_ASYNC and NETWORK_* tasks only");
   }
-  if (plan.roots.empty()) {
+  if (!plan.acyclic) {
     throw utils::runtime_error(
-      "ttnte::task::TaskScheduler::execute", "The task graph has no roots");
+      "ttnte::task::TaskScheduler::execute", "The task graph has a cycle");
   }
 
   auto run = std::make_shared<PushRun>();
@@ -227,7 +259,8 @@ void TaskScheduler::execute_push(TaskGraph& graph)
     run->pending[i].store(plan.num_dependencies[i], std::memory_order_relaxed);
   run->remaining.store(n, std::memory_order_relaxed);
 
-  // Network roots first: no worker runs yet, so network_ready needs no lock
+  // Network roots first: no CPU task of this run is queued yet, so no
+  // worker touches network_ready and it needs no lock
   for (int64_t r : plan.roots)
     if (plan.is_network[r])
       run->network_ready.push_back(r);
@@ -323,7 +356,7 @@ void TaskScheduler::execute_poll(TaskGraph& graph)
     // If a full pass of the DAG resulted in no dependencies met, no dispatches,
     // and no completed polls, yield the CPU time slice to the OS.
     if (!made_progress) {
-      std::this_thread::sleep_for(std::chrono::microseconds(50));
+      std::this_thread::sleep_for(POLL_BACKOFF);
     }
   }
 }

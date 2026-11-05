@@ -22,11 +22,15 @@ public:
   using Ptr = std::shared_ptr<SumFactorization>;
 
   /// @brief Scratch of one worker.
+  /// Scratch of one apply(), kept between calls: the two ping-pong buffers
+  /// of the mode products, the pointwise fields at the quadrature points,
+  /// the current tensor shape, and one face's outflow weights.
   struct Workspace {
     std::vector<double> a;
     std::vector<double> b;
-    std::vector<double> sum;
-    std::vector<double> face;
+    std::vector<double> fields;
+    std::vector<int64_t> shape;
+    std::vector<double> outflow;
   };
 
 private:
@@ -48,7 +52,7 @@ private:
   std::vector<double> inverse_jacobian_;
 
   // =================================================================
-  // Protected constructors
+  // Private constructors (see the static factories)
   explicit SumFactorization(const PatchDiscretization& disc);
 
   /// @brief Mode product along `dim`: dofs -> quadrature points

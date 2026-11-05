@@ -1,6 +1,9 @@
 # Define the relative filenames
-set(CROSS_BINDINGS_REL bindings.cpp cross_config.cpp layout_cross.cpp)
-set(CROSS_SRC_REL pivots.cpp layout_cross.cpp)
+set(CROSS_BINDINGS_REL bindings.cpp cross_config.cpp layout_cross.cpp
+                       pivots.cpp)
+set(CROSS_SRC_REL
+    pivots.cpp layout_cross.cpp layout_cross_check.cpp
+    layout_cross_contract.cpp layout_cross_fibers.cpp layout_cross_select.cpp)
 
 # Define the directory paths (Use local variables here, then push if needed)
 set(CROSS_SRC_DIR "${PROJECT_SOURCE_DIR}/src/cross")

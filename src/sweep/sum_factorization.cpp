@@ -106,16 +106,14 @@ void SumFactorization::apply(const double* omega, double sigma, const double* u,
   double* y, Workspace& work) const
 {
   const int64_t K = ndim_, Q = num_points_, N = num_dofs_;
-  int64_t big = std::max(N, Q);
-  for (int64_t k = 0; k < K; k++) {
-    int64_t s = 1;
-    for (int64_t j = 0; j < K; j++)
-      s *= std::max(n_[j], nq_[j]);
-    big = std::max(big, s);
-  }
+  // Largest intermediate of the mode products: every mode at its larger
+  // size (dofs or points)
+  int64_t big = 1;
+  for (int64_t j = 0; j < K; j++)
+    big *= std::max(n_[j], nq_[j]);
+  big = std::max({big, N, Q});
   work.a.resize(big);
   work.b.resize(big);
-  work.sum.resize(N);
   const bool rational = !control_weights_.empty();
 
   // u at the quadrature points: (B_1 x ... x B_K)(w u) / W
@@ -123,14 +121,15 @@ void SumFactorization::apply(const double* omega, double sigma, const double* u,
   double* b = work.b.data();
   for (int64_t v = 0; v < N; v++)
     a[v] = rational ? control_weights_[v] * u[v] : u[v];
-  std::vector<int64_t> shape(n_);
+  auto& shape = work.shape;
+  shape = n_;
   for (int64_t dim = 0; dim < K; dim++) {
     forward(dim, false, shape, a, b);
     shape[dim] = nq_[dim];
     std::swap(a, b);
   }
   // Pointwise fields: h_0 tested against values, h_k against d/dxi_k
-  std::vector<double>& fields = work.face;
+  std::vector<double>& fields = work.fields;
   fields.resize((K + 1) * Q);
   for (int64_t q = 0; q < Q; q++) {
     const double W = W_[q];
@@ -167,7 +166,8 @@ void SumFactorization::apply(const double* omega, double sigma, const double* u,
   // Outflow faces: <(Omega . n)_+ R_v, u>_f
   const auto& view = disc_->view();
   for (const auto& face : view.faces) {
-    std::vector<double> c(face.num_points);
+    auto& c = work.outflow;
+    c.resize(face.num_points);
     bool any = false;
     for (int64_t q = 0; q < face.num_points; q++) {
       double dot = 0.0;

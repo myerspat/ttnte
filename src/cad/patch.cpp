@@ -244,7 +244,9 @@ torch::Tensor Patch::evaluate(
   // derivative order (0 unless overridden in `dim_orders`). Returns the raw
   // (undivided, weight channel included if rational) numerator.
   auto contract = [&](const c10::SmallVector<int64_t, 3>& dim_orders) {
-    auto phys_coords = ctrlptsw_.to(local_coords.options());
+    // Contiguous: a boundary patch's control points can be a strided slice
+    // of its volume's, and the contractions below view them flat
+    auto phys_coords = ctrlptsw_.to(local_coords.options()).contiguous();
 
     for (size_t d = 0; d < basis_.size(); d++) {
       const auto& b = basis_[d];
@@ -1089,6 +1091,15 @@ std::vector<Patch::Ptr> Patch::split_elements() const
     const auto& b = basis_[d];
     const int64_t p = b.get_degree();
     auto [unique, mult] = b.get_unique_knots_and_multiplicity();
+    // The element slicing below assumes clamped ends and interior knots of
+    // multiplicity at most p + 1 (then each element has p + 1 control
+    // points per dimension after the insertion)
+    if (mult[0].item<int64_t>() != p + 1 || mult[-1].item<int64_t>() != p + 1 ||
+        (mult.numel() > 2 &&
+          mult.slice(0, 1, -1).max().item<int64_t>() > p + 1)) {
+      throw utils::runtime_error(*this, error_context("split_elements"),
+        "Expected a clamped knot vector with interior multiplicities <= p + 1");
+    }
     auto interior = unique.slice(0, 1, -1).to(options);
     auto reps = (p + 1 - mult.slice(0, 1, -1)).clamp_min(0).to(torch::kLong);
     new_knots.push_back(

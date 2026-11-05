@@ -35,8 +35,11 @@ bool IterativeSolver::solve(
     precondition(in, work.t.data());
     op_->apply(omega, sigma, work.t.data(), out, work.apply);
   };
-  std::vector<double> rhs(b, b + N), y(N, 0.0);
-  auto result = linalg::krylov::gmres(apply, rhs, y, restart_, tol_, max_iter_);
+  work.rhs.assign(b, b + N);
+  work.y.assign(N, 0.0);
+  auto& y = work.y;
+  auto result = linalg::krylov::gmres(
+    apply, work.rhs, y, restart_, tol_, max_iter_, work.gmres);
   solves_++;
   iterations_ += result.num_applies;
   if (!result.converged) {

@@ -60,7 +60,16 @@ void sweep_unit(
   for (int64_t bd = 0; bd < block.num_block_directions; bd++) {
     const int64_t d = block.directions[bd];
     const double* omega = block.omega + d * ndim;
-    const bool cached = kronecker || (unit.factors && unit.factors_ready);
+    // Every group of this direction cached: no operator values needed
+    auto ready = [&](int64_t g) {
+      return unit.factors && unit.factor_ready[d * G + g];
+    };
+    bool cached = kronecker;
+    if (!cached && unit.factors) {
+      cached = true;
+      for (int64_t bg = 0; bg < block.num_block_groups && cached; bg++)
+        cached = ready(block.groups[bg]);
+    }
 
     // Streaming + outflow pair values (group independent), not needed when
     // the factors are cached
@@ -119,8 +128,11 @@ void sweep_unit(
               ", group " + std::to_string(g) + ")");
         }
       };
-      if (!cached && !unit.iterative)
+      if (!kronecker && !unit.iterative && !ready(g)) {
         assemble_and_factor();
+        if (unit.factors)
+          unit.factor_ready[d * G + g] = 1;
+      }
 
       // Source: sum_m Y_m(d) s_{m,g}
       std::fill(b, b + N, 0.0);
@@ -159,7 +171,8 @@ void sweep_unit(
         }
       }
 
-      // Solve; an iterative solve that does not converge falls back to LU
+      // Solve: the structured solver of the unit if it has one, LU when it
+      // has none or reports failure (an unconverged iterative solve)
       bool solved = false;
       if (unit.iterative) {
         ws.saved.assign(b, b + N);
@@ -169,8 +182,7 @@ void sweep_unit(
           assemble_and_factor();
         }
       } else if (unit.kronecker) {
-        unit.kronecker->solve(omega, unit.sigma_t[g], b, ws.kronecker);
-        solved = true;
+        solved = unit.kronecker->solve(omega, unit.sigma_t[g], b, ws.kronecker);
       }
       if (!solved) {
         if (banded && v.band_order) {
@@ -258,13 +270,16 @@ void transfer_source(const KernelView& view, const double* transfer,
 }
 
 double transfer_total(const KernelView& view, const double* transfer,
-  int64_t num_groups, const double* scalar_flux, const double* basis_integral)
+  int64_t num_groups, const double* scalar_flux, const double* basis_integral,
+  const uint8_t* source_mask)
 {
   // sum_v (M phi)_v = sum_u (int R_u) phi_u (partition of unity)
   const int64_t N = view.num_dofs;
   const int64_t G = num_groups;
   double total = 0.0;
   for (int64_t gp = 0; gp < G; gp++) {
+    if (source_mask && !source_mask[gp])
+      continue;
     double column = 0.0;
     for (int64_t g = 0; g < G; g++)
       column += transfer[g * G + gp];

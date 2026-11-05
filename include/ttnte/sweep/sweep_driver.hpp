@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ttnte/cad/interface_quadrature.hpp"
+#include "ttnte/cad/patch.hpp"
 #include "ttnte/cross/layout_cross.hpp"
 #include "ttnte/driver/transport_solution.hpp"
 #include "ttnte/linalg/banded_cholesky.hpp"
@@ -8,6 +9,7 @@
 #include "ttnte/math/quadrature_set.hpp"
 #include "ttnte/mesh/mesh.hpp"
 #include "ttnte/parallel/communicator.hpp"
+#include "ttnte/parallel/heuristics.hpp"
 #include "ttnte/parallel/load_balancer.hpp"
 #include "ttnte/parallel/parallel_context.hpp"
 #include "ttnte/physics/boundary_types.hpp"
@@ -29,19 +31,23 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <tuple>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace ttnte::sweep {
 
 /// @brief Discrete-ordinates transport sweep solver for discontinuous
-/// multi-patch IGA.
+/// multi-patch IGA (dimension a runtime value; see SweepDriver for the typed
+/// front end the bindings use).
 ///
 /// Each local mesh block is a sweep unit: a whole patch for the patch
 /// discontinuous (PDG) scheme, or a single element for the fully
@@ -66,16 +72,15 @@ namespace ttnte::sweep {
 /// assembles (same quadratures, scaled normals, upwind masks, reflective
 /// mapping and scattering kernel), so the PDG sweeper converges to the same
 /// discrete solution.
-template<typename BlockType, int64_t NumDim>
-class SweepDriver {
+class SweepSolver {
 public:
   // =================================================================
   // Public types
-  using Mesh = mesh::Mesh<BlockType>;
-  using Ptr = std::shared_ptr<SweepDriver>;
-  using Solution = driver::TransportSolution<BlockType>;
+  using Mesh = mesh::Mesh<cad::Patch>;
+  using Ptr = std::shared_ptr<SweepSolver>;
+  using Solution = driver::TransportSolution<cad::Patch>;
   /// Called after every `frequency`-th outer iteration of a solve.
-  using Callback = std::function<void(const SweepDriver&)>;
+  using Callback = std::function<void(const SweepSolver&)>;
 
   using FiberBlock = sweep::FiberBlock;
 
@@ -118,7 +123,7 @@ private:
   /// Per-patch solver state.
   struct PatchState {
     int64_t gid = -1;
-    typename BlockType::Ptr block;
+    typename cad::Patch::Ptr block;
     PatchDiscretization::Ptr disc;
     /// (G) total cross section, (L, G, G) scattering matrices.
     torch::Tensor sigma_t;
@@ -159,21 +164,24 @@ private:
     /// Factorization cache (see SweepConfig::cache_factorizations).
     torch::Tensor factors;
     torch::Tensor factor_pivots;
-    /// Per group set: whether the cached factors are computed.
-    std::vector<uint8_t> factors_ready;
+    /// Per (direction, group): whether the cache holds its factors (filled
+    /// by whichever sweep, exact or fiber, factors the pair first).
+    std::vector<uint8_t> factor_ready;
     /// Guards moments_next accumulation across concurrent angle sets.
     std::unique_ptr<std::mutex> mutex = std::make_unique<std::mutex>();
   };
 
   // =================================================================
   // Private data
+  /// Spatial dimension of the mesh (1 to 3).
+  int64_t ndim_ = 0;
   typename Mesh::Ptr mesh_;
   xs::Server::Ptr xs_server_;
   parallel::Communicator comm_;
   math::QuadratureSet::Ptr qset_;
   SweepConfig config_;
 
-  /// (N_Omega, NumDim) streaming directions, (N_Omega, 3) unit vectors and
+  /// (N_Omega, ndim_) streaming directions, (N_Omega, 3) unit vectors and
   /// (N_Omega) weights.
   torch::Tensor omega_;
   torch::Tensor omega3_;
@@ -189,7 +197,6 @@ private:
   std::vector<PatchState> patches_;
   std::unordered_map<int64_t, size_t> gid_to_local_;
   SweepGraph::Ptr graph_;
-  std::vector<torch::Tensor> group_sets_;
   /// Directions of each angle set and groups of each group set as plain
   /// index vectors (read by the kernel).
   std::vector<std::vector<int64_t>> set_directions_;
@@ -261,10 +268,9 @@ private:
   /// Optional user partition (GID -> rank); METIS when empty.
   std::unordered_map<int64_t, int> partition_;
   /// Rank of every node of the global sweep graph, and the local index of
-  /// each node (-1 if remote) and node of each local unit.
+  /// each node (-1 if remote).
   std::vector<int> node_rank_;
   std::vector<int64_t> node_to_local_;
-  std::vector<int64_t> local_to_node_;
 
   /// One sweep DAG per group set.
   std::vector<std::unique_ptr<task::TaskGraph>> dags_;
@@ -274,8 +280,10 @@ private:
   const std::function<void(int64_t)>* range_fn_ = nullptr;
   int64_t range_size_ = 0;
   bool is_setup_ = false;
-  /// Whether any local material is fissile.
+  /// Whether any material of the (global) mesh is fissile.
   bool has_fission_ = false;
+  /// Whether any patch of the (global) mesh has a fixed source.
+  bool has_external_ = false;
   /// Cumulative time spent inside sweep task bodies (all threads).
   std::atomic<int64_t> task_nanoseconds_ {0};
   /// Wall time spent executing sweep DAGs (the parallel part of a sweep).
@@ -297,6 +305,11 @@ private:
   std::vector<std::vector<double>> anchor_x_;
   std::vector<std::vector<double>> anchor_y_;
   std::vector<std::vector<double>> anchor_source_;
+  /// Increments since the last full transport solve of each group set, and
+  /// the totals of incremental and full transport solves of y0.
+  std::vector<int64_t> anchor_steps_;
+  int64_t incremental_solves_ = 0;
+  int64_t full_solves_ = 0;
   std::vector<double> cross_tolerances_;
   std::vector<int64_t> cross_fibers_;
   std::vector<int64_t> cross_max_ranks_;
@@ -334,6 +347,12 @@ private:
   std::vector<int64_t> outer_sweeps_;
   int64_t num_iterations_ = 0;
   bool converged_ = false;
+  /// SweepConfig::certify: scalar-flux change (relative L2) and change in k
+  /// of the exact transport solve after the outer iteration (NaN if none),
+  /// and its wall time.
+  double certification_error_ = std::numeric_limits<double>::quiet_NaN();
+  double certification_k_change_ = std::numeric_limits<double>::quiet_NaN();
+  double certification_seconds_ = 0.0;
   /// Group-set sweeps of the last solve, and the same in full-sweep
   /// equivalents (a group-set sweep counts |set| / G).
   int64_t group_set_sweeps_ = 0;
@@ -343,463 +362,100 @@ private:
   // Private helpers
   [[nodiscard]] static std::string ctx(const std::string& f)
   {
-    return "ttnte::sweep::SweepDriver::" + f;
+    return "ttnte::sweep::SweepSolver::" + f;
   }
 
   /// @return (Nf) index of the neighbor face dof for each dof of this face,
   /// mirroring NeighborCoupling::set_recv_buffer() (permute, then flip the
   /// perpendicular dims).
   torch::Tensor build_trace_map(size_t dim, const mesh::NeighborInfo& conn,
-    const PatchDiscretization& nb) const
-  {
-    const auto& nb_face = nb.face(conn.dim, conn.is_upper);
-    if (NumDim == 1) {
-      return torch::zeros({1}, torch::kInt64);
-    }
-    const auto& nb_shape = nb.shape();
-    auto grid = torch::arange(nb.num_dofs(), torch::kInt64).reshape(nb_shape);
-    auto face =
-      grid.narrow(conn.dim, conn.is_upper ? nb_shape[conn.dim] - 1 : 0, 1);
-    std::vector<int64_t> perm(
-      conn.mapping.perm.begin(), conn.mapping.perm.end());
-    bool needs_perm = false;
-    for (size_t k = 0; k < perm.size(); k++)
-      needs_perm |= perm[k] != static_cast<int64_t>(k);
-    if (needs_perm)
-      face = face.permute(perm);
-    std::vector<int64_t> flip_dims;
-    size_t perp = 0;
-    for (int64_t d = 0; d < NumDim; d++) {
-      if (d == static_cast<int64_t>(dim))
-        continue;
-      if (perp < conn.mapping.flip.size() && conn.mapping.flip[perp])
-        flip_dims.push_back(d);
-      perp++;
-    }
-    if (!flip_dims.empty())
-      face = face.flip(flip_dims);
-
-    auto volume_index = face.flatten();
-    auto lookup = torch::full({nb.num_dofs()}, -1, torch::kInt64);
-    lookup.index_put_(
-      {nb_face.dofs}, torch::arange(nb_face.num_dofs(), torch::kInt64));
-    auto map = lookup.index({volume_index});
-    if ((map < 0).any().template item<bool>()) {
-      throw utils::runtime_error(ctx("setup"),
-        "Interface mapping does not land on the neighbor's face (non-"
-        "conforming interface?)");
-    }
-    return map;
-  }
+    const PatchDiscretization& nb) const;
 
   /// @return (N_Omega) index of the specular reflection of each direction on
   /// an axis-aligned face.
-  torch::Tensor build_reflection(const FaceGeometry& face) const
-  {
-    auto mean = (face.normal * face.weights.unsqueeze(1)).sum(0);
-    int64_t axis = mean.abs().argmax().template item<int64_t>();
-    auto unit = face.normal / face.normal.norm(2, 1, true);
-    auto off_axis =
-      (unit.abs() - torch::one_hot(torch::tensor(axis), NumDim).to(unit))
-        .abs()
-        .max()
-        .template item<double>();
-    if (off_axis > 1e-6) {
-      throw utils::runtime_error(
-        ctx("setup"), "Reflective boundaries must be axis aligned");
-    }
-    auto reflected = omega3_.clone();
-    reflected.select(1, axis).neg_();
-    torch::Tensor mismatch, index;
-    if (NumDim == 1) {
-      // Slabs carry only mu
-      auto dist = (reflected.select(1, 0).unsqueeze(1) -
-                   omega3_.select(1, 0).unsqueeze(0))
-                    .abs();
-      std::tie(mismatch, index) = dist.min(1);
-    } else {
-      // Unit vectors: the reflection's match has Omega . Omega* = 1 (dot
-      // products avoid cdist's cancellation-prone matmul path)
-      auto dots = torch::matmul(reflected, omega3_.transpose(0, 1));
-      torch::Tensor max_dot;
-      std::tie(max_dot, index) = dots.max(1);
-      mismatch = 1.0 - max_dot;
-    }
-    if (mismatch.max().template item<double>() > 1e-12) {
-      throw utils::runtime_error(ctx("setup"),
-        "The angular quadrature is not symmetric about a reflective face");
-    }
-    return index;
-  }
+  torch::Tensor build_reflection(const FaceGeometry& face) const;
 
   /// @return The trace buffer of a lagged block (its current or previous
   /// sweep).
+  const torch::Tensor& delayed_buffer(
+    const DelayedBlock& blk, bool current) const;
   torch::Tensor& delayed_buffer(const DelayedBlock& blk, bool current)
   {
-    auto& P = patches_[blk.local];
-    if (blk.ghost)
-      return current ? P.ghost_current[blk.face] : P.ghost_previous[blk.face];
-    return current ? P.trace_current[blk.face] : P.trace_previous[blk.face];
-  }
-  const torch::Tensor& delayed_buffer(
-    const DelayedBlock& blk, bool current) const
-  {
-    return const_cast<SweepDriver*>(this)->delayed_buffer(blk, current);
+    // The object is not const here, so neither is the buffer
+    return const_cast<torch::Tensor&>(
+      std::as_const(*this).delayed_buffer(blk, current));
   }
 
   /// @return The sum of `value` over all ranks.
-  double global_sum(double value) const
-  {
-    if (comm_.size() == 1)
-      return value;
-    double sum = 0.0;
-    comm_.iallreduce(&value, &sum, 1, parallel::MPIOp::SUM).wait();
-    return sum;
-  }
+  double global_sum(double value) const;
 
   /// @brief Inflow of face `f` of unit `local` for an angle set.
-  FaceInflow face_inflow(const AngleSet& set, size_t local, size_t f) const
-  {
-    const auto& P = patches_[local];
-    const auto& link = P.links[f];
-    FaceInflow in;
-    if (link.type == physics::BoundaryType::INTERNAL) {
-      const EdgeState state = link.is_first ? set.backward[link.interface]
-                                            : set.forward[link.interface];
-      if (state == EdgeState::NONE)
-        return in;
-      const bool current = state == EdgeState::DEPENDENCY;
-      const auto& buffer =
-        link.remote_rank >= 0
-          ? (current ? P.ghost_current[f] : P.ghost_previous[f])
-          : (current
-                ? patches_[link.neighbor].trace_current[link.neighbor_face]
-                : patches_[link.neighbor].trace_previous[link.neighbor_face]);
-      in.kind = FaceInflow::Kind::NEIGHBOR;
-      in.trace = buffer.template data_ptr<double>();
-      in.source_face_dofs = buffer.size(2);
-      if (link.coupling_q.defined()) {
-        in.num_coupling_pairs = link.coupling_q.numel();
-        in.coupling_q = link.coupling_q.template data_ptr<int64_t>();
-        in.coupling_a = link.coupling_a.template data_ptr<int64_t>();
-        in.coupling_b = link.coupling_b.template data_ptr<int64_t>();
-        in.coupling_val = link.coupling_val.template data_ptr<double>();
-      } else {
-        in.trace_map = link.trace_map.template data_ptr<int64_t>();
-      }
-    } else if (link.type == physics::BoundaryType::REFLECTIVE) {
-      // Reflected directions belong to other angle sets: lag them
-      in.kind = FaceInflow::Kind::REFLECTIVE;
-      in.trace = P.trace_previous[f].template data_ptr<double>();
-      in.source_face_dofs = P.trace_previous[f].size(2);
-      in.reflected = link.reflected.template data_ptr<int64_t>();
-      in.albedo = link.albedo;
-    }
-    return in;
-  }
+  FaceInflow face_inflow(const AngleSet& set, size_t local, size_t f) const;
 
   /// @brief One sweep task: sweep the units of chunk `c` of angle set
   /// `set_index` for group set `group_set`, in upwind order.
-  void run_chunk(size_t block_index, size_t group_set, size_t c)
-  {
-    thread_local SweepWorkspace workspace;
-    thread_local std::vector<double> moments;
+  /// @return The sweep block of `directions` x `groups` (global indices).
+  SweepBlock make_block(const std::vector<int64_t>& directions,
+    const std::vector<int64_t>& groups) const;
 
-    const auto& blk = direction_blocks_[block_index];
-    const size_t set_index = blk.set;
-    const auto& set = graph_->angle_sets()[set_index];
-    const auto& dirs = blk.directions;
-    const auto& groups = group_indices_[group_set];
-    const int64_t M = harmonics_.size(1);
-    const int64_t ng = static_cast<int64_t>(groups.size());
+  /// @return The current flux, angular or scalar, as a TransportSolution.
+  typename Solution::Ptr make_solution(bool angular) const;
 
-    SweepBlock block;
-    block.directions = dirs.data();
-    block.num_block_directions = static_cast<int64_t>(dirs.size());
-    block.groups = groups.data();
-    block.num_block_groups = ng;
-    block.num_directions = omega_.size(0);
-    block.num_groups = num_groups_;
-    block.num_moments = M;
-    block.omega = omega_.template data_ptr<double>();
-    block.harmonics = harmonics_.template data_ptr<double>();
-    block.weighted_harmonics = weighted_harmonics_.template data_ptr<double>();
-    block.solver = config_.local_solver;
+  /// @return (N_Omega, |group set s|, N) angular flux of unit `local` from
+  /// group set s's cross.
+  torch::Tensor cross_patch_psi(size_t s, size_t local) const;
 
-    for (int64_t local : schedules_[set_index][c].units) {
-      auto& P = patches_[local];
-      const int64_t N = P.disc->num_dofs();
-
-      UnitSweep unit;
-      unit.disc = P.disc.get();
-      unit.kronecker = P.kronecker.get();
-      unit.iterative = P.iterative.get();
-      unit.sigma_t = P.sigma_t.template data_ptr<double>();
-      unit.source_moments = P.source_moments.template data_ptr<double>();
-      for (size_t f = 0; f < P.links.size(); f++) {
-        unit.inflow[f] = face_inflow(set, local, f);
-        unit.trace_out[f] = P.links[f].has_buffer
-                              ? P.trace_current[f].template data_ptr<double>()
-                              : nullptr;
-      }
-      unit.psi = P.psi.defined() ? P.psi.template data_ptr<double>() : nullptr;
-      if (P.factors.defined()) {
-        unit.factors = P.factors.template data_ptr<double>();
-        unit.factor_pivots = P.factor_pivots.template data_ptr<int64_t>();
-        unit.factors_ready = P.factors_ready[group_set] != 0;
-      }
-      moments.assign(static_cast<size_t>(M * ng * N), 0.0);
-      unit.moments = moments.data();
-
-      sweep_unit(unit, block, workspace);
-
-      // Reduce this task's moment contribution (angle sets run concurrently)
-      std::lock_guard<std::mutex> lock(*P.mutex);
-      double* dst = P.moments_next.template data_ptr<double>();
-      for (int64_t m = 0; m < M; m++) {
-        for (int64_t bg = 0; bg < ng; bg++) {
-          const double* src = moments.data() + (m * ng + bg) * N;
-          double* out = dst + (m * num_groups_ + groups[bg]) * N;
-          for (int64_t v = 0; v < N; v++)
-            out[v] += src[v];
-        }
-      }
+  /// @brief Sets the ATen intra-op thread count for a scope (0 leaves it)
+  /// and restores it on exit, also when a task throws.
+  struct ThreadCountGuard {
+    explicit ThreadCountGuard(int64_t num_threads)
+      : previous(at::get_num_threads())
+    {
+      if (num_threads > 0)
+        at::set_num_threads(static_cast<int>(num_threads));
     }
+    ~ThreadCountGuard() { at::set_num_threads(previous); }
+    ThreadCountGuard(const ThreadCountGuard&) = delete;
+    ThreadCountGuard& operator=(const ThreadCountGuard&) = delete;
+    int previous;
+  };
+
+  /// @return Unit `local` swept for angle set `set`: its operators, source,
+  /// inflow and outgoing traces (outputs and factor cache left to the
+  /// caller).
+  UnitSweep make_unit(const AngleSet& set, int64_t local);
+
+  /// @brief Point `unit` at patch P's factorization cache, if it has one.
+  static void use_factor_cache(PatchState& P, UnitSweep& unit);
+
+  /// @return This worker thread's sweep scratch space.
+  static SweepWorkspace& workspace()
+  {
+    thread_local SweepWorkspace work;
+    return work;
   }
+
+  void run_chunk(size_t block_index, size_t group_set, size_t c);
 
   /// @brief One fiber-sweep task: sweep the units of chunk `c` of task
   /// family `t`, writing their solutions into `out`.
-  void run_fiber_chunk(size_t t, size_t c, double* out)
-  {
-    thread_local SweepWorkspace workspace;
-    const auto& task = fiber_tasks_[t];
-    const auto& set = graph_->angle_sets()[task.set];
-
-    SweepBlock block;
-    block.directions = task.directions.data();
-    block.num_block_directions = static_cast<int64_t>(task.directions.size());
-    block.groups = task.groups.data();
-    block.num_block_groups = static_cast<int64_t>(task.groups.size());
-    block.num_directions = omega_.size(0);
-    block.num_groups = num_groups_;
-    block.num_moments = harmonics_.size(1);
-    block.omega = omega_.template data_ptr<double>();
-    block.harmonics = harmonics_.template data_ptr<double>();
-    block.weighted_harmonics = weighted_harmonics_.template data_ptr<double>();
-    block.solver = config_.local_solver;
-
-    for (int64_t local : schedules_[task.set][c].units) {
-      auto& P = patches_[local];
-      UnitSweep unit;
-      unit.disc = P.disc.get();
-      unit.kronecker = P.kronecker.get();
-      unit.iterative = P.iterative.get();
-      unit.sigma_t = P.sigma_t.template data_ptr<double>();
-      unit.source_moments = P.source_moments.template data_ptr<double>();
-      for (size_t f = 0; f < P.links.size(); f++) {
-        unit.inflow[f] = face_inflow(set, local, f);
-        unit.trace_out[f] = P.links[f].has_buffer
-                              ? P.trace_current[f].template data_ptr<double>()
-                              : nullptr;
-      }
-      // Reuse cached factors only when a full sweep has already computed
-      // them for every pair
-      const bool ready = P.factors.defined() &&
-                         std::all_of(P.factors_ready.begin(),
-                           P.factors_ready.end(), [](uint8_t r) { return r; });
-      if (ready) {
-        unit.factors = P.factors.template data_ptr<double>();
-        unit.factor_pivots = P.factor_pivots.template data_ptr<int64_t>();
-        unit.factors_ready = true;
-      }
-      unit.fibers = out + fiber_offsets_[local];
-      unit.fiber_slot = task.slots.data();
-      unit.fiber_stride = fiber_length_;
-      sweep_unit(unit, block, workspace);
-    }
-  }
+  void run_fiber_chunk(size_t t, size_t c, double* out);
 
   /// @return Directions swept over all groups to start a cross: per
-  /// quadrant/octant the one closest to the diagonal (1-D: the most and
-  /// least grazing of each sign).
-  std::vector<int64_t> initial_directions() const
-  {
-    const int64_t Nd = omega_.size(0);
-    auto o = omega_.contiguous();
-    const double* w = o.template data_ptr<double>();
-    std::vector<int64_t> out;
-    if (NumDim == 1) {
-      int64_t lo = 0, hi = 0, pos = -1, neg = -1;
-      for (int64_t d = 0; d < Nd; d++) {
-        if (w[d] < w[lo])
-          lo = d;
-        if (w[d] > w[hi])
-          hi = d;
-        if (w[d] > 0 && (pos < 0 || w[d] < w[pos]))
-          pos = d;
-        if (w[d] < 0 && (neg < 0 || w[d] > w[neg]))
-          neg = d;
-      }
-      for (int64_t d : {lo, hi, pos, neg})
-        if (d >= 0 && std::find(out.begin(), out.end(), d) == out.end())
-          out.push_back(d);
-      return out;
-    }
-    std::map<int64_t, std::pair<double, int64_t>> best;
-    for (int64_t d = 0; d < Nd; d++) {
-      int64_t pattern = 0;
-      double lo = 1e300, hi = 0.0;
-      for (int64_t i = 0; i < NumDim; i++) {
-        const double c = w[d * NumDim + i];
-        pattern = 2 * pattern + (c > 0 ? 1 : 0);
-        lo = std::min(lo, std::abs(c));
-        hi = std::max(hi, std::abs(c));
-      }
-      auto it = best.find(pattern);
-      if (it == best.end() || hi - lo < it->second.first)
-        best[pattern] = {hi - lo, d};
-    }
-    for (const auto& [pattern, entry] : best)
-      out.push_back(entry.second);
-    return out;
-  }
+  /// quadrant/octant of the streaming components, the one closest to the
+  /// octant diagonal of the unit sphere, judged on all three direction
+  /// cosines (in 2-D the out-of-plane one too, so a direction nearly normal
+  /// to the plane is not taken). 1-D: the most and least grazing of each
+  /// sign.
+  std::vector<int64_t> initial_directions() const;
 
   /// @brief One cross per group set (TransportSolve::CROSS).
-  void build_crosses()
-  {
-    crosses_.clear();
-    if (config_.transport != TransportSolve::CROSS)
-      return;
-    // TODO: exchange tasks and reductions for multi-rank crosses
-    if (comm_.size() > 1)
-      throw utils::runtime_error(
-        ctx("setup"), "CROSS transport solves are serial in space for now");
-    if (config_.cross.inner_factor <= 0.0)
-      throw utils::runtime_error(
-        ctx("setup"), "cross.inner_factor must be positive");
-    const auto modes = angular_modes();
-    cross::CrossProblem base;
-    base.num_dim = NumDim;
-    base.num_polar = modes[0];
-    base.num_azimuthal = NumDim == 1 ? 1 : modes[1];
-    base.num_space = fiber_length_;
-    base.weights = weights_;
-    base.harmonics = harmonics_;
-    base.initial_directions = initial_directions();
-    base.patch_offsets = fiber_offsets_;
-    for (const auto& P : patches_) {
-      base.patch_shapes.push_back(P.disc->shape());
-      if (config_.cross.weighted) {
-        base.mass_bands.push_back(
-          linalg::banded::symmetric_band_from_pairs(P.disc->pair_row(),
-            P.disc->pair_col(), P.disc->mass_values(), P.disc->num_dofs())
-            .first);
-      }
-    }
-    for (size_t s = 0; s < group_sets_.size(); s++) {
-      auto problem = base;
-      problem.num_groups = static_cast<int64_t>(group_indices_[s].size());
-      problem.sweep = [this, s](
-                        const std::vector<FiberBlock>& blocks, double* out) {
-        auto global = blocks;
-        for (auto& b : global)
-          for (auto& g : b.groups)
-            g = group_indices_[s][g];
-        sweep_fibers(global, out);
-      };
-      crosses_.push_back(
-        cross::LayoutCross::create(std::move(problem), config_.cross));
-    }
-  }
+  void build_crosses();
 
   /// @brief Transport solve of group set `s` by the cross: moments into
   /// moments_next, and the lagged and reflective traces (the delayed
   /// blocks) and the angular flux, if stored, from the low-rank flux.
-  void cross_group_set(size_t s)
-  {
-    auto& cr = *crosses_[s];
-    const auto& groups = group_indices_[s];
-    const int64_t ng = static_cast<int64_t>(groups.size());
-    const int64_t G = num_groups_;
-    cr.set_tolerance(cross_tol_ > 0 ? cross_tol_ : config_.cross.tol);
-    const int previous_threads = at::get_num_threads();
-    const int64_t solver_threads = std::max<int64_t>(1, config_.num_threads);
-    at::set_num_threads(config_.cross.num_threads > 0
-                          ? std::min(config_.cross.num_threads, solver_threads)
-                          : solver_threads);
-    cr.run();
-
-    auto t0 = std::chrono::steady_clock::now();
-    auto lap = [&](const char* phase) {
-      const auto now = std::chrono::steady_clock::now();
-      cross_timings_[phase] += std::chrono::duration<double>(now - t0).count();
-      t0 = now;
-    };
-    auto moments = cr.moments();
-    const int64_t M = moments.size(0);
-    const double* mom = moments.template data_ptr<double>();
-    std::vector<int64_t> local_groups(ng);
-    std::iota(local_groups.begin(), local_groups.end(), 0);
-    for (size_t i = 0; i < patches_.size(); i++) {
-      auto& P = patches_[i];
-      const int64_t N = P.disc->num_dofs();
-      double* dst = P.moments_next.template data_ptr<double>();
-      for (int64_t m = 0; m < M; m++)
-        for (int64_t bg = 0; bg < ng; bg++) {
-          const double* src =
-            mom + (m * ng + bg) * fiber_length_ + fiber_offsets_[i];
-          std::copy(src, src + N, dst + (m * G + groups[bg]) * N);
-        }
-    }
-    lap("moments");
-    for (const auto& blk : delayed_) {
-      const auto& face = patches_[blk.local].disc->faces()[blk.face];
-      const int64_t Nf = face.num_dofs();
-      auto dofs = (face.dofs + fiber_offsets_[blk.local]).contiguous();
-      std::vector<int64_t> space(dofs.template data_ptr<int64_t>(),
-        dofs.template data_ptr<int64_t>() + Nf);
-      auto values = cr.evaluate(blk.directions, local_groups, space);
-      const double* v = values.template data_ptr<double>();
-      double* buf = delayed_buffer(blk, true).template data_ptr<double>();
-      for (size_t i = 0; i < blk.directions.size(); i++)
-        for (int64_t bg = 0; bg < ng; bg++)
-          std::copy(v + (i * ng + bg) * Nf, v + (i * ng + bg + 1) * Nf,
-            buf + (blk.directions[i] * G + groups[bg]) * Nf);
-    }
-    lap("traces");
-    if (config_.store_angular_flux) {
-      std::vector<int64_t> dirs(omega_.size(0));
-      std::iota(dirs.begin(), dirs.end(), 0);
-      for (size_t i = 0; i < patches_.size(); i++) {
-        auto& P = patches_[i];
-        const int64_t N = P.disc->num_dofs();
-        std::vector<int64_t> space(N);
-        std::iota(space.begin(), space.end(), fiber_offsets_[i]);
-        auto values = cr.evaluate(dirs, local_groups, space);
-        const double* v = values.template data_ptr<double>();
-        double* psi = P.psi.template data_ptr<double>();
-        for (size_t d = 0; d < dirs.size(); d++)
-          for (int64_t bg = 0; bg < ng; bg++)
-            std::copy(v + (d * ng + bg) * N, v + (d * ng + bg + 1) * N,
-              psi + (d * G + groups[bg]) * N);
-      }
-      lap("angular_flux");
-    }
-    at::set_num_threads(previous_threads);
-
-    const auto ranks = cr.ranks();
-    cross_tolerances_.push_back(cr.config().tol);
-    cross_fibers_.push_back(cr.num_fibers());
-    cross_max_ranks_.push_back(*std::max_element(ranks.begin(), ranks.end()));
-    cross_errors_.push_back(cr.holdout_error());
-    cross_ranks_.push_back(ranks);
-    cross_histories_.push_back(cr.history());
-    cross_seconds_ += cr.seconds();
-    cross_sweep_seconds_ += cr.sweep_seconds();
-    group_set_sweeps_++;
-    equivalent_sweeps_ += static_cast<double>(cr.num_fibers()) /
-                          static_cast<double>(omega_.size(0) * G);
-  }
+  void cross_group_set(size_t s);
 
   /// @brief Run `fn` and add its wall time to solve_timings_[phase].
   template<typename Fn>
@@ -814,39 +470,15 @@ private:
 
   /// @brief One transport solve of group set `s` with the current sources
   /// and lagged traces: an exact sweep or a cross.
-  void transport_group_set(size_t s)
-  {
-    if (config_.transport == TransportSolve::CROSS)
-      cross_group_set(s);
-    else
-      sweep_group_set(s);
-  }
+  void transport_group_set(size_t s);
 
   /// Which moments feed the within-group-set scattering term.
   enum class Within : uint8_t { NONE, MOMENTS, KRYLOV };
 
-  /// @brief Source moments of group set `s` for every unit.
-  /// @param within Moments of the within-set scattering term (NONE leaves it
-  /// out, KRYLOV uses the GMRES iterate).
-  /// @param fixed Include the parts that do not depend on this set's flux:
-  /// external and fission sources, and scattering from the other sets.
-  /// @param jacobi Take the other sets' flux from the start of the pass.
   /// @brief Call `fn(i)` for i in [0, n), in parallel on the scheduler's
   /// workers (`fn` must be safe for distinct i; it may use thread_local
   /// scratch). Serial with one thread.
-  void parallel_for(int64_t n, const std::function<void(int64_t)>& fn)
-  {
-    if (!range_dag_ || n < 2) {
-      for (int64_t i = 0; i < n; i++)
-        fn(i);
-      return;
-    }
-    range_fn_ = &fn;
-    range_size_ = n;
-    range_dag_->reset();
-    scheduler_->execute(*range_dag_, task::ExecutionMode::PUSH);
-    range_fn_ = nullptr;
-  }
+  void parallel_for(int64_t n, const std::function<void(int64_t)>& fn);
 
   /// @brief Apply `fn` to every patch in parallel (see parallel_for()).
   void for_each_patch(const std::function<void(PatchState&)>& fn)
@@ -857,242 +489,58 @@ private:
 
   /// @brief Build the range tasks of parallel_for(): task c of K handles
   /// [c n / K, (c + 1) n / K). None (serial) with one thread.
-  void build_range_dag()
-  {
-    range_dag_.reset();
-    const int64_t num_threads = std::max<int64_t>(1, config_.num_threads);
-    if (num_threads == 1)
-      return;
-    const int64_t num_chunks = 4 * num_threads;
-    range_dag_ = std::make_unique<task::TaskGraph>();
-    for (int64_t c = 0; c < num_chunks; c++) {
-      auto* task = range_dag_->create_task(
-        task::DeviceTarget::CPU_ASYNC, "range_" + std::to_string(c));
-      task->set_payload([this, c, num_chunks]() {
-        const int64_t begin = c * range_size_ / num_chunks;
-        const int64_t end = (c + 1) * range_size_ / num_chunks;
-        for (int64_t i = begin; i < end; i++)
-          (*range_fn_)(i);
-        return task::TaskStatus::COMPLETED;
-      });
-    }
-  }
+  void build_range_dag();
 
-  void compute_source(size_t s, Within within, bool fixed, bool jacobi)
-  {
-    thread_local std::vector<double> scratch;
-    const auto& groups = group_indices_[s];
-    const int64_t ng = static_cast<int64_t>(groups.size());
-    const int64_t M = harmonics_.size(1);
-    const int64_t G = num_groups_;
-    for_each_patch([&](PatchState& P) {
-      const auto& view = P.disc->view();
-      const int64_t N = view.num_dofs;
-      double* out = P.source_moments.template data_ptr<double>();
-      for (int64_t m = 0; m < M; m++)
-        for (int64_t g : groups)
-          std::fill(out + (m * G + g) * N, out + (m * G + g + 1) * N, 0.0);
-
-      const bool scatters = P.scatter.defined();
-      const double* sigma_s =
-        scatters ? P.scatter.template data_ptr<double>() : nullptr;
-      const int64_t L = scatters ? P.scatter.size(0) : 0;
-      if (fixed) {
-        const double* q = nullptr;
-        if (eigenvalue_mode_ && P.fission_source.defined())
-          q = P.fission_source.template data_ptr<double>();
-        else if (!eigenvalue_mode_ && P.external.defined())
-          q = P.external.template data_ptr<double>();
-        if (q) {
-          for (int64_t g : groups)
-            for (int64_t i = 0; i < N; i++)
-              out[g * N + i] += q[g * N + i];
-        }
-        if (scatters && static_cast<int64_t>(group_sets_.size()) > 1) {
-          const auto& other = jacobi ? P.pass_moments : P.moments;
-          transfer_source(view, sigma_s, L, moment_order_raw_.data(), M, G,
-            other.template data_ptr<double>(), 1.0, groups.data(), ng,
-            group_complements_[s].data(), out, scratch);
-        }
-      }
-      if (within != Within::NONE && scatters) {
-        const auto& phi =
-          within == Within::KRYLOV ? P.krylov_moments : P.moments;
-        transfer_source(view, sigma_s, L, moment_order_raw_.data(), M, G,
-          phi.template data_ptr<double>(), 1.0, groups.data(), ng,
-          group_masks_[s].data(), out, scratch);
-      }
-    });
-  }
+  /// @brief Source moments of group set `s` for every unit.
+  /// @param within Moments of the within-set scattering term (NONE leaves it
+  /// out, KRYLOV uses the GMRES iterate).
+  /// @param fixed Include the parts that do not depend on this set's flux:
+  /// external and fission sources, and scattering from the other sets.
+  /// @param jacobi Take the other sets' flux from the start of the pass.
+  void compute_source(size_t s, Within within, bool fixed, bool jacobi);
 
   /// @brief Sweep group set `s` with the current source moments and lagged
   /// traces, accumulating its moments into moments_next.
-  void sweep_group_set(size_t s)
-  {
-    const auto& groups = group_indices_[s];
-    const int64_t M = harmonics_.size(1);
-    for_each_patch([&](PatchState& P) {
-      const int64_t N = P.disc->num_dofs();
-      double* m = P.moments_next.template data_ptr<double>();
-      for (int64_t k = 0; k < M; k++)
-        for (int64_t g : groups)
-          std::fill(m + (k * num_groups_ + g) * N,
-            m + (k * num_groups_ + g + 1) * N, 0.0);
-    });
-    dags_[s]->reset();
-    auto t0 = std::chrono::steady_clock::now();
-    scheduler_->execute(*dags_[s], task::ExecutionMode::PUSH);
-    dag_nanoseconds_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
-      std::chrono::steady_clock::now() - t0)
-                          .count();
-    for (auto& P : patches_)
-      if (P.factors.defined())
-        P.factors_ready[s] = 1;
-    group_set_sweeps_++;
-    equivalent_sweeps_ +=
-      static_cast<double>(groups.size()) / static_cast<double>(num_groups_);
-  }
+  void sweep_group_set(size_t s);
 
   /// @brief Accept the last sweep of group set `s`: moments and outgoing
   /// traces become the current iterate.
-  void commit_group_set(size_t s)
-  {
-    const auto& groups = group_indices_[s];
-    const int64_t M = harmonics_.size(1);
-    const int64_t G = num_groups_;
-    for_each_patch([&](PatchState& P) {
-      const int64_t N = P.disc->num_dofs();
-      const double* next = P.moments_next.template data_ptr<double>();
-      double* cur = P.moments.template data_ptr<double>();
-      for (int64_t m = 0; m < M; m++)
-        for (int64_t g : groups)
-          std::copy(next + (m * G + g) * N, next + (m * G + g + 1) * N,
-            cur + (m * G + g) * N);
-    });
-    // Previous traces are read only where they are lagged (reflective faces
-    // and LAGGED interface edges, the delayed blocks), so only those
-    // directions are carried over
-    parallel_for(static_cast<int64_t>(delayed_.size()), [&](int64_t b) {
-      const auto& blk = delayed_[b];
-      const auto& current = delayed_buffer(blk, true);
-      const int64_t Nf = current.size(2);
-      const double* src = current.template data_ptr<double>();
-      double* dst = delayed_buffer(blk, false).template data_ptr<double>();
-      for (int64_t d : blk.directions)
-        for (int64_t g : groups)
-          std::copy(src + (d * G + g) * Nf, src + (d * G + g + 1) * Nf,
-            dst + (d * G + g) * Nf);
-    });
-  }
+  void commit_group_set(size_t s);
 
   /// @return Length of the GMRES unknown of group set `s`.
-  int64_t krylov_size(size_t s) const
-  {
-    const int64_t ng = static_cast<int64_t>(group_indices_[s].size());
-    const int64_t M = harmonics_.size(1);
-    int64_t n = 0;
-    for (const auto& P : patches_)
-      n += M * ng * P.disc->num_dofs();
-    for (const auto& blk : delayed_)
-      n += static_cast<int64_t>(blk.directions.size()) * ng *
-           delayed_buffer(blk, false).size(2);
-    return n;
-  }
+  int64_t krylov_size(size_t s) const;
 
   /// @brief Gather the moments of group set `s` (from moments or
   /// moments_next) and its lagged traces (from the previous or current
   /// traces) into a Krylov vector.
-  void pack(size_t s, bool from_next, bool from_current, double* x) const
-  {
-    const auto& groups = group_indices_[s];
-    const int64_t M = harmonics_.size(1);
-    const int64_t G = num_groups_;
-    for (const auto& P : patches_) {
-      const int64_t N = P.disc->num_dofs();
-      const auto& src = from_next ? P.moments_next : P.moments;
-      const double* m = src.template data_ptr<double>();
-      for (int64_t k = 0; k < M; k++)
-        for (int64_t g : groups) {
-          std::copy(m + (k * G + g) * N, m + (k * G + g + 1) * N, x);
-          x += N;
-        }
-    }
-    for (const auto& blk : delayed_) {
-      const auto& buf = delayed_buffer(blk, from_current);
-      const int64_t Nf = buf.size(2);
-      const double* t = buf.template data_ptr<double>();
-      for (int64_t d : blk.directions)
-        for (int64_t g : groups) {
-          std::copy(t + (d * G + g) * Nf, t + (d * G + g + 1) * Nf, x);
-          x += Nf;
-        }
-    }
-  }
+  void pack(size_t s, bool from_next, bool from_current, double* x) const;
 
   /// @brief Scatter a Krylov vector of group set `s` into the moments (the
   /// GMRES iterate or the current moments) and the lagged (previous)
   /// traces.
-  void unpack(size_t s, const double* x, bool to_krylov)
-  {
-    const auto& groups = group_indices_[s];
-    const int64_t M = harmonics_.size(1);
-    const int64_t G = num_groups_;
-    for (auto& P : patches_) {
-      const int64_t N = P.disc->num_dofs();
-      auto& dst = to_krylov ? P.krylov_moments : P.moments;
-      double* m = dst.template data_ptr<double>();
-      for (int64_t k = 0; k < M; k++)
-        for (int64_t g : groups) {
-          std::copy(x, x + N, m + (k * G + g) * N);
-          x += N;
-        }
-    }
-    for (const auto& blk : delayed_) {
-      auto& buf = delayed_buffer(blk, false);
-      const int64_t Nf = buf.size(2);
-      double* t = buf.template data_ptr<double>();
-      for (int64_t d : blk.directions)
-        for (int64_t g : groups) {
-          std::copy(x, x + Nf, t + (d * G + g) * Nf);
-          x += Nf;
-        }
-    }
-  }
+  void unpack(size_t s, const double* x, bool to_krylov);
 
   /// @brief Print a progress line of the within-group-set iteration when
   /// SweepConfig::progress_seconds have passed since the last one.
   void report_progress(size_t s, int64_t iteration, double residual,
-    const char* method, bool force = false)
-  {
-    if (!config_.verbose || config_.progress_seconds < 0 || comm_.rank() != 0)
-      return;
-    auto now = std::chrono::steady_clock::now();
-    if (!force && std::chrono::duration<double>(now - last_progress_).count() <
-                    config_.progress_seconds)
-      return;
-    last_progress_ = now;
-    const auto& groups = group_indices_[s];
-    std::cout << "--   group set " << s + 1 << "/" << group_indices_.size()
-              << " (groups " << groups.front() << "-" << groups.back() << "), "
-              << method << " iteration " << iteration
-              << ": residual = " << std::scientific << std::setprecision(3)
-              << residual << std::defaultfloat << ", sweep time " << std::fixed
-              << std::setprecision(1) << get_dag_seconds() << " s, solve time "
-              << std::setprecision(1)
-              << std::chrono::duration<double>(now - solve_start_).count()
-              << " s" << std::defaultfloat << std::endl;
-  }
+    const char* method, bool force = false);
 
   /// @return Within-group-set tolerance of the current outer iteration.
-  double inner_tolerance() const
-  {
-    const double floor =
-      config_.inner_tol > 0 ? config_.inner_tol : 0.1 * config_.tol;
-    if (config_.inner_forcing <= 0)
-      return floor;
-    const double change = errors_.empty() ? 1.0 : std::min(errors_.back(), 1.0);
-    return std::max(floor, config_.inner_forcing * change);
-  }
+  double inner_tolerance() const;
+
+  /// @return Global inner product of two rank-local slices.
+  static double global_dot(const std::vector<double>& a,
+    const std::vector<double>& b, const linalg::krylov::Reducer& reducer);
+
+  /// @brief GMRES on (I - T S) x = rhs within group set `s`, every product a
+  /// transport solve whose CROSS accuracy is relaxed as the residual drops.
+  /// @param scale Ratio of ||rhs|| to the norm residuals are reported and
+  /// relaxed against (1 for the standard form, ||r0|| / ||y0|| for the
+  /// correction form); `tol` is relative to that norm.
+  /// @param x Initial guess on entry, solution on exit.
+  void within_gmres(size_t s, bool jacobi, const std::vector<double>& rhs,
+    std::vector<double>& x, double tol, double tol_min, double scale,
+    const linalg::krylov::Reducer& reducer);
 
   /// @brief Within-group-set GMRES for the correction to the current
   /// iterate (SweepConfig::correction_form).
@@ -1104,794 +552,99 @@ private:
   /// the accepted iterate is written to the moments and lagged traces.
   /// @param reducer Global sum of inner products (empty in serial).
   void correction_solve(size_t s, bool jacobi, double tol, double tol_min,
-    std::vector<double>& x, const linalg::krylov::Reducer& reducer)
-  {
-    const int64_t n = static_cast<int64_t>(x.size());
-    auto norm = [&](const std::vector<double>& v) {
-      double sum = 0.0;
-      for (double a : v)
-        sum += a * a;
-      return std::sqrt(reducer ? reducer(sum) : sum);
-    };
-
-    // y0 = T(q + S x0) with the lagged traces of x0, at full accuracy
-    std::vector<double> y(n), r0(n), tmp(n);
-    cross_tol_ = tol_min;
-    timed("unpack", [&] { unpack(s, x.data(), true); });
-    timed("source", [&] { compute_source(s, Within::KRYLOV, true, jacobi); });
-    if (!incremental_transport(s, x, tol_min, y, reducer)) {
-      if (config_.incremental_transport) {
-        anchor_x_[s] = x;
-        swap_source(s, anchor_source_[s], false);
-      }
-      timed("transport", [&] { transport_group_set(s); });
-      timed("pack", [&] { pack(s, true, true, y.data()); });
-      if (config_.incremental_transport)
-        anchor_y_[s] = y;
-    }
-    for (int64_t i = 0; i < n; i++)
-      r0[i] = y[i] - x[i];
-    const double ynorm = norm(y), rnorm = norm(r0);
-
-    std::vector<double> e(n, 0.0);
-    if (rnorm > tol * ynorm) {
-      // (I - T S) e = r0; a zero input needs no transport solve
-      auto apply = [&](const double* in, double* out) {
-        if (std::all_of(in, in + n, [](double v) { return v == 0.0; })) {
-          std::fill(out, out + n, 0.0);
-          return;
-        }
-        timed("unpack", [&] { unpack(s, in, true); });
-        timed(
-          "source", [&] { compute_source(s, Within::KRYLOV, false, jacobi); });
-        timed("transport", [&] { transport_group_set(s); });
-        timed("pack", [&] { pack(s, true, true, tmp.data()); });
-        for (int64_t i = 0; i < n; i++)
-          out[i] = in[i] - tmp[i];
-      };
-      // Residuals relative to ||r0||, products accurate to tol_min ||y0||
-      const double scale = rnorm / ynorm;
-      int64_t iteration = 0;
-      double last_estimate = 1.0;
-      auto progress = [&](double residual) {
-        const bool restart = iteration > 0 && residual == 1.0;
-        if (!restart)
-          last_estimate = residual;
-        report_progress(s, ++iteration, last_estimate * scale,
-          restart ? "GMRES (restart)" : "GMRES");
-        const double relative = residual * scale;
-        cross_tol_ = config_.cross.relax
-                       ? std::min(config_.cross.max_tol,
-                           tol_min / std::max(relative, tol_min))
-                       : tol_min;
-      };
-      const auto gmres_t0 = std::chrono::steady_clock::now();
-      auto result = linalg::krylov::gmres(apply, r0, e, config_.gmres_restart,
-        tol / scale, config_.inner_max_iter, reducer, progress);
-      solve_timings_["gmres"] += std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - gmres_t0)
-                                   .count();
-      if (!result.converged && config_.verbose && comm_.rank() == 0) {
-        std::cout << "-- warning: within-group-set GMRES (set " << s
-                  << ") stopped at relative residual "
-                  << result.relative_residual * scale << std::endl;
-      }
-    }
-    cross_tol_ = tol_min;
-    if (rnorm > tol * ynorm) {
-      for (int64_t i = 0; i < n; i++)
-        x[i] += e[i];
-    } else {
-      // Already within tolerance: accept y0 = x0 + r0, which carries the
-      // new sources (the standard form's final sweep)
-      x = y;
-    }
-
-    // The stored angular flux and the kept TT come from the last transport
-    // solve: redo it from the accepted iterate when they are wanted
-    const bool keep_tt =
-      config_.transport == TransportSolve::CROSS && config_.cross.keep_tt;
-    if (config_.store_angular_flux || keep_tt) {
-      unpack(s, x.data(), true);
-      compute_source(s, Within::KRYLOV, true, jacobi);
-      transport_group_set(s);
-    }
-    unpack(s, x.data(), false);
-  }
+    std::vector<double>& x, const linalg::krylov::Reducer& reducer);
 
   /// @brief Store the source moments of group set `s` in `saved` and, when
   /// `difference`, replace them by their change from the previous `saved`.
-  void swap_source(size_t s, std::vector<double>& saved, bool difference)
-  {
-    const auto& groups = group_indices_[s];
-    const int64_t M = harmonics_.size(1);
-    const int64_t G = num_groups_;
-    int64_t size = 0;
-    for (const auto& P : patches_)
-      size += M * static_cast<int64_t>(groups.size()) * P.disc->num_dofs();
-    if (difference && static_cast<int64_t>(saved.size()) != size)
-      throw utils::runtime_error(
-        ctx("swap_source"), "No previous source of this group set");
-    saved.resize(size);
-    double* prev = saved.data();
-    for (auto& P : patches_) {
-      const int64_t N = P.disc->num_dofs();
-      double* src = P.source_moments.template data_ptr<double>();
-      for (int64_t k = 0; k < M; k++)
-        for (int64_t g : groups) {
-          double* v = src + (k * G + g) * N;
-          for (int64_t i = 0; i < N; i++) {
-            const double cur = v[i];
-            if (difference)
-              v[i] = cur - prev[i];
-            prev[i] = cur;
-          }
-          prev += N;
-        }
-    }
-  }
+  void swap_source(size_t s, std::vector<double>& saved, bool difference);
+
+  /// @brief Rank-local squared norms of the change of group set `s`'s source
+  /// moments since `saved` (see swap_source()) and of the source itself.
+  void source_change(size_t s, const std::vector<double>& saved,
+    double& change_sq, double& source_sq) const;
 
   /// @brief y0 = T(input) as y_prev + T(input - input_prev) when the change
   /// since the last full transport solve of group set `s` is small
   /// (SweepConfig::incremental_transport). The source moments of the
   /// current input must be computed.
   /// @return False (nothing done) when a full transport solve is needed.
-  bool incremental_transport(size_t s, const std::vector<double>& x,
+  bool try_incremental_transport(size_t s, const std::vector<double>& x,
     double tol_min, std::vector<double>& y,
-    const linalg::krylov::Reducer& reducer)
-  {
-    if (!config_.incremental_transport || anchor_x_[s].empty())
-      return false;
-    const int64_t n = static_cast<int64_t>(x.size());
-    const auto& ax = anchor_x_[s];
-    auto& ay = anchor_y_[s];
-    std::vector<double> dx(n);
-    double sums[3] = {0.0, 0.0, 0.0};
-    for (int64_t i = 0; i < n; i++) {
-      dx[i] = x[i] - ax[i];
-      sums[0] += dx[i] * dx[i];
-      sums[1] += x[i] * x[i];
-      sums[2] += ay[i] * ay[i];
-    }
-    for (double& v : sums)
-      v = reducer ? reducer(v) : v;
-    const double dnorm = std::sqrt(sums[0]);
-    if (dnorm > config_.incremental_switch * std::sqrt(sums[1]))
-      return false;
+    const linalg::krylov::Reducer& reducer);
 
-    // The change, solved to the absolute accuracy tol_min ||y||
-    timed("source", [&] { swap_source(s, anchor_source_[s], true); });
-    timed("unpack", [&] { unpack(s, dx.data(), true); });
-    cross_tol_ = dnorm > 0.0 ? std::min(config_.cross.max_tol,
-                                 tol_min * std::sqrt(sums[2]) / dnorm)
-                             : config_.cross.max_tol;
-    timed("transport", [&] { transport_group_set(s); });
-    timed("pack", [&] { pack(s, true, true, y.data()); });
-    cross_tol_ = tol_min;
-    for (int64_t i = 0; i < n; i++)
-      y[i] += ay[i];
-    anchor_x_[s] = x;
-    ay = y;
-    return true;
-  }
+  /// @return SweepConfig::global_inner_tolerance: ||phi|| / ||phi_s|| of the
+  /// current scalar flux over all groups and over group set `s`, in the
+  /// norm of the outer test (the unweighted coefficient norm, not the L2
+  /// norm of the flux), 1 while the set has no flux. With fission, the smaller
+  /// of that and P / P_s, P_s the set's share of the fission production, so a
+  /// set that makes neutrons stays tight however small its flux; a set
+  /// without fission keeps the flux ratio (its error reaches the other sets
+  /// through scattering).
+  double global_tolerance_scale(size_t s) const;
 
   /// @brief Solve group set `s` for its within-set scattering.
   /// @return Group-set sweeps used.
-  int64_t inner_solve(size_t s, bool jacobi)
-  {
-    const int64_t start = group_set_sweeps_;
-    const double tol = inner_tolerance();
-    // Cross accuracy: a fraction of the inner tolerance, relaxed in GMRES
-    const double tol_min = config_.cross.inner_factor * tol;
-    cross_tol_ = tol_min;
-
-    if (config_.inner_solver == InnerSolver::RICHARDSON) {
-      const auto& groups = group_indices_[s];
-      for (int64_t it = 0; it < config_.inner_max_iter; it++) {
-        double num = 0.0, den = 0.0;
-        compute_source(s, Within::MOMENTS, true, jacobi);
-        transport_group_set(s);
-        for (const auto& P : patches_) {
-          const int64_t N = P.disc->num_dofs();
-          const double* a = P.moments.template data_ptr<double>();
-          const double* b = P.moments_next.template data_ptr<double>();
-          for (int64_t g : groups)
-            for (int64_t i = g * N; i < (g + 1) * N; i++) {
-              num += (b[i] - a[i]) * (b[i] - a[i]);
-              den += b[i] * b[i];
-            }
-        }
-        commit_group_set(s);
-        num = global_sum(num);
-        den = global_sum(den);
-        report_progress(
-          s, it + 1, den == 0.0 ? 0.0 : std::sqrt(num / den), "Richardson");
-        if (den == 0.0 || std::sqrt(num / den) < tol)
-          break;
-      }
-      return group_set_sweeps_ - start;
-    }
-
-    // GMRES on (I - T) x = T(0 source...) with T the swept operator
-    const int64_t n = krylov_size(s);
-    std::vector<double> x(n), b(n), tmp(n);
-    pack(s, false, false, x.data()); // warm start from the current iterate
-    const auto reducer =
-      comm_.size() > 1
-        ? linalg::krylov::Reducer([this](double v) { return global_sum(v); })
-        : linalg::krylov::Reducer();
-    if (rhs_ratio_.size() != group_sets_.size())
-      rhs_ratio_.assign(group_sets_.size(), 0.0);
-    if (config_.correction_form && rhs_ratio_[s] > 0.0) {
-      // Tolerances relative to ||b|| as in the standard form
-      correction_solve(
-        s, jacobi, tol * rhs_ratio_[s], tol_min * rhs_ratio_[s], x, reducer);
-      return group_set_sweeps_ - start;
-    }
-
-    // b = sweep of the fixed sources with zero iterate and lagged traces
-    std::fill(tmp.begin(), tmp.end(), 0.0);
-    timed("unpack", [&] { unpack(s, tmp.data(), true); });
-    timed("source", [&] { compute_source(s, Within::NONE, true, jacobi); });
-    timed("transport", [&] { transport_group_set(s); });
-    timed("pack", [&] { pack(s, true, true, b.data()); });
-
-    auto apply = [&](const double* in, double* out) {
-      timed("unpack", [&] { unpack(s, in, true); });
-      timed(
-        "source", [&] { compute_source(s, Within::KRYLOV, false, jacobi); });
-      timed("transport", [&] { transport_group_set(s); });
-      timed("pack", [&] { pack(s, true, true, tmp.data()); });
-      for (int64_t i = 0; i < n; i++)
-        out[i] = in[i] - tmp[i];
-    };
-    int64_t iteration = 0;
-    double last_estimate = 1.0;
-    auto progress = [&](double residual) {
-      // GMRES reports 1 before the true-residual sweep of every restart
-      const bool restart = iteration > 0 && residual == 1.0;
-      if (!restart)
-        last_estimate = residual;
-      report_progress(
-        s, ++iteration, last_estimate, restart ? "GMRES (restart)" : "GMRES");
-      cross_tol_ = config_.cross.relax
-                     ? std::min(config_.cross.max_tol,
-                         tol_min / std::max(residual, tol_min))
-                     : tol_min;
-    };
-    const auto gmres_t0 = std::chrono::steady_clock::now();
-    auto result = linalg::krylov::gmres(apply, b, x, config_.gmres_restart, tol,
-      config_.inner_max_iter,
-      comm_.size() > 1
-        ? linalg::krylov::Reducer([this](double v) { return global_sum(v); })
-        : linalg::krylov::Reducer(),
-      progress);
-    solve_timings_["gmres"] +=
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - gmres_t0)
-        .count();
-    cross_tol_ = tol_min;
-    if (!result.converged && config_.verbose && comm_.rank() == 0) {
-      std::cout << "-- warning: within-group-set GMRES (set " << s
-                << ") stopped at relative residual " << result.relative_residual
-                << std::endl;
-    }
-    if (config_.correction_form) {
-      double bb = 0.0, xx = 0.0;
-      for (int64_t i = 0; i < n; i++) {
-        bb += b[i] * b[i];
-        xx += x[i] * x[i];
-      }
-      bb = reducer ? reducer(bb) : bb;
-      xx = reducer ? reducer(xx) : xx;
-      rhs_ratio_[s] = xx > 0.0 ? std::sqrt(bb / xx) : 0.0;
-    }
-
-    // Consistent final sweep from the solution (traces, angular flux)
-    unpack(s, x.data(), false);
-    compute_source(s, Within::MOMENTS, true, jacobi);
-    transport_group_set(s);
-    commit_group_set(s);
-    return group_set_sweeps_ - start;
-  }
+  int64_t inner_solve(size_t s, bool jacobi);
 
   /// @brief One across-group-set pass (Gauss-Seidel or Jacobi).
   /// @return Group-set sweeps used.
-  int64_t group_set_pass()
-  {
-    const bool jacobi = config_.group_iteration == GroupIteration::JACOBI;
-    if (jacobi)
-      for_each_patch([](PatchState& P) { P.pass_moments.copy_(P.moments); });
-    int64_t sweeps = 0;
-    for (size_t s = 0; s < group_sets_.size(); s++)
-      timed("inner", [&] { sweeps += inner_solve(s, jacobi); });
-    return sweeps;
-  }
+  int64_t group_set_pass();
 
   /// @return The scalar flux (moment 0) of every unit, concatenated.
-  std::vector<double> scalar_flux_snapshot() const
-  {
-    std::vector<double> phi;
-    for (const auto& P : patches_) {
-      const double* m = P.moments.template data_ptr<double>();
-      phi.insert(phi.end(), m, m + num_groups_ * P.disc->num_dofs());
-    }
-    return phi;
-  }
+  std::vector<double> scalar_flux_snapshot() const;
 
   /// @return ||phi - old|| / ||denominator|| over the scalar flux.
   double scalar_flux_change(
-    const std::vector<double>& old, bool relative_to_old) const
-  {
-    const auto phi = scalar_flux_snapshot();
-    double num = 0.0, den = 0.0;
-    for (size_t i = 0; i < phi.size(); i++) {
-      num += (phi[i] - old[i]) * (phi[i] - old[i]);
-      den += relative_to_old ? old[i] * old[i] : phi[i] * phi[i];
-    }
-    num = global_sum(num);
-    den = global_sum(den);
-    return den > 0 ? std::sqrt(num / den) : 0.0;
-  }
+    const std::vector<double>& old, bool relative_to_old) const;
 
   /// @return Total fission production of the current flux.
-  double fission_production() const
-  {
-    double total = 0.0;
-    for (const auto& P : patches_) {
-      if (!P.fission.defined())
-        continue;
-      total +=
-        transfer_total(P.disc->view(), P.fission.template data_ptr<double>(),
-          num_groups_, P.moments.template data_ptr<double>(),
-          P.disc->basis_integral().template data_ptr<double>());
-    }
-    return global_sum(total);
-  }
+  double fission_production() const;
 
   /// @brief Reset the iterate: zero traces, and zero or unit scalar flux.
-  void reset_state(bool unit_scalar_flux)
-  {
-    cross_tolerances_.clear();
-    cross_fibers_.clear();
-    cross_max_ranks_.clear();
-    cross_errors_.clear();
-    cross_ranks_.clear();
-    cross_histories_.clear();
-    cross_seconds_ = 0.0;
-    cross_sweep_seconds_ = 0.0;
-    cross_timings_.clear();
-    solve_timings_.clear();
-    rhs_ratio_.assign(group_sets_.size(), 0.0);
-    anchor_x_.assign(group_sets_.size(), {});
-    anchor_y_.assign(group_sets_.size(), {});
-    anchor_source_.assign(group_sets_.size(), {});
-    for (auto& P : patches_) {
-      P.moments.zero_();
-      if (unit_scalar_flux)
-        P.moments[0].fill_(1.0);
-      for (size_t f = 0; f < P.links.size(); f++) {
-        for (auto* t : {&P.trace_current[f], &P.trace_previous[f],
-               &P.ghost_current[f], &P.ghost_previous[f]})
-          if (t->defined())
-            t->zero_();
-      }
-    }
-    errors_.clear();
-    k_history_.clear();
-    sweep_times_.clear();
-    outer_sweeps_.clear();
-    group_set_sweeps_ = 0;
-    equivalent_sweeps_ = 0.0;
-    converged_ = false;
-  }
+  void reset_state(bool unit_scalar_flux);
 
   /// @brief Assign every node to a rank (the user partition, else METIS on
-  /// the patch connectivity graph) and cull the mesh to this rank's blocks.
+  /// the patch connectivity graph weighted by patch dofs) and cull the mesh
+  /// to this rank's blocks. The caller's mesh stays culled: a later setup()
+  /// on more than one rank needs a fresh full mesh.
   /// @return The rank of every node.
-  /// TODO: This currently only takes into account space when in reality space
-  /// is not the whole story of how much work a rank does. Two things need to
-  /// be considered in the future:
-  /// (1): Vertex weights (load balance). The real gap. Patches can differ a
-  ///      lot in work, roughly DOFs × directions × groups. For example, the
-  ///      O-grid center patch versus the ring patches, or a locally refined
-  ///      patch. With unit weights, METIS can give one rank far more work than
-  ///      another. A weight of num_dofs per patch, or a measured per-patch
-  ///      sweep time, would fix this.
-  /// (2): Edge weights (communication). The number of face DOFs per interface,
-  ///      or face area per the identity above. Without them METIS treats a tiny
-  ///      face and a large face as equal cuts.
-  std::vector<int> partition(const std::vector<PatchState>& nodes)
-  {
-    std::vector<int> rank(nodes.size(), comm_.rank());
-    if (comm_.size() == 1)
-      return rank;
-    std::unordered_map<int64_t, int> gid2rank = partition_;
-    if (gid2rank.empty()) {
-      parallel::LoadBalancer<BlockType> balancer(comm_.size());
-      gid2rank =
-        balancer.compute_partition(mesh_->build_connectivity_graph(), comm_)
-          .second;
-    }
-    std::vector<int64_t> keep;
-    for (size_t i = 0; i < nodes.size(); i++) {
-      auto it = gid2rank.find(nodes[i].gid);
-      if (it == gid2rank.end() || it->second < 0 ||
-          it->second >= comm_.size()) {
-        throw utils::runtime_error(
-          ctx("setup"), "The partition has no valid rank for GID " +
-                          std::to_string(nodes[i].gid));
-      }
-      rank[i] = it->second;
-      if (rank[i] == comm_.rank())
-        keep.push_back(nodes[i].gid);
-    }
-    mesh_->cull_blocks(torch::tensor(keep, torch::kInt64), gid2rank);
-    return rank;
-  }
+  /// TODO: (1) a measured per-patch sweep time would weigh patches better
+  /// than their dofs (local solver cost differs, e.g. curved patches).
+  /// (2) Edge weights (communication): the number of face dofs per
+  /// interface. Without them METIS treats a tiny face and a large face as
+  /// equal cuts.
+  std::vector<int> partition(const std::vector<PatchState>& nodes);
 
   /// @brief Build one sweep DAG per group set: one task per (direction
   /// block, chunk), plus MPI receive/send tasks for cross-rank interfaces.
-  void build_dag()
-  {
-    dags_.clear();
-    schedules_.clear();
-    task_of_unit_.clear();
-    recvs_.clear();
-    sends_.clear();
-    exchange_buffers_.clear();
-    const auto& sets = graph_->angle_sets();
-    const auto& interfaces = graph_->interfaces();
-    const int64_t num_nodes = static_cast<int64_t>(node_rank_.size());
+  void build_dag();
 
-    // Schedule the global graph with every remote node in a chunk of its
-    // own, then keep the local tasks: a dependency through a remote node is
-    // carried by the MPI messages
-    int64_t next_chunk = 0;
-    for (int64_t c : chunk_of_)
-      next_chunk = std::max(next_chunk, c + 1);
-    std::vector<int64_t> chunk_of_node(num_nodes);
-    for (int64_t node = 0; node < num_nodes; node++) {
-      chunk_of_node[node] = node_to_local_[node] >= 0
-                              ? chunk_of_[node_to_local_[node]]
-                              : next_chunk + node;
-    }
-    for (size_t a = 0; a < sets.size(); a++) {
-      auto global = graph_->schedule(a, chunk_of_node);
-      std::vector<int64_t> local_task(global.size(), -1);
-      std::vector<SweepChunk> chunks;
-      for (size_t t = 0; t < global.size(); t++) {
-        int64_t num_local = 0;
-        for (int64_t node : global[t].units)
-          num_local += node_to_local_[node] >= 0 ? 1 : 0;
-        if (num_local == 0)
-          continue;
-        if (num_local != static_cast<int64_t>(global[t].units.size())) {
-          throw utils::runtime_error(ctx("setup"),
-            "Task chunking creates a cycle through another rank's patches; "
-            "use TaskGranularity::UNIT for multi-rank sweeps");
-        }
-        local_task[t] = static_cast<int64_t>(chunks.size());
-        SweepChunk chunk;
-        for (int64_t node : global[t].units)
-          chunk.units.push_back(node_to_local_[node]);
-        chunks.push_back(std::move(chunk));
-      }
-      for (size_t t = 0; t < global.size(); t++) {
-        if (local_task[t] < 0)
-          continue;
-        for (int64_t u : global[t].upstream)
-          if (local_task[u] >= 0)
-            chunks[local_task[t]].upstream.push_back(local_task[u]);
-      }
-      std::vector<int64_t> task_of(patches_.size(), -1);
-      for (size_t c = 0; c < chunks.size(); c++)
-        for (int64_t u : chunks[c].units)
-          task_of[u] = static_cast<int64_t>(c);
-      schedules_.push_back(std::move(chunks));
-      task_of_unit_.push_back(std::move(task_of));
-    }
-
-    // Cross-rank interfaces: the local side's face and the interface's
-    // index among those shared with the other rank (same on both ranks,
-    // which enumerate the global interfaces in the same order)
-    std::vector<int64_t> pair_index(interfaces.size(), -1);
-    std::unordered_map<int, int64_t> pair_count;
-    std::unordered_map<int64_t, std::pair<int64_t, int64_t>> local_side;
-    for (size_t i = 0; i < patches_.size(); i++) {
-      const auto& links = patches_[i].links;
-      for (size_t f = 0; f < links.size(); f++) {
-        if (links[f].remote_rank >= 0)
-          local_side[links[f].interface] = {static_cast<int64_t>(i), f};
-      }
-    }
-    for (size_t k = 0; k < interfaces.size(); k++) {
-      auto it = local_side.find(static_cast<int64_t>(k));
-      if (it == local_side.end())
-        continue;
-      const auto& P = patches_[it->second.first];
-      pair_index[k] = pair_count[P.links[it->second.second].remote_rank]++;
-    }
-    recvs_.assign(sets.size(), {});
-    sends_.assign(sets.size(), {});
-    for (size_t a = 0; a < sets.size(); a++) {
-      for (const auto& [k, side] : local_side) {
-        const auto& link = patches_[side.first].links[side.second];
-        const EdgeState in =
-          link.is_first ? sets[a].backward[k] : sets[a].forward[k];
-        const EdgeState out =
-          link.is_first ? sets[a].forward[k] : sets[a].backward[k];
-        Exchange ex {side.first, side.second, link.remote_rank, pair_index[k]};
-        if (in != EdgeState::NONE) {
-          ex.dependency = in == EdgeState::DEPENDENCY;
-          recvs_[a].push_back(ex);
-        }
-        if (out != EdgeState::NONE) {
-          ex.dependency = false;
-          sends_[a].push_back(ex);
-        }
-      }
-    }
-
-    // Independent copies of an angle set's DAG over blocks of its
-    // directions expose more concurrent tasks
-    direction_blocks_.clear();
-    for (size_t a = 0; a < sets.size(); a++) {
-      const auto& dirs = set_directions_[a];
-      const int64_t n = static_cast<int64_t>(dirs.size());
-      const int64_t per =
-        config_.directions_per_task > 0 ? config_.directions_per_task : n;
-      for (int64_t d0 = 0; d0 < n; d0 += per) {
-        direction_blocks_.push_back(
-          {a, std::vector<int64_t>(
-                dirs.begin() + d0, dirs.begin() + std::min(d0 + per, n))});
-      }
-    }
-
-    for (size_t s = 0; s < group_sets_.size(); s++) {
-      auto dag = std::make_unique<task::TaskGraph>();
-      for (size_t b = 0; b < direction_blocks_.size(); b++) {
-        const auto& chunks = schedules_[direction_blocks_[b].set];
-        std::vector<task::Task*> tasks(chunks.size());
-        for (size_t c = 0; c < chunks.size(); c++) {
-          tasks[c] = dag->create_task(task::DeviceTarget::CPU_ASYNC,
-            "sweep_b" + std::to_string(b) + "_g" + std::to_string(s) + "_c" +
-              std::to_string(c));
-          tasks[c]->set_payload([this, b, s, c]() {
-            auto t0 = std::chrono::steady_clock::now();
-            run_chunk(b, s, c);
-            task_nanoseconds_ +=
-              std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - t0)
-                .count();
-            return task::TaskStatus::COMPLETED;
-          });
-        }
-        for (size_t c = 0; c < chunks.size(); c++)
-          for (int64_t u : chunks[c].upstream)
-            tasks[c]->add_dependency(tasks[u]);
-        add_exchange_tasks(*dag, tasks, b, s);
-      }
-      dags_.push_back(std::move(dag));
-    }
-  }
+  /// @brief One task per chunk of angle set `set`'s schedule, depending on
+  /// its upstream chunks, each running `body(chunk)`.
+  /// @return The tasks, by chunk.
+  std::vector<task::Task*> add_chunk_tasks(task::TaskGraph& dag, size_t set,
+    const std::string& label, std::function<void(size_t)> body);
 
   /// @brief MPI tasks of direction block `b` for group set `s`: receive the
   /// remote upstream traces into ghosts (the local sweep task waits for
   /// DEPENDENCY edges) and send the local outgoing traces after their task.
   /// Messages carry the block's directions x the set's groups x face dofs.
   void add_exchange_tasks(task::TaskGraph& dag,
-    const std::vector<task::Task*>& tasks, size_t b, size_t s)
-  {
-    const size_t a = direction_blocks_[b].set;
-    if (recvs_[a].empty() && sends_[a].empty())
-      return;
-    const int64_t num_blocks = static_cast<int64_t>(direction_blocks_.size());
-    const int64_t nd =
-      static_cast<int64_t>(direction_blocks_[b].directions.size());
-    const int64_t ng = static_cast<int64_t>(group_indices_[s].size());
-    const int64_t tag_bound = sweep_comm_.tag_upper_bound();
+    const std::vector<task::Task*>& tasks, size_t b, size_t s);
 
-    auto make_tag = [&](const Exchange& ex) {
-      const int64_t tag = ex.pair_index * num_blocks + static_cast<int64_t>(b);
-      if (tag > tag_bound) {
-        throw utils::runtime_error(ctx("setup"),
-          "Too many cross-rank interfaces x direction blocks for MPI tags (" +
-            std::to_string(tag) + " > MPI_TAG_UB " + std::to_string(tag_bound) +
-            "); raise directions_per_task");
-      }
-      return static_cast<int>(tag);
-    };
+  /// @brief Fission source of the current iterate, normalized by k.
+  void update_fission_source();
 
-    for (const auto& ex : recvs_[a]) {
-      const int64_t Nf = patches_[ex.local].links[ex.face].neighbor_face_dofs;
-      exchange_buffers_.emplace_back(nd * ng * Nf);
-      double* buf = exchange_buffers_.back().data();
-      const int count = static_cast<int>(nd * ng * Nf);
-      auto* recv = dag.create_task(task::DeviceTarget::NETWORK_ASYNC,
-        "recv_b" + std::to_string(b) + "_u" + std::to_string(ex.local) + "_f" +
-          std::to_string(ex.face));
-      recv->set_payload(
-        [this, buf, count, Nf, b, s, local = ex.local, face = ex.face,
-          rank = ex.rank, tag = make_tag(ex), request = parallel::Request(),
-          initiated = false]() mutable -> task::TaskStatus {
-          if (!initiated) {
-            request = sweep_comm_.irecv(buf, count, rank, tag);
-            initiated = true;
-            return task::TaskStatus::POLLING;
-          }
-          if (!request.test())
-            return task::TaskStatus::POLLING;
-          initiated = false;
-          request = parallel::Request();
-          double* ghost =
-            patches_[local].ghost_current[face].template data_ptr<double>();
-          const double* src = buf;
-          for (int64_t d : direction_blocks_[b].directions)
-            for (int64_t g : group_indices_[s]) {
-              std::copy(src, src + Nf, ghost + (d * num_groups_ + g) * Nf);
-              src += Nf;
-            }
-          return task::TaskStatus::COMPLETED;
-        });
-      if (ex.dependency)
-        tasks[task_of_unit_[a][ex.local]]->add_dependency(recv);
-    }
-
-    for (const auto& ex : sends_[a]) {
-      const int64_t Nf = patches_[ex.local].trace_current[ex.face].size(2);
-      exchange_buffers_.emplace_back(nd * ng * Nf);
-      double* buf = exchange_buffers_.back().data();
-      const int count = static_cast<int>(nd * ng * Nf);
-      auto* send = dag.create_task(task::DeviceTarget::NETWORK_ASYNC,
-        "send_b" + std::to_string(b) + "_u" + std::to_string(ex.local) + "_f" +
-          std::to_string(ex.face));
-      send->set_payload(
-        [this, buf, count, Nf, b, s, local = ex.local, face = ex.face,
-          rank = ex.rank, tag = make_tag(ex), request = parallel::Request(),
-          initiated = false]() mutable -> task::TaskStatus {
-          if (!initiated) {
-            const double* trace =
-              patches_[local].trace_current[face].template data_ptr<double>();
-            double* dst = buf;
-            for (int64_t d : direction_blocks_[b].directions)
-              for (int64_t g : group_indices_[s]) {
-                const double* src = trace + (d * num_groups_ + g) * Nf;
-                std::copy(src, src + Nf, dst);
-                dst += Nf;
-              }
-            request = sweep_comm_.isend(buf, count, rank, tag);
-            initiated = true;
-            return task::TaskStatus::POLLING;
-          }
-          if (!request.test())
-            return task::TaskStatus::POLLING;
-          initiated = false;
-          request = parallel::Request();
-          return task::TaskStatus::COMPLETED;
-        });
-      send->add_dependency(tasks[task_of_unit_[a][ex.local]]);
-    }
-  }
+  /// @brief SweepConfig::certify: one exact transport solve of every group
+  /// set at the converged sources. Jacobi over the sets, so every set sees
+  /// the same converged flux; the exact moments and traces then replace the
+  /// cross's, and the scalar-flux change (and the change in k) is the
+  /// certification error.
+  void certify();
 
   /// @brief Run the outer loop shared by both problem types.
   /// @param k_tol k convergence tolerance (eigenvalue mode only).
-  void outer_iterations(double k_tol)
-  {
-    const int previous_threads = at::get_num_threads();
-    if (config_.num_threads > 1)
-      at::set_num_threads(1);
-
-    const bool verbose = config_.verbose && comm_.rank() == 0;
-    auto start = std::chrono::high_resolution_clock::now();
-    solve_start_ = std::chrono::steady_clock::now();
-    last_progress_ = solve_start_;
-    double callback_seconds = 0.0;
-    solve_seconds_ = 0.0;
-    double previous_error = -1.0;
-    if (eigenvalue_mode_) {
-      // Normalize the initial flux to unit fission production with k = 1, so
-      // the first iterate (fission source / k) has the scale of the warm
-      // start; an initial k far from the eigenvalue makes a loosely solved
-      // first inner (inner_forcing) meaningless.
-      const double production = fission_production();
-      for (auto& P : patches_)
-        P.moments.div_(production);
-      k_ = 1.0;
-    }
-
-    int64_t it = 0;
-    for (; it < config_.max_iter; it++) {
-      const auto old = scalar_flux_snapshot();
-      if (eigenvalue_mode_) {
-        // Fission source of the previous iterate, normalized by k
-        thread_local std::vector<double> scratch;
-        std::vector<int64_t> all(num_groups_);
-        std::iota(all.begin(), all.end(), 0);
-        for (auto& P : patches_) {
-          if (!P.fission.defined())
-            continue;
-          P.fission_source.zero_();
-          transfer_source(P.disc->view(), P.fission.template data_ptr<double>(),
-            1, moment_order_raw_.data(), 1, num_groups_,
-            P.moments.template data_ptr<double>(), 1.0 / k_, all.data(),
-            num_groups_, nullptr, P.fission_source.template data_ptr<double>(),
-            scratch);
-        }
-      }
-
-      const double inner_tol = inner_tolerance();
-      auto t0 = std::chrono::high_resolution_clock::now();
-      outer_sweeps_.push_back(group_set_pass());
-      sweep_times_.push_back(std::chrono::duration<double>(
-        std::chrono::high_resolution_clock::now() - t0)
-          .count());
-
-      double error, k_error = 0.0;
-      if (eigenvalue_mode_) {
-        // As TransportDriver::solve_eigenvalue(): relative to the old flux
-        error = scalar_flux_change(old, true);
-        const double k_new = fission_production();
-        k_error = std::abs(k_new - k_);
-        k_ = k_new;
-        k_history_.push_back(k_);
-      } else {
-        error = scalar_flux_change(old, false);
-      }
-      errors_.push_back(error);
-      const double rho = previous_error > 0 ? error / previous_error : 0.0;
-      previous_error = error;
-      double target = config_.tol;
-      if (config_.rho_safety)
-        target *= (1.0 - std::min(rho, 0.999));
-
-      if (verbose) {
-        std::cout << "-- outer (" << it << "): ";
-        if (eigenvalue_mode_)
-          std::cout << "k = " << std::fixed << std::setprecision(6) << k_
-                    << ", dk = " << std::scientific << std::setprecision(2)
-                    << k_error << ", ";
-        std::cout << "scalar flux error = " << std::scientific
-                  << std::setprecision(4) << error << ", rho = " << std::fixed
-                  << std::setprecision(4) << rho
-                  << ", group-set sweeps = " << outer_sweeps_.back()
-                  << ", inner tol = " << std::scientific << std::setprecision(1)
-                  << inner_tol << std::fixed
-                  << ", elapsed = " << std::setprecision(3)
-                  << std::chrono::duration<double>(
-                       std::chrono::high_resolution_clock::now() - start)
-                       .count()
-                  << " s" << std::defaultfloat << std::endl;
-      }
-      solve_seconds_ = std::chrono::duration<double>(
-                         std::chrono::high_resolution_clock::now() - start)
-                         .count() -
-                       callback_seconds;
-      if (callback_ && it % callback_frequency_ == 0) {
-        auto c0 = std::chrono::high_resolution_clock::now();
-        callback_(*this);
-        callback_seconds += std::chrono::duration<double>(
-          std::chrono::high_resolution_clock::now() - c0)
-                              .count();
-      }
-      const bool k_ok = !eigenvalue_mode_ || k_error < k_tol;
-      if (it > 0 && error < target && k_ok) {
-        converged_ = true;
-        it++;
-        break;
-      }
-    }
-    num_iterations_ = std::min<int64_t>(it, config_.max_iter);
-    if (config_.num_threads > 1)
-      at::set_num_threads(previous_threads);
-    if (!config_.cross.keep_tt)
-      for (auto& cr : crosses_)
-        cr->release();
-    if (verbose) {
-      std::cout << "-- " << (converged_ ? "Converged!" : "Failed to Converge!")
-                << " (" << num_iterations_ << " outer iterations, "
-                << equivalent_sweeps_ << " sweep equivalents)" << std::endl;
-    }
-  }
+  void outer_iterations(double k_tol);
 
 public:
   // =================================================================
@@ -1900,26 +653,14 @@ public:
   /// this rank is a sweep unit.
   /// @param xs_server Multigroup cross sections.
   /// @param mpi_context The MPI context (same argument as TransportDriver).
-  SweepDriver(typename Mesh::Ptr mesh, xs::Server::Ptr xs_server,
-    const parallel::ParallelContext& mpi_context, bool serial = false)
-    : mesh_(std::move(mesh)), xs_server_(std::move(xs_server)),
-      comm_(serial ? parallel::Communicator::self()
-                   : parallel::Communicator::world()),
-      serial_(serial)
-  {
-    (void)mpi_context;
-    if (!mesh_->is_finalized())
-      mesh_->finalize();
-    if (!xs_server_->is_finalized())
-      xs_server_->finalize();
-  }
+  virtual ~SweepSolver() = default;
 
-  template<typename... Args>
-  static Ptr create(Args&&... args)
-  {
-    return Ptr(new SweepDriver(std::forward<Args>(args)...));
-  }
+protected:
+  /// @param num_dim Spatial dimension (1 to 3) of the mesh.
+  SweepSolver(int64_t num_dim, Mesh::Ptr mesh, xs::Server::Ptr xs_server,
+    const parallel::ParallelContext& mpi_context, bool serial = false);
 
+public:
   // =================================================================
   // Public methods
   /// @brief Use a fixed partition (GID -> MPI rank) for multi-rank sweeps
@@ -1939,445 +680,7 @@ public:
   /// (e.g. FDG elements by parent patch). Empty uses
   /// config.task_granularity; otherwise every local GID must appear.
   void setup(const math::QuadratureSet::Ptr& qset, const SweepConfig& config,
-    const std::unordered_map<int64_t, int64_t>& chunks = {})
-  {
-    qset_ = qset;
-    config_ = config;
-    has_fission_ = false;
-    patches_.clear();
-    gid_to_local_.clear();
-
-    const bool distributed = comm_.size() > 1;
-    if (distributed &&
-        mesh_->get_blocks().size() != mesh_->get_global_num_blocks()) {
-      throw utils::runtime_error(ctx("setup"),
-        "Multi-rank sweeps need the full (undistributed) mesh on every rank: "
-        "setup() builds the global sweep graph, then partitions the mesh");
-    }
-
-    std::tie(omega_, omega3_, weights_) = discrete_ordinates(*qset_, NumDim);
-    const int64_t num_directions = omega_.size(0);
-
-    // Every patch of the mesh is a node of the global sweep graph (cycles
-    // must be broken consistently across ranks); only this rank's patches
-    // are kept after partitioning
-    std::vector<PatchState> nodes;
-    std::unordered_map<int64_t, size_t> gid_to_node;
-    int64_t num_orders = 1;
-    for (const auto& block : mesh_->get_blocks()) {
-      PatchState P;
-      P.gid = block->get_gid();
-      P.block = block;
-      P.disc = PatchDiscretization::create(*block);
-      const auto& mat = xs_server_->get_material(block->get_fill_id());
-      P.sigma_t = mat.get_total().to(torch::kFloat64).cpu().contiguous();
-      if (mat.get_scatter_gtg().defined() && mat.get_scatter_gtg().numel()) {
-        P.scatter =
-          mat.get_scatter_gtg().to(torch::kFloat64).cpu().contiguous();
-        num_orders = std::max<int64_t>(num_orders, P.scatter.size(0));
-      }
-      has_fission_ = has_fission_ || mat.is_fissile();
-      if (mat.is_fissile()) {
-        P.fission = torch::outer(mat.get_chi().to(torch::kFloat64).cpu(),
-          mat.get_nu_fission().to(torch::kFloat64).cpu())
-                      .unsqueeze(0)
-                      .contiguous();
-      }
-      num_groups_ = P.sigma_t.size(0);
-
-      const auto& fs = block->get_fixed_source();
-      if (fs.has_value() && fs->defined()) {
-        const int64_t N = P.disc->num_dofs();
-        if (fs->function.has_value()) {
-          throw utils::runtime_error(ctx("setup"),
-            "Function fixed sources are not supported by the sweeper yet");
-        }
-        auto q = torch::zeros({num_groups_, N}, torch::kFloat64);
-        if (fs->isotropic_strength.has_value()) {
-          q += fs->isotropic_strength->to(torch::kFloat64).cpu().view({-1, 1}) *
-               P.disc->basis_integral().view({1, -1});
-        }
-        if (fs->projected_isotropic_source.has_value()) {
-          q += fs->projected_isotropic_source->to(torch::kFloat64)
-                 .cpu()
-                 .reshape({N, num_groups_})
-                 .transpose(0, 1);
-        }
-        P.external = q.contiguous();
-      }
-      gid_to_node[P.gid] = nodes.size();
-      nodes.push_back(std::move(P));
-    }
-
-    std::tie(harmonics_, moment_order_) =
-      discrete_harmonics(*qset_, NumDim, num_orders);
-    weighted_harmonics_ = (harmonics_ * weights_.unsqueeze(1)).contiguous();
-    moment_order_raw_.assign(moment_order_.template data_ptr<int64_t>(),
-      moment_order_.template data_ptr<int64_t>() + moment_order_.numel());
-    harmonics_ = harmonics_.contiguous();
-    omega_ = omega_.contiguous();
-
-    // Non-conforming interfaces: both faces integrate with one shared
-    // quadrature (union of the knot spans, the larger degree), the second
-    // face with the exact negative of the first's normal, so the outflow of
-    // one side is the inflow of the other
-    std::map<std::pair<size_t, int64_t>, std::array<torch::Tensor, 4>>
-      couplings;
-    for (size_t i = 0; i < nodes.size() && NumDim > 1; i++) {
-      auto& P = nodes[i];
-      for (int64_t dim = 0; dim < NumDim; dim++) {
-        for (bool is_upper : {false, true}) {
-          const auto& info = P.block->get_boundary_info(dim, is_upper);
-          if (info.get_type() != physics::BoundaryType::INTERNAL ||
-              info.get_connections().size() != 1)
-            continue;
-          const auto& conn = info.get_connections()[0];
-          if (conn.conforming || P.gid > conn.gid)
-            continue;
-          const size_t j = gid_to_node.at(conn.gid);
-          auto& Q = nodes[j];
-          auto iq = cad::interface_quadrature(
-            *P.block, dim, *Q.block, conn.dim, conn.mapping);
-          auto fa = P.disc->evaluate_face(dim, is_upper, iq.u_first);
-          auto fb = Q.disc->evaluate_face(conn.dim, conn.is_upper, iq.u_second);
-          const double scale = 1.0 + fa.x.abs().max().template item<double>();
-          if ((fa.x - fb.x).abs().max().template item<double>() >
-              1e-8 * scale) {
-            throw utils::runtime_error(ctx("setup"),
-              "The faces of the non-conforming interface between patches " +
-                std::to_string(P.gid) + " and " + std::to_string(conn.gid) +
-                " do not share their parametrization (refine both from one "
-                "patch by knot insertion and degree elevation)");
-          }
-          if (((fa.normal * fb.normal).sum(1) > 0)
-                .any()
-                .template item<bool>()) {
-            throw utils::runtime_error(ctx("setup"),
-              "The normals of a non-conforming interface are not opposite");
-          }
-          P.disc->set_face_quadrature(
-            dim, is_upper, iq.u_first, iq.weights, fa.normal);
-          Q.disc->set_face_quadrature(
-            conn.dim, conn.is_upper, iq.u_second, iq.weights, -fa.normal);
-          auto pairs = [](const FacePoints& own, const FacePoints& src) {
-            const int64_t q = own.R.size(0), na = own.R.size(1),
-                          nb = src.R.size(1);
-            return std::array<torch::Tensor, 4> {torch::arange(q, torch::kInt64)
-                                                   .view({q, 1, 1})
-                                                   .expand({q, na, nb})
-                                                   .reshape({-1})
-                                                   .contiguous(),
-              own.index.unsqueeze(2)
-                .expand({q, na, nb})
-                .reshape({-1})
-                .contiguous(),
-              src.index.unsqueeze(1)
-                .expand({q, na, nb})
-                .reshape({-1})
-                .contiguous(),
-              (own.R.unsqueeze(2) * src.R.unsqueeze(1))
-                .reshape({-1})
-                .contiguous()};
-          };
-          couplings[{i, 2 * dim + (is_upper ? 1 : 0)}] = pairs(fa, fb);
-          couplings[{j, 2 * static_cast<int64_t>(conn.dim) +
-                          (conn.is_upper ? 1 : 0)}] = pairs(fb, fa);
-        }
-      }
-    }
-
-    // Face links and interfaces between nodes
-    std::vector<SweepInterface> interfaces;
-    std::map<std::pair<int64_t, int64_t>, int64_t> owner_face_to_interface;
-    for (size_t i = 0; i < nodes.size(); i++) {
-      auto& P = nodes[i];
-      P.links.resize(2 * NumDim);
-      for (int64_t dim = 0; dim < NumDim; dim++) {
-        for (bool is_upper : {false, true}) {
-          const int64_t f = 2 * dim + (is_upper ? 1 : 0);
-          const auto& info = P.block->get_boundary_info(dim, is_upper);
-          auto& link = P.links[f];
-          link.type = info.get_type();
-          if (link.type == physics::BoundaryType::INCIDENT &&
-              info.get_source().has_value() && info.get_source()->defined()) {
-            throw utils::runtime_error(ctx("setup"),
-              "Incident-flux boundary sources are not supported by the "
-              "sweeper yet");
-          }
-          if (link.type == physics::BoundaryType::REFLECTIVE) {
-            link.reflected = build_reflection(P.disc->faces()[f]).contiguous();
-            link.albedo = info.albedo();
-            link.has_buffer = true;
-          } else if (link.type == physics::BoundaryType::INTERNAL) {
-            const auto& conns = info.get_connections();
-            if (conns.size() != 1) {
-              throw utils::runtime_error(ctx("setup"),
-                "Each internal face must connect to exactly one neighbor "
-                "face (conforming interfaces only)");
-            }
-            const auto& conn = conns[0];
-            auto it = gid_to_node.find(conn.gid);
-            if (it == gid_to_node.end()) {
-              throw utils::runtime_error(
-                ctx("setup"), "Neighbor patch " + std::to_string(conn.gid) +
-                                " is not in the mesh");
-            }
-            link.neighbor = static_cast<int64_t>(it->second);
-            link.neighbor_face = 2 * conn.dim + (conn.is_upper ? 1 : 0);
-            link.neighbor_face_dofs =
-              nodes[link.neighbor].disc->faces()[link.neighbor_face].num_dofs();
-            auto coupling = couplings.find({i, f});
-            if (coupling != couplings.end()) {
-              link.coupling_q = coupling->second[0];
-              link.coupling_a = coupling->second[1];
-              link.coupling_b = coupling->second[2];
-              link.coupling_val = coupling->second[3];
-            } else {
-              link.trace_map =
-                build_trace_map(dim, conn, *nodes[link.neighbor].disc)
-                  .contiguous();
-            }
-            link.has_buffer = true;
-            link.is_first = P.gid < conn.gid;
-            if (link.is_first) {
-              const auto& face = P.disc->faces()[f];
-              SweepInterface itf;
-              itf.first = static_cast<int64_t>(i);
-              itf.second = link.neighbor;
-              itf.forward_weight = face.upwind_weights(omega_, true).sum(1);
-              itf.backward_weight = face.upwind_weights(omega_, false).sum(1);
-              itf.tolerance = config_.face_weight_tol * face.area;
-              link.interface = static_cast<int64_t>(interfaces.size());
-              owner_face_to_interface[{static_cast<int64_t>(i), f}] =
-                link.interface;
-              interfaces.push_back(std::move(itf));
-            }
-          }
-        }
-      }
-    }
-    for (auto& P : nodes) {
-      for (auto& link : P.links) {
-        if (link.type == physics::BoundaryType::INTERNAL && !link.is_first) {
-          link.interface =
-            owner_face_to_interface.at({link.neighbor, link.neighbor_face});
-        }
-      }
-    }
-    graph_ = SweepGraph::create(static_cast<int64_t>(nodes.size()),
-      std::move(interfaces), num_directions);
-
-    // Partition, keep this rank's patches and turn links to other ranks'
-    // patches into ghost links
-    node_rank_ = partition(nodes);
-    node_to_local_.assign(nodes.size(), -1);
-    local_to_node_.clear();
-    for (size_t node = 0; node < nodes.size(); node++) {
-      if (node_rank_[node] != comm_.rank())
-        continue;
-      node_to_local_[node] = static_cast<int64_t>(patches_.size());
-      local_to_node_.push_back(static_cast<int64_t>(node));
-      gid_to_local_[nodes[node].gid] = patches_.size();
-      patches_.push_back(std::move(nodes[node]));
-    }
-    nodes.clear();
-    for (auto& P : patches_) {
-      for (auto& link : P.links) {
-        if (link.type != physics::BoundaryType::INTERNAL)
-          continue;
-        const int64_t nb = link.neighbor;
-        if (node_to_local_[nb] >= 0) {
-          link.neighbor = node_to_local_[nb];
-        } else {
-          link.neighbor = -1;
-          link.remote_rank = node_rank_[nb];
-        }
-      }
-    }
-    if (distributed)
-      sweep_comm_ = comm_.duplicate();
-
-    // Chunks of units swept by one task
-    chunk_of_.assign(patches_.size(), 0);
-    for (size_t i = 0; i < patches_.size(); i++) {
-      if (!chunks.empty()) {
-        auto it = chunks.find(patches_[i].gid);
-        if (it == chunks.end()) {
-          throw utils::runtime_error(ctx("setup"),
-            "`chunks` has no entry for GID " + std::to_string(patches_[i].gid));
-        }
-        chunk_of_[i] = it->second;
-      } else if (config_.task_granularity == TaskGranularity::UNIT) {
-        chunk_of_[i] = static_cast<int64_t>(i);
-      }
-    }
-
-    // Plain index vectors for the kernel
-    set_directions_.clear();
-    for (const auto& set : graph_->angle_sets()) {
-      const auto& d = set.directions;
-      set_directions_.emplace_back(d.template data_ptr<int64_t>(),
-        d.template data_ptr<int64_t>() + d.numel());
-    }
-
-    // Group sets
-    group_sets_.clear();
-    const int64_t gs = config_.group_set_size > 0
-                         ? std::min(config_.group_set_size, num_groups_)
-                         : num_groups_;
-    for (int64_t g0 = 0; g0 < num_groups_; g0 += gs) {
-      group_sets_.push_back(
-        torch::arange(g0, std::min(g0 + gs, num_groups_), torch::kInt64));
-    }
-    group_indices_.clear();
-    group_masks_.clear();
-    group_complements_.clear();
-    for (const auto& g : group_sets_) {
-      group_indices_.emplace_back(g.template data_ptr<int64_t>(),
-        g.template data_ptr<int64_t>() + g.numel());
-      std::vector<uint8_t> mask(num_groups_, 0), complement(num_groups_, 1);
-      for (int64_t k : group_indices_.back()) {
-        mask[k] = 1;
-        complement[k] = 0;
-      }
-      group_masks_.push_back(std::move(mask));
-      group_complements_.push_back(std::move(complement));
-    }
-
-    // Lagged traces: reflective faces (the outflow directions, read for
-    // their reflections) and interface faces read in a LAGGED state
-    // Key: (unit, face, ghost) of the buffer holding the lagged trace
-    std::map<std::tuple<int64_t, int64_t, bool>, std::set<int64_t>> lagged;
-    for (size_t i = 0; i < patches_.size(); i++) {
-      const auto& P = patches_[i];
-      for (size_t f = 0; f < P.links.size(); f++) {
-        const auto& link = P.links[f];
-        if (link.type == physics::BoundaryType::REFLECTIVE) {
-          auto& dirs = lagged[{static_cast<int64_t>(i), f, false}];
-          auto outflow = P.disc->faces()[f].upwind_weights(omega_, true).sum(1);
-          const double* w = outflow.template data_ptr<double>();
-          for (int64_t d = 0; d < num_directions; d++)
-            if (w[d] > 0.0)
-              dirs.insert(d);
-        } else if (link.type == physics::BoundaryType::INTERNAL) {
-          const auto& sets = graph_->angle_sets();
-          for (size_t a = 0; a < sets.size(); a++) {
-            const EdgeState state = link.is_first
-                                      ? sets[a].backward[link.interface]
-                                      : sets[a].forward[link.interface];
-            if (state != EdgeState::LAGGED)
-              continue;
-            auto& dirs = link.remote_rank >= 0
-                           ? lagged[{static_cast<int64_t>(i), f, true}]
-                           : lagged[{link.neighbor, link.neighbor_face, false}];
-            for (int64_t d : set_directions_[a])
-              dirs.insert(d);
-          }
-        }
-      }
-    }
-    delayed_.clear();
-    for (const auto& [key, dirs] : lagged) {
-      delayed_.push_back({std::get<0>(key), std::get<1>(key),
-        std::vector<int64_t>(dirs.begin(), dirs.end()), std::get<2>(key)});
-    }
-
-    // Buffers; previous traces are only read where they are lagged
-    std::set<std::tuple<int64_t, int64_t, bool>> lagged_faces;
-    for (const auto& blk : delayed_)
-      lagged_faces.insert({blk.local, blk.face, blk.ghost});
-    const int64_t M = harmonics_.size(1);
-    for (size_t i = 0; i < patches_.size(); i++) {
-      auto& P = patches_[i];
-      const int64_t N = P.disc->num_dofs();
-      P.trace_current.assign(P.links.size(), torch::Tensor());
-      P.trace_previous.assign(P.links.size(), torch::Tensor());
-      for (size_t f = 0; f < P.links.size(); f++) {
-        if (P.links[f].has_buffer) {
-          const int64_t Nf = P.disc->faces()[f].num_dofs();
-          P.trace_current[f] =
-            torch::zeros({num_directions, num_groups_, Nf}, torch::kFloat64);
-          if (lagged_faces.count({static_cast<int64_t>(i), f, false}))
-            P.trace_previous[f] = torch::zeros_like(P.trace_current[f]);
-        }
-      }
-      P.ghost_current.assign(P.links.size(), torch::Tensor());
-      P.ghost_previous.assign(P.links.size(), torch::Tensor());
-      for (size_t f = 0; f < P.links.size(); f++) {
-        if (P.links[f].remote_rank >= 0) {
-          P.ghost_current[f] = torch::zeros(
-            {num_directions, num_groups_, P.links[f].neighbor_face_dofs},
-            torch::kFloat64);
-          if (lagged_faces.count({static_cast<int64_t>(i), f, true}))
-            P.ghost_previous[f] = torch::zeros_like(P.ghost_current[f]);
-        }
-      }
-      P.moments = torch::zeros({M, num_groups_, N}, torch::kFloat64);
-      P.moments_next = torch::zeros_like(P.moments);
-      P.source_moments = torch::zeros_like(P.moments);
-      P.krylov_moments = torch::zeros_like(P.moments);
-      P.pass_moments = torch::zeros_like(P.moments);
-      P.fission_source = P.fission.defined()
-                           ? torch::zeros({num_groups_, N}, torch::kFloat64)
-                           : torch::Tensor();
-      const bool structured =
-        config_.local_solver == LocalSolverType::SYLVESTER ||
-        config_.local_solver == LocalSolverType::ITERATIVE;
-      P.kronecker = structured ? KroneckerSolver::try_create(*P.disc) : nullptr;
-      P.iterative =
-        config_.local_solver == LocalSolverType::ITERATIVE && !P.kronecker
-          ? IterativeSolver::create(*P.disc, config_.local_tol,
-              config_.local_restart, config_.local_max_iter)
-          : nullptr;
-      if (config_.cache_factorizations && !P.kronecker && !P.iterative) {
-        const bool banded = config_.local_solver != LocalSolverType::DENSE_LU;
-        const int64_t size = banded ? N * P.disc->ldab() : N * N;
-        P.factors =
-          torch::empty({num_directions, num_groups_, size}, torch::kFloat64);
-        P.factor_pivots =
-          torch::empty({num_directions, num_groups_, N}, torch::kInt64);
-      } else {
-        P.factors = torch::Tensor();
-        P.factor_pivots = torch::Tensor();
-      }
-      P.factors_ready.assign(group_sets_.size(), 0);
-      P.psi =
-        config_.store_angular_flux
-          ? torch::zeros({num_directions, num_groups_, N}, torch::kFloat64)
-          : torch::Tensor();
-    }
-
-    fiber_offsets_.assign(patches_.size(), 0);
-    fiber_length_ = 0;
-    for (size_t i = 0; i < patches_.size(); i++) {
-      fiber_offsets_[i] = fiber_length_;
-      fiber_length_ += patches_[i].disc->num_dofs();
-    }
-
-    scheduler_ = std::make_unique<task::TaskScheduler>(
-      std::max<int64_t>(1, config_.num_threads));
-    build_dag();
-    build_range_dag();
-    build_crosses();
-    is_setup_ = true;
-
-    if (config_.verbose && config_.progress_seconds >= 0 && comm_.rank() == 0) {
-      const auto report = memory_report();
-      int64_t total = 0;
-      std::cout << "-- sweep setup: " << patches_.size() << " units, "
-                << num_directions << " directions, " << num_groups_
-                << " groups in " << group_indices_.size() << " group sets, "
-                << delayed_.size() << " lagged trace blocks; memory (GB):";
-      for (const auto& [key, b] : report) {
-        if (key == "krylov_vector")
-          continue;
-        total += b;
-        std::cout << " " << key << " " << std::fixed << std::setprecision(2)
-                  << b / 1e9;
-      }
-      std::cout << ", total " << total / 1e9 << std::defaultfloat << std::endl;
-    }
-  }
+    const std::unordered_map<int64_t, int64_t>& chunks = {});
 
   /// @brief Sweep the fibers of `blocks` with the current source moments
   /// and lagged traces, without changing the iterate: each (direction,
@@ -2386,111 +689,16 @@ public:
   /// The fiber of block k, direction i and group j is row
   /// offset_k + i * |groups_k| + j of `out`, offset_k being the number of
   /// fibers of the blocks before k. A row holds the local units' dofs in
-  /// local order (see fiber_offsets()). Pairs must not repeat. The
+  /// local order (see fiber_offsets()). Pairs must not repeat (checked). The
   /// interface traces of the swept pairs are overwritten.
   /// @param blocks The fibers to sweep.
   /// @param out (num_fibers, fiber_length()) output.
-  void sweep_fibers(const std::vector<FiberBlock>& blocks, double* out)
-  {
-    if (!is_setup_)
-      throw utils::runtime_error(ctx("sweep_fibers"), "Call setup() first");
-    // TODO: exchange tasks for multi-rank fiber sweeps
-    if (comm_.size() > 1)
-      throw utils::runtime_error(
-        ctx("sweep_fibers"), "Fiber sweeps are serial in space for now");
-    const auto& direction_set = graph_->direction_set();
-    const int64_t* set_of = direction_set.template data_ptr<int64_t>();
-    const int64_t num_sets = static_cast<int64_t>(graph_->angle_sets().size());
-    const int64_t per = config_.directions_per_task;
-
-    // Direction blocks per angle set, then group chunks so that the request
-    // exposes about four task families per thread
-    struct DirectionRun {
-      size_t block;
-      size_t set;
-      std::vector<int64_t> directions;
-      std::vector<int64_t> rows;
-    };
-    std::vector<DirectionRun> runs;
-    int64_t offset = 0;
-    for (size_t k = 0; k < blocks.size(); k++) {
-      const auto& blk = blocks[k];
-      const int64_t ng = static_cast<int64_t>(blk.groups.size());
-      std::vector<std::vector<int64_t>> by_set(num_sets), rows(num_sets);
-      for (size_t i = 0; i < blk.directions.size(); i++) {
-        const int64_t d = blk.directions[i];
-        if (d < 0 || d >= omega_.size(0))
-          throw utils::runtime_error(
-            ctx("sweep_fibers"), "Direction out of range");
-        by_set[set_of[d]].push_back(d);
-        rows[set_of[d]].push_back(offset + static_cast<int64_t>(i) * ng);
-      }
-      for (int64_t a = 0; a < num_sets; a++) {
-        const int64_t n = static_cast<int64_t>(by_set[a].size());
-        const int64_t step = per > 0 ? per : std::max<int64_t>(n, 1);
-        for (int64_t i0 = 0; i0 < n; i0 += step) {
-          const int64_t i1 = std::min(i0 + step, n);
-          runs.push_back({k, static_cast<size_t>(a),
-            {by_set[a].begin() + i0, by_set[a].begin() + i1},
-            {rows[a].begin() + i0, rows[a].begin() + i1}});
-        }
-      }
-      for (int64_t g : blk.groups)
-        if (g < 0 || g >= num_groups_)
-          throw utils::runtime_error(ctx("sweep_fibers"), "Group out of range");
-      offset += static_cast<int64_t>(blk.directions.size()) * ng;
-    }
-    const int64_t threads = std::max<int64_t>(1, config_.num_threads);
-    const int64_t wanted =
-      (4 * threads + static_cast<int64_t>(runs.size()) - 1) /
-      std::max<int64_t>(1, runs.size());
-    fiber_tasks_.clear();
-    for (const auto& run : runs) {
-      const auto& groups = blocks[run.block].groups;
-      const int64_t ng = static_cast<int64_t>(groups.size());
-      const int64_t parts =
-        std::clamp<int64_t>(wanted, 1, std::max<int64_t>(ng, 1));
-      for (int64_t p = 0; p < parts; p++) {
-        const int64_t g0 = p * ng / parts, g1 = (p + 1) * ng / parts;
-        if (g0 == g1)
-          continue;
-        FiberTask task;
-        task.set = run.set;
-        task.directions = run.directions;
-        task.groups.assign(groups.begin() + g0, groups.begin() + g1);
-        for (int64_t row : run.rows)
-          task.slots.push_back(row + g0);
-        fiber_tasks_.push_back(std::move(task));
-      }
-    }
-
-    task::TaskGraph dag;
-    for (size_t t = 0; t < fiber_tasks_.size(); t++) {
-      const auto& chunks = schedules_[fiber_tasks_[t].set];
-      std::vector<task::Task*> tasks(chunks.size());
-      for (size_t c = 0; c < chunks.size(); c++) {
-        tasks[c] = dag.create_task(task::DeviceTarget::CPU_ASYNC,
-          "fiber_t" + std::to_string(t) + "_c" + std::to_string(c));
-        tasks[c]->set_payload([this, t, c, out]() {
-          run_fiber_chunk(t, c, out);
-          return task::TaskStatus::COMPLETED;
-        });
-      }
-      for (size_t c = 0; c < chunks.size(); c++)
-        for (int64_t u : chunks[c].upstream)
-          tasks[c]->add_dependency(tasks[u]);
-    }
-    const int previous_threads = at::get_num_threads();
-    if (config_.num_threads > 1)
-      at::set_num_threads(1);
-    auto t0 = std::chrono::steady_clock::now();
-    scheduler_->execute(dag, task::ExecutionMode::PUSH);
-    dag_nanoseconds_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
-      std::chrono::steady_clock::now() - t0)
-                          .count();
-    at::set_num_threads(previous_threads);
-    num_fibers_ += offset;
-  }
+  /// @param done Optional: called once for every range of finished rows
+  /// (one task per direction run and group chunk, after its last unit), from
+  /// the scheduler's workers, so work on finished fibers overlaps the rest
+  /// of the sweep.
+  void sweep_fibers(const std::vector<FiberBlock>& blocks, double* out,
+    const FiberDone& done = {});
 
   /// @return Length of a fiber (dofs of every local unit).
   int64_t fiber_length() const noexcept { return fiber_length_; }
@@ -2501,13 +709,7 @@ public:
   }
   /// @return The cross of group set `s` (TransportSolve::CROSS), holding
   /// the TT of the last transport solve.
-  cross::LayoutCross::Ptr get_cross(size_t s = 0) const
-  {
-    if (s >= crosses_.size())
-      throw utils::runtime_error(
-        ctx("get_cross"), "No cross for this group set (transport = CROSS?)");
-    return crosses_[s];
-  }
+  cross::LayoutCross::Ptr get_cross(size_t s = 0) const;
   /// @return Cores of patch `gid`'s angular flux TT for group set `s` (last
   /// transport solve), in the configured layout.
   std::vector<torch::Tensor> get_patch_angular_flux_tt(
@@ -2531,14 +733,7 @@ public:
   /// @return Seconds per phase of the cross transport solves: the phases of
   /// LayoutCross::run summed over the group sets' crosses (see
   /// LayoutCross::timings()), and moments, traces and angular_flux.
-  std::map<std::string, double> get_cross_timings() const
-  {
-    auto out = cross_timings_;
-    for (const auto& cr : crosses_)
-      for (const auto& [phase, sec] : cr->timings())
-        out[phase] += sec;
-    return out;
-  }
+  std::map<std::string, double> get_cross_timings() const;
   /// @return Seconds per step of the within-group-set solves, accumulated:
   /// inner (whole within-group-set solves), gmres (the Krylov solves within
   /// them), and unpack, source, transport and pack per transport solve.
@@ -2564,48 +759,18 @@ public:
     return cross_errors_;
   }
   /// @return GID of every local unit, in local (fiber) order.
-  std::vector<int64_t> local_gids() const
-  {
-    std::vector<int64_t> gids;
-    gids.reserve(patches_.size());
-    for (const auto& P : patches_)
-      gids.push_back(P.gid);
-    return gids;
-  }
+  std::vector<int64_t> local_gids() const;
   /// @return Fibers swept by sweep_fibers() since setup.
   int64_t num_fibers() const noexcept { return num_fibers_; }
 
   /// @brief One classic source-iteration step over every group set: every
   /// set sees the moments from before the step (Jacobi) and is swept once.
-  void sweep()
-  {
-    if (!is_setup_)
-      throw utils::runtime_error(ctx("sweep"), "Call setup() first");
-    for_each_patch([](PatchState& P) { P.pass_moments.copy_(P.moments); });
-    for (size_t s = 0; s < group_sets_.size(); s++) {
-      compute_source(s, Within::MOMENTS, true, true);
-      transport_group_set(s);
-      commit_group_set(s);
-    }
-  }
+  void sweep();
 
   /// @brief Solve a fixed-source problem.
   /// @return The solution: the angular flux if `store_angular_flux`, else
   /// the scalar flux.
-  typename Solution::Ptr solve_fixed_source()
-  {
-    if (!is_setup_)
-      throw utils::runtime_error(
-        ctx("solve_fixed_source"), "Call setup() first");
-    if (has_fission_)
-      throw utils::runtime_error(ctx("solve_fixed_source"),
-        "Fissile materials need solve_eigenvalue(); subcritical "
-        "multiplication (fixed source + fission) is not supported");
-    eigenvalue_mode_ = false;
-    reset_state(false);
-    outer_iterations(0.0);
-    return config_.build_solution ? build_solution() : nullptr;
-  }
+  typename Solution::Ptr solve_fixed_source();
 
   /// @brief Solve the k-eigenvalue problem by power iteration, mirroring
   /// TransportDriver::solve_eigenvalue(): start from a unit scalar flux, put
@@ -2614,69 +779,26 @@ public:
   /// @param k_tol Tolerance on |k_n - k_{n-1}| (with config.tol on the
   /// scalar flux change relative to the previous iterate).
   /// @return The solution, holding k_eff.
-  typename Solution::Ptr solve_eigenvalue(double k_tol = 1e-6)
-  {
-    if (!is_setup_)
-      throw utils::runtime_error(ctx("solve_eigenvalue"), "Call setup() first");
-    if (!has_fission_)
-      throw utils::runtime_error(
-        ctx("solve_eigenvalue"), "No fissile material on this rank");
-    for (const auto& P : patches_)
-      if (P.external.defined())
-        throw utils::runtime_error(ctx("solve_eigenvalue"),
-          "Fixed sources are not supported in eigenvalue problems");
-    eigenvalue_mode_ = true;
-    reset_state(true);
-    outer_iterations(k_tol);
-    return config_.build_solution ? build_solution() : nullptr;
-  }
+  typename Solution::Ptr solve_eigenvalue(double k_tol = 1e-6);
 
   /// @brief Wrap the current flux in a TransportSolution so the existing
-  /// error and comparison tooling applies.
+  /// error and comparison tooling applies: angular if it is stored
+  /// (config.store_angular_flux), scalar otherwise.
   typename Solution::Ptr build_solution() const
   {
-    const bool angular = config_.store_angular_flux;
-    auto solution = Solution::create(serial_ ? parallel::Communicator::self()
-                                             : parallel::Communicator::world(),
-      mesh_, qset_, xs_server_, physics::DGTransportAssemblerConfig(),
-      eigenvalue_mode_ ? std::optional<double>(k_) : std::nullopt, angular);
-    solution->set_iteration_counts(
-      static_cast<int>(num_iterations_), static_cast<int>(num_iterations_));
-    for (const auto& P : patches_) {
-      auto dense = angular ? get_angular_flux(P.gid) : get_scalar_flux(P.gid);
-      solution->add_local_patch(
-        P.gid, linalg::State(linalg::TTEngine::from_dense(dense, 1e-14)));
-    }
-    return solution;
+    return make_solution(config_.store_angular_flux);
   }
 
   /// @brief The solution with its angular dependence, from the stored
-  /// angular flux or, with transport = CROSS and cross.keep_tt, from the TT
-  /// of the last transport solve (e.g. for particle balances).
+  /// angular flux or, with transport = CROSS and cross.keep_angular_flux, from
+  /// the TT of the last transport solve (e.g. for particle balances).
   typename Solution::Ptr angular_solution() const
   {
-    auto solution = Solution::create(serial_ ? parallel::Communicator::self()
-                                             : parallel::Communicator::world(),
-      mesh_, qset_, xs_server_, physics::DGTransportAssemblerConfig(),
-      eigenvalue_mode_ ? std::optional<double>(k_) : std::nullopt, true);
-    solution->set_iteration_counts(
-      static_cast<int>(num_iterations_), static_cast<int>(num_iterations_));
-    for (const auto& P : patches_) {
-      solution->add_local_patch(
-        P.gid, linalg::State(
-                 linalg::TTEngine::from_dense(get_angular_flux(P.gid), 1e-14)));
-    }
-    return solution;
+    return make_solution(true);
   }
 
   /// @return The scalar flux of a patch, shape (*ctrlpts_grid, G).
-  torch::Tensor get_scalar_flux(int64_t gid) const
-  {
-    const auto& P = patches_.at(gid_to_local_.at(gid));
-    auto shape = P.disc->shape();
-    shape.push_back(num_groups_);
-    return P.moments[0].transpose(0, 1).reshape(shape).contiguous();
-  }
+  torch::Tensor get_scalar_flux(int64_t gid) const;
 
   /// @return The flux moments of a patch, shape (num_moments, G, N).
   const torch::Tensor& get_moments(int64_t gid) const
@@ -2686,51 +808,10 @@ public:
 
   /// @return The angular flux of a patch in the TT core order,
   /// (*angular_modes, *ctrlpts_grid, G).
-  torch::Tensor get_angular_flux(int64_t gid) const
-  {
-    const size_t local = gid_to_local_.at(gid);
-    const auto& P = patches_.at(local);
-    torch::Tensor psi = P.psi;
-    if (!psi.defined()) {
-      // A cross that kept its TT evaluates the patch's flux from it
-      const bool held =
-        !crosses_.empty() && std::all_of(crosses_.begin(), crosses_.end(),
-                               [](const auto& c) { return c->has_tt(); });
-      if (!held) {
-        throw utils::runtime_error(ctx("get_angular_flux"),
-          "The angular flux is only kept with store_angular_flux = true, or "
-          "from the TT with transport = CROSS and cross.keep_tt = true");
-      }
-      const int64_t N = P.disc->num_dofs();
-      const int64_t Nd = omega_.size(0);
-      psi = torch::empty({Nd, num_groups_, N}, torch::kFloat64);
-      std::vector<int64_t> dirs(Nd), space(N);
-      std::iota(dirs.begin(), dirs.end(), 0);
-      std::iota(space.begin(), space.end(), fiber_offsets_[local]);
-      for (size_t s = 0; s < crosses_.size(); s++) {
-        const auto& groups = group_indices_[s];
-        std::vector<int64_t> local_groups(groups.size());
-        std::iota(local_groups.begin(), local_groups.end(), 0);
-        auto values = crosses_[s]->evaluate(dirs, local_groups, space);
-        psi.index_copy_(1, torch::tensor(groups, torch::kInt64), values);
-      }
-    }
-    std::vector<int64_t> shape = angular_modes();
-    for (auto s : P.disc->shape())
-      shape.push_back(s);
-    shape.push_back(num_groups_);
-    return psi.permute({0, 2, 1}).reshape(shape).contiguous();
-  }
+  torch::Tensor get_angular_flux(int64_t gid) const;
 
   /// @return The factored angular mode sizes (TT core order).
-  std::vector<int64_t> angular_modes() const
-  {
-    if (NumDim == 1)
-      return {omega_.size(0)};
-    const auto& pq = static_cast<const math::ProductQuadrature&>(*qset_);
-    return {
-      pq.get_quads()[0]->get_num_dofs(), pq.get_quads()[1]->get_num_dofs()};
-  }
+  std::vector<int64_t> angular_modes() const;
 
   /// @brief Dense matrix of a patch's full local operator with reflective
   /// faces implicit and internal faces excluded -- the operator the TT
@@ -2738,77 +819,13 @@ public:
   /// ordering (direction, dofs, group) for rows and columns. For
   /// verification on small problems only.
   /// @return (N_Omega * N * G, N_Omega * N * G) dense matrix.
-  torch::Tensor assemble_dense_operator(int64_t gid) const
-  {
-    const auto& P = patches_.at(gid_to_local_.at(gid));
-    const auto& disc = *P.disc;
-    const int64_t D = omega_.size(0);
-    const int64_t N = disc.num_dofs();
-    const int64_t G = num_groups_;
-    auto A = torch::zeros({D, N, G, D, N, G}, torch::kFloat64);
-
-    // Streaming, collision and outflow (block diagonal in angle and group)
-    auto values = disc.streaming_values(omega_);
-    for (int64_t g = 0; g < G; g++) {
-      auto L = disc.to_dense(
-        values + P.sigma_t[g].template item<double>() * disc.mass_values());
-      for (int64_t d = 0; d < D; d++) {
-        A.index_put_(
-          {d, torch::indexing::Slice(), g, d, torch::indexing::Slice(), g},
-          L[d]);
-      }
-    }
-
-    // Scattering: K(d, d') w_d' sigma_l(g, g') M
-    auto M = disc.to_dense(disc.mass_values().unsqueeze(0))[0];
-    const int64_t L = P.scatter.defined() ? P.scatter.size(0) : 0;
-    for (int64_t m = 0; m < harmonics_.size(1); m++) {
-      int64_t l = moment_order_[m].template item<int64_t>();
-      if (l >= L)
-        continue;
-      auto K = torch::outer(
-        harmonics_.select(1, m), weighted_harmonics_.select(1, m)); // (D, D')
-      A -= torch::einsum("ab,vu,gh->avgbuh", {K, M, P.scatter[l]});
-    }
-
-    // Reflective inflow: rows d, columns reflected d*
-    for (size_t f = 0; f < P.links.size(); f++) {
-      const auto& link = P.links[f];
-      if (link.type != physics::BoundaryType::REFLECTIVE)
-        continue;
-      const auto& face = disc.faces()[f];
-      auto c = link.albedo * face.upwind_weights(
-                               omega_.index_select(0, link.reflected), true);
-      for (int64_t d = 0; d < D; d++) {
-        int64_t ds = link.reflected[d].template item<int64_t>();
-        auto B = torch::zeros({N, N}, torch::kFloat64);
-        auto vals = c[d].index({face.pair_q}) * face.pair_val;
-        B.index_put_(
-          {face.dofs.index({face.pair_a}), face.dofs.index({face.pair_b})},
-          vals, /*accumulate=*/true);
-        for (int64_t g = 0; g < G; g++) {
-          A.index(
-             {d, torch::indexing::Slice(), g, ds, torch::indexing::Slice(), g})
-            .sub_(B);
-        }
-      }
-    }
-    return A.reshape({D * N * G, D * N * G});
-  }
+  torch::Tensor assemble_dense_operator(int64_t gid) const;
 
   /// @brief Set a callback invoked after every `frequency`-th outer
   /// iteration of solve_fixed_source()/solve_eigenvalue() (as
   /// TransportDriver::set_callback()). Time spent in the callback is
   /// excluded from get_solve_seconds(). Pass an empty function to disable.
-  void set_callback(Callback callback, int64_t frequency = 1)
-  {
-    if (frequency < 1) {
-      throw utils::runtime_error(
-        ctx("set_callback"), "`frequency` must be at least 1");
-    }
-    callback_ = std::move(callback);
-    callback_frequency_ = frequency;
-  }
+  void set_callback(Callback callback, int64_t frequency = 1);
 
   // =================================================================
   // Public getters
@@ -2843,6 +860,13 @@ public:
   }
   /// @return Group-set sweeps of the last solve.
   int64_t get_group_set_sweeps() const noexcept { return group_set_sweeps_; }
+  /// @return SweepConfig::incremental_transport: y0 solves by increment and
+  /// by a full transport solve since the last solve started.
+  int64_t get_incremental_solves() const noexcept
+  {
+    return incremental_solves_;
+  }
+  int64_t get_full_solves() const noexcept { return full_solves_; }
   /// @return Full-sweep equivalents of the last solve (sum of |set| / G).
   double get_equivalent_sweeps() const noexcept { return equivalent_sweeps_; }
   /// @return Number of lagged face-trace blocks in the GMRES unknown.
@@ -2851,6 +875,22 @@ public:
     return static_cast<int64_t>(delayed_.size());
   }
   bool is_converged() const noexcept { return converged_; }
+  /// @return SweepConfig::certify: scalar-flux change (relative L2) of the
+  /// certifying exact transport solve, NaN without one.
+  double get_certification_error() const noexcept
+  {
+    return certification_error_;
+  }
+  /// @return SweepConfig::certify: change in k of the certifying solve
+  /// (k-eigenvalue only), NaN otherwise.
+  double get_certification_k_change() const noexcept
+  {
+    return certification_k_change_;
+  }
+  double get_certification_seconds() const noexcept
+  {
+    return certification_seconds_;
+  }
   /// @return Cumulative seconds spent inside sweep task bodies, summed over
   /// worker threads (compare with sweep wall time to see scheduler cost).
   double get_task_seconds() const noexcept
@@ -2868,52 +908,18 @@ public:
     task_nanoseconds_ = 0;
     dag_nanoseconds_ = 0;
   }
-  /// @return Bytes held by the factorization cache (0 if disabled).
   /// @return Bytes held (or, for GMRES, allocated during a solve) by the
   /// solver's large buffers on this rank: angular flux, face traces (current
   /// and previous), ghost traces, moments, factorization cache, and the
   /// GMRES basis of the largest group set ((restart + 4) Krylov vectors).
-  std::map<std::string, int64_t> memory_report() const
-  {
-    std::map<std::string, int64_t> bytes;
-    auto add = [&](const std::string& key, const torch::Tensor& t) {
-      if (t.defined())
-        bytes[key] += t.numel() * t.element_size();
-    };
-    for (const auto& P : patches_) {
-      add("angular_flux", P.psi);
-      for (const auto& t : P.trace_current)
-        add("traces", t);
-      for (const auto& t : P.trace_previous)
-        add("traces", t);
-      for (const auto& t : P.ghost_current)
-        add("ghost_traces", t);
-      for (const auto& t : P.ghost_previous)
-        add("ghost_traces", t);
-      for (const auto* t : {&P.moments, &P.moments_next, &P.source_moments,
-             &P.krylov_moments, &P.pass_moments, &P.fission_source})
-        add("moments", *t);
-      add("factorizations", P.factors);
-      add("factorizations", P.factor_pivots);
-    }
-    int64_t krylov = 0;
-    for (size_t s = 0; s < group_indices_.size(); s++)
-      krylov = std::max(krylov, krylov_size(s));
-    bytes["krylov_vector"] = krylov * 8;
-    bytes["gmres"] = config_.inner_solver == InnerSolver::GMRES
-                       ? (config_.gmres_restart + 4) * krylov * 8
-                       : 0;
-    return bytes;
-  }
+  std::map<std::string, int64_t> memory_report() const;
 
-  int64_t factorization_bytes() const noexcept
+  /// @return Bytes held by the factorization cache (0 if disabled).
+  int64_t factorization_bytes() const
   {
-    int64_t bytes = 0;
-    for (const auto& P : patches_) {
-      if (P.factors.defined())
-        bytes += P.factors.numel() * 8 + P.factor_pivots.numel() * 8;
-    }
-    return bytes;
+    const auto bytes = memory_report();
+    const auto it = bytes.find("factorizations");
+    return it == bytes.end() ? 0 : it->second;
   }
   /// @return Number of local units solved by the Kronecker-sum solver.
   int64_t num_kronecker_units() const noexcept
@@ -2923,28 +929,44 @@ public:
   }
   /// @return Local solves, GMRES operator applications and solves that fell
   /// back to LU of the ITERATIVE solver (all patches).
-  std::tuple<int64_t, int64_t, int64_t> iterative_statistics() const
-  {
-    int64_t solves = 0, applies = 0, failures = 0;
-    for (const auto& P : patches_)
-      if (P.iterative) {
-        solves += P.iterative->num_solves();
-        applies += P.iterative->num_iterations();
-        failures += P.iterative->num_failures();
-      }
-    return {solves, applies, failures};
-  }
+  std::tuple<int64_t, int64_t, int64_t> iterative_statistics() const;
   /// @return Chunk id of each local unit (in local order).
   const std::vector<int64_t>& get_chunks() const noexcept { return chunk_of_; }
   /// @return Tasks of one sweep over every group set.
-  int64_t num_tasks() const noexcept
-  {
-    int64_t n = 0;
-    for (const auto& dag : dags_)
-      n += static_cast<int64_t>(dag->size());
-    return n;
-  }
+  int64_t num_tasks() const noexcept;
   const typename Mesh::Ptr& get_mesh() const noexcept { return mesh_; }
+};
+
+/// @brief Typed front end of SweepSolver for an IGA mesh of dimension
+/// NumDim: the factory the bindings construct (one Python class per
+/// dimension).
+template<typename BlockType, int64_t NumDim>
+class SweepDriver : public SweepSolver {
+  static_assert(std::is_same_v<BlockType, cad::Patch>,
+    "SweepDriver sweeps IGA patches (cad::Patch)");
+  static_assert(NumDim >= 1 && NumDim <= 3, "NumDim must be 1, 2 or 3");
+
+public:
+  // =================================================================
+  // Public types
+  using Ptr = std::shared_ptr<SweepDriver>;
+
+  // =================================================================
+  // Public methods
+  template<typename... Args>
+  static Ptr create(Args&&... args)
+  {
+    return Ptr(new SweepDriver(std::forward<Args>(args)...));
+  }
+
+protected:
+  // =================================================================
+  // Protected constructors
+  SweepDriver(typename Mesh::Ptr mesh, xs::Server::Ptr xs_server,
+    const parallel::ParallelContext& mpi_context, bool serial = false)
+    : SweepSolver(
+        NumDim, std::move(mesh), std::move(xs_server), mpi_context, serial)
+  {}
 };
 
 } // namespace ttnte::sweep

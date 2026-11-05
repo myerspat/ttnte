@@ -1,17 +1,28 @@
 #include "ttnte/linalg/banded_lu.hpp"
+#include "ttnte/linalg/batched_lu.hpp"
 #include "ttnte/utils/exception.hpp"
 #include <algorithm>
 #include <cmath>
 
 namespace ttnte::linalg::banded {
 
+namespace {
+
+void check_bands(const char* where, int64_t kl, int64_t ku)
+{
+  if (kl < 0 || ku < 0)
+    throw utils::runtime_error(where, "kl and ku must be nonnegative");
+}
+
+} // namespace
+
 int64_t lu_factor(
   double* ab, int64_t ldab, int64_t n, int64_t kl, int64_t ku, int64_t* ipiv)
 {
   const int64_t kv = kl + ku;
   // A(i, j) accessor into the band storage
-  auto at = [ab, ldab, kv](int64_t i, int64_t j) -> double& {
-    return ab[(kv + i - j) + j * ldab];
+  auto at = [=](int64_t i, int64_t j) -> double& {
+    return ab[band_offset(i, j, kl, ku, ldab)];
   };
 
   // The fill-in rows of the first kv columns must start at zero
@@ -77,8 +88,8 @@ void lu_solve(const double* ab, int64_t ldab, int64_t n, int64_t kl, int64_t ku,
   const int64_t* ipiv, double* b)
 {
   const int64_t kv = kl + ku;
-  auto at = [ab, ldab, kv](int64_t i, int64_t j) -> double {
-    return ab[(kv + i - j) + j * ldab];
+  auto at = [=](int64_t i, int64_t j) -> double {
+    return ab[band_offset(i, j, kl, ku, ldab)];
   };
 
   // Forward substitution with L (unit lower, row interchanges applied)
@@ -112,49 +123,29 @@ void lu_solve(const double* ab, int64_t ldab, int64_t n, int64_t kl, int64_t ku,
 
 torch::Tensor batched_lu_factor_(torch::Tensor& ab, int64_t kl, int64_t ku)
 {
-  TORCH_CHECK(ab.dim() == 3 && ab.scalar_type() == torch::kFloat64 &&
-                ab.is_contiguous() && ab.device().is_cpu(),
-    "ttnte::linalg::banded::batched_lu_factor_: expected a contiguous CPU "
-    "float64 tensor of shape (batch, n, ldab)");
-  const int64_t batch = ab.size(0);
-  const int64_t n = ab.size(1);
-  const int64_t ldab = ab.size(2);
-  TORCH_CHECK(ldab >= factor_ldab(kl, ku),
-    "ttnte::linalg::banded::batched_lu_factor_: ldab must be >= 2kl+ku+1");
-
-  auto ipiv = torch::empty({batch, n}, torch::kInt64);
-  double* abp = ab.data_ptr<double>();
-  int64_t* pp = ipiv.data_ptr<int64_t>();
-  for (int64_t k = 0; k < batch; k++) {
-    int64_t info = lu_factor(abp + k * n * ldab, ldab, n, kl, ku, pp + k * n);
-    if (info != 0) {
-      throw utils::runtime_error("ttnte::linalg::banded::batched_lu_factor_",
-        "Matrix " + std::to_string(k) +
-          " of the batch is singular (zero "
-          "pivot at column " +
-          std::to_string(info - 1) + ")");
-    }
-  }
-  return ipiv;
+  check_bands("ttnte::linalg::banded::batched_lu_factor_", kl, ku);
+  const int64_t ldab = ab.dim() == 3 ? ab.size(2) : 0;
+  const int64_t n = ab.dim() == 3 ? ab.size(1) : 0;
+  return batched_factor("ttnte::linalg::banded::batched_lu_factor_", ab,
+    factor_ldab(kl, ku), [&](double* m, int64_t* piv) {
+      return lu_factor(m, ldab, n, kl, ku, piv);
+    });
 }
 
 void batched_lu_solve_(const torch::Tensor& ab, const torch::Tensor& ipiv,
   int64_t kl, int64_t ku, torch::Tensor& b)
 {
-  TORCH_CHECK(b.dim() == 2 && b.scalar_type() == torch::kFloat64 &&
-                b.is_contiguous() && b.size(0) == ab.size(0) &&
-                b.size(1) == ab.size(1),
-    "ttnte::linalg::banded::batched_lu_solve_: expected contiguous float64 "
-    "right-hand sides of shape (batch, n)");
-  const int64_t batch = ab.size(0);
-  const int64_t n = ab.size(1);
-  const int64_t ldab = ab.size(2);
-  const double* abp = ab.data_ptr<double>();
-  const int64_t* pp = ipiv.data_ptr<int64_t>();
-  double* bp = b.data_ptr<double>();
-  for (int64_t k = 0; k < batch; k++) {
-    lu_solve(abp + k * n * ldab, ldab, n, kl, ku, pp + k * n, bp + k * n);
+  check_bands("ttnte::linalg::banded::batched_lu_solve_", kl, ku);
+  if (ab.dim() == 3 && ab.size(2) < factor_ldab(kl, ku)) {
+    throw utils::runtime_error("ttnte::linalg::banded::batched_lu_solve_",
+      "ldab must be >= 2 kl + ku + 1");
   }
+  const int64_t ldab = ab.dim() == 3 ? ab.size(2) : 0;
+  const int64_t n = ab.dim() == 3 ? ab.size(1) : 0;
+  batched_solve("ttnte::linalg::banded::batched_lu_solve_", ab, ipiv, b,
+    [&](const double* m, const int64_t* piv, double* rhs) {
+      lu_solve(m, ldab, n, kl, ku, piv, rhs);
+    });
 }
 
 torch::Tensor dense_to_band(const torch::Tensor& a, int64_t kl, int64_t ku)
@@ -164,7 +155,6 @@ torch::Tensor dense_to_band(const torch::Tensor& a, int64_t kl, int64_t ku)
   const int64_t batch = dense.size(0);
   const int64_t n = dense.size(1);
   const int64_t ldab = factor_ldab(kl, ku);
-  const int64_t kv = kl + ku;
 
   auto ab = torch::zeros({batch, n, ldab}, torch::kFloat64);
   auto acc = dense.accessor<double, 3>();
@@ -173,24 +163,28 @@ torch::Tensor dense_to_band(const torch::Tensor& a, int64_t kl, int64_t ku)
     for (int64_t j = 0; j < n; j++) {
       for (int64_t i = std::max<int64_t>(0, j - ku);
         i <= std::min(n - 1, j + kl); i++) {
-        bcc[k][j][kv + i - j] = acc[k][i][j];
+        bcc[k][j][band_offset(i, j, kl, ku, ldab) - j * ldab] = acc[k][i][j];
       }
     }
   }
   return ab;
 }
 
+std::pair<int64_t, int64_t> bandwidth_from_pairs(
+  const torch::Tensor& rows, const torch::Tensor& cols)
+{
+  if (rows.numel() == 0)
+    return {0, 0};
+  auto diff = rows.to(torch::kInt64) - cols.to(torch::kInt64);
+  return {std::max<int64_t>(0, diff.max().item<int64_t>()),
+    std::max<int64_t>(0, (-diff).max().item<int64_t>())};
+}
+
 std::pair<int64_t, int64_t> bandwidth(const torch::Tensor& a)
 {
   auto pattern = (a.dim() == 3 ? a.abs().sum(0) : a.abs()) != 0;
   auto nz = pattern.nonzero();
-  if (nz.size(0) == 0) {
-    return {0, 0};
-  }
-  auto diff = nz.select(1, 0) - nz.select(1, 1);
-  int64_t kl = std::max<int64_t>(0, diff.max().item<int64_t>());
-  int64_t ku = std::max<int64_t>(0, (-diff).max().item<int64_t>());
-  return {kl, ku};
+  return bandwidth_from_pairs(nz.select(1, 0), nz.select(1, 1));
 }
 
 } // namespace ttnte::linalg::banded

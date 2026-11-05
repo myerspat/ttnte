@@ -4,6 +4,7 @@
 #include "ttnte/xs/material.hpp"
 #include <memory>
 #include <optional>
+#include <vector>
 
 namespace ttnte::xs {
 
@@ -24,6 +25,8 @@ private:
   int64_t num_moments_ = 0;
   MaterialIDs mat_ids_;
   MaterialMap mat_map_;
+  /// Group boundaries (G + 1, descending, positive; empty if not given).
+  std::vector<double> group_bounds_;
   bool is_finalized_ = false;
 
   // =================================================================
@@ -65,6 +68,21 @@ public:
   const Material& get_material(const Material::Label::ID& mat_id) const;
   const Material& get_material(const Material::Label& mat_label) const;
   int64_t get_num_materials() const noexcept { return mat_ids_.size(); }
+
+  /// @brief Set the energy group boundaries: G + 1 values, strictly
+  /// decreasing (group 0 fastest) and positive, so every lethargy width
+  /// ln(E_{g-1} / E_g) is finite and positive. An empty vector clears them.
+  /// @throws If the values are not of that form, or G + 1 does not match the
+  /// materials' number of groups.
+  void set_group_bounds(std::vector<double> bounds);
+  /// @return The group boundaries (empty if not given).
+  const std::vector<double>& get_group_bounds() const noexcept
+  {
+    return group_bounds_;
+  }
+  /// @return The lethargy width ln(E_{g-1} / E_g) of every group (empty if
+  /// the boundaries are not given).
+  std::vector<double> lethargy_widths() const;
 };
 
 } // namespace ttnte::xs

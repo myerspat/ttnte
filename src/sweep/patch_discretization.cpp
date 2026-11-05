@@ -27,19 +27,12 @@ DimData make_dim_data(const ttnte::cad::BSplineBasis& basis)
 
   // Gauss-Legendre with p + 1 points per knot span, exactly as
   // DGFirstOrderTransportBackend::init_spatial_quadrature_()
-  auto gl = ttnte::math::QuadratureSet1D::gauss_legendre(p + 1);
-  auto x = gl->get_points().to(opts);
-  auto w = gl->get_weights().to(opts);
-
-  auto knots = basis.get_unique_knots().to(opts);
-  auto starts = knots.slice(0, 0, -1);
-  auto widths = knots.diff();
+  auto [u, weights] =
+    ttnte::math::QuadratureSet1D::gauss_legendre(p + 1)->map_to_spans(
+      basis.get_unique_knots().to(opts));
 
   DimData d;
-  auto u =
-    ((x.unsqueeze(0) + 1.0) * widths.unsqueeze(1) / 2.0 + starts.unsqueeze(1))
-      .flatten();
-  d.weights = (widths.unsqueeze(1) * w.unsqueeze(0)).flatten();
+  d.weights = weights;
   auto spans = basis.find_spans(u);
   d.basis = basis.evaluate(u, spans, 1).to(opts);
   d.first = spans - p;
@@ -328,12 +321,8 @@ PatchDiscretization::PatchDiscretization(const cad::Patch& patch)
   // Band structure: the natural ordering's bandwidth is set by the
   // dimensions that vary fastest, so order the largest dimension slowest
   // when that narrows the band (banded LU costs about N kl (kl + ku))
-  auto bandwidth = [](const torch::Tensor& row, const torch::Tensor& col) {
-    auto diff = row - col;
-    return std::make_pair(std::max<int64_t>(0, diff.max().item<int64_t>()),
-      std::max<int64_t>(0, (-diff).max().item<int64_t>()));
-  };
-  std::tie(kl_, ku_) = bandwidth(pair_row_, pair_col_);
+  using linalg::banded::bandwidth_from_pairs;
+  std::tie(kl_, ku_) = bandwidth_from_pairs(pair_row_, pair_col_);
   auto band_row = pair_row_;
   auto band_col = pair_col_;
   std::vector<int64_t> order(ndim_);
@@ -350,7 +339,7 @@ PatchDiscretization::PatchDiscretization(const cad::Patch& patch)
     position.index_put_({band_order}, torch::arange(num_dofs_, torch::kInt64));
     auto row = position.index({pair_row_});
     auto col = position.index({pair_col_});
-    auto [kl, ku] = bandwidth(row, col);
+    auto [kl, ku] = bandwidth_from_pairs(row, col);
     if (kl * (kl + ku) < kl_ * (kl_ + ku_)) {
       kl_ = kl;
       ku_ = ku;
@@ -360,6 +349,7 @@ PatchDiscretization::PatchDiscretization(const cad::Patch& patch)
     }
   }
   const int64_t ldab = linalg::banded::factor_ldab(kl_, ku_);
+  // linalg::banded::band_offset() of every pair
   band_index_ = band_col * ldab + (kl_ + ku_ + band_row - band_col);
   dense_index_ = pair_row_ * num_dofs_ + pair_col_;
 

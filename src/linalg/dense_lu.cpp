@@ -1,4 +1,5 @@
 #include "ttnte/linalg/dense_lu.hpp"
+#include "ttnte/linalg/batched_lu.hpp"
 #include "ttnte/utils/exception.hpp"
 #include <cmath>
 #include <utility>
@@ -69,44 +70,27 @@ void lu_solve(const double* a, int64_t n, const int64_t* ipiv, double* b)
 
 torch::Tensor batched_lu_factor_(torch::Tensor& a)
 {
-  TORCH_CHECK(a.dim() == 3 && a.size(1) == a.size(2) &&
-                a.scalar_type() == torch::kFloat64 && a.is_contiguous() &&
-                a.device().is_cpu(),
-    "ttnte::linalg::dense::batched_lu_factor_: expected a contiguous CPU "
-    "float64 tensor of shape (batch, n, n)");
-  const int64_t batch = a.size(0);
-  const int64_t n = a.size(1);
-  auto ipiv = torch::empty({batch, n}, torch::kInt64);
-  double* ap = a.data_ptr<double>();
-  int64_t* pp = ipiv.data_ptr<int64_t>();
-  for (int64_t k = 0; k < batch; k++) {
-    int64_t info = lu_factor(ap + k * n * n, n, pp + k * n);
-    if (info != 0) {
-      throw utils::runtime_error("ttnte::linalg::dense::batched_lu_factor_",
-        "Matrix " + std::to_string(k) +
-          " of the batch is singular (zero pivot at column " +
-          std::to_string(info - 1) + ")");
-    }
+  if (a.dim() == 3 && a.size(1) != a.size(2)) {
+    throw utils::runtime_error(
+      "ttnte::linalg::dense::batched_lu_factor_", "Matrices must be square");
   }
-  return ipiv;
+  const int64_t n = a.dim() == 3 ? a.size(1) : 0;
+  return batched_factor("ttnte::linalg::dense::batched_lu_factor_", a, n,
+    [n](double* m, int64_t* piv) { return lu_factor(m, n, piv); });
 }
 
 void batched_lu_solve_(
   const torch::Tensor& a, const torch::Tensor& ipiv, torch::Tensor& b)
 {
-  TORCH_CHECK(b.dim() == 2 && b.scalar_type() == torch::kFloat64 &&
-                b.is_contiguous() && b.size(0) == a.size(0) &&
-                b.size(1) == a.size(1),
-    "ttnte::linalg::dense::batched_lu_solve_: expected contiguous float64 "
-    "right-hand sides of shape (batch, n)");
-  const int64_t batch = a.size(0);
-  const int64_t n = a.size(1);
-  const double* ap = a.data_ptr<double>();
-  const int64_t* pp = ipiv.data_ptr<int64_t>();
-  double* bp = b.data_ptr<double>();
-  for (int64_t k = 0; k < batch; k++) {
-    lu_solve(ap + k * n * n, n, pp + k * n, bp + k * n);
+  if (a.dim() == 3 && a.size(1) != a.size(2)) {
+    throw utils::runtime_error(
+      "ttnte::linalg::dense::batched_lu_solve_", "Matrices must be square");
   }
+  const int64_t n = a.dim() == 3 ? a.size(1) : 0;
+  batched_solve("ttnte::linalg::dense::batched_lu_solve_", a, ipiv, b,
+    [n](const double* m, const int64_t* piv, double* rhs) {
+      lu_solve(m, n, piv, rhs);
+    });
 }
 
 } // namespace ttnte::linalg::dense

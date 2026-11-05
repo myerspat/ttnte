@@ -53,7 +53,7 @@ def test_fixed_source_matches_exact(num_dim, reflective):
     cross = _solve(num_dim, reflective, TransportSolve.CROSS)
     assert _rel(_scalar_flux(cross), _scalar_flux(exact)) < 10 * TOL
     assert len(cross.cross_fibers) > 0
-    assert max(cross.cross_tolerances) <= CrossConfig().max_tol
+    assert max(cross.cross_tolerances) <= SweepConfig().cross_max_tol
 
 
 @pytest.mark.mpi(min_size=1)
@@ -126,7 +126,7 @@ def test_layouts_and_richardson(layout):
 @pytest.mark.mpi(min_size=1)
 @pytest.mark.parametrize("num_dim", [2, 3])
 def test_patch_tts_match_angular_flux(num_dim):
-    """keep_tt: each patch's TT in a split, reordered layout reproduces the
+    """keep_angular_flux: each patch's TT in a split, reordered layout reproduces the
     exact angular flux of that patch."""
     layout = {
         2: "polar|azimuthal|y|x|energy",
@@ -139,7 +139,7 @@ def test_patch_tts_match_angular_flux(num_dim):
         TransportSolve.CROSS,
         # Energy first: the angle bond grows from the initial directions by
         # one-site residual growth, which needs more sweeps
-        cross=CrossConfig(layout=layout, keep_tt=True, max_sweeps=40),
+        cross=CrossConfig(layout=layout, keep_angular_flux=True, max_sweeps=40),
     )
     order = layout.replace("|", ",").split(",")
     for gid in cross.local_gids:
@@ -162,7 +162,7 @@ def test_store_angular_flux_and_release():
     cross = _solve(2, True, TransportSolve.CROSS, store_angular_flux=True)
     for gid in exact.local_gids:
         assert _rel(cross.get_angular_flux(gid), exact.get_angular_flux(gid)) < 1e-4
-    # keep_tt is off: the TT is released after the solve
+    # keep_angular_flux is off: the TT is released after the solve
     with pytest.raises(RuntimeError):
         cross.get_patch_angular_flux_tt(cross.local_gids[0])
 
@@ -170,7 +170,9 @@ def test_store_angular_flux_and_release():
 @pytest.mark.mpi(min_size=1)
 def test_angular_flux_from_kept_tt_and_histories():
     exact = _solve(2, True, TransportSolve.EXACT, store_angular_flux=True)
-    cross = _solve(2, True, TransportSolve.CROSS, cross=CrossConfig(keep_tt=True))
+    cross = _solve(
+        2, True, TransportSolve.CROSS, cross=CrossConfig(keep_angular_flux=True)
+    )
     for gid in exact.local_gids:
         assert _rel(cross.get_angular_flux(gid), exact.get_angular_flux(gid)) < 1e-4
     solution = cross.angular_solution()

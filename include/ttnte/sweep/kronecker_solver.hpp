@@ -36,6 +36,8 @@ private:
   // Private data
   int64_t ndim_ = 0;
   std::vector<int64_t> n_;
+  /// Row-major strides of the flat dof index over n_.
+  std::vector<int64_t> stride_;
   int64_t num_dofs_ = 0;
   /// Per dimension and sign (0: Omega_i >= 0, 1: Omega_i < 0), row-major
   /// (n_i, n_i): P = U^* F^{-1}, U and the upper triangular R.
@@ -44,7 +46,7 @@ private:
   std::array<std::array<std::vector<cplx>, 2>, 3> R_;
 
   // =================================================================
-  // Protected constructors
+  // Private constructors (see the static factories)
   KroneckerSolver() = default;
 
   /// @brief out = B applied along dimension `dim` of a C-order tensor.
@@ -56,6 +58,9 @@ public:
   // Public methods
   /// @return The solver, or nullptr if the patch operator is not a
   /// Kronecker sum to relative accuracy `tol` (curved or skewed patches).
+  /// Only unit directions are checked: L is linear in |Omega_i| for a fixed
+  /// sign pattern on axis-aligned faces, and any other geometry fails the
+  /// Kronecker check itself.
   static Ptr try_create(const PatchDiscretization& disc, double tol = 1e-10);
 
   /// @brief The solver of L = sigma (F_1 x ... x F_d) + sum_i A_i(Omega_i)
@@ -81,7 +86,9 @@ public:
   /// @param omega (ndim) direction.
   /// @param sigma Total cross section.
   /// @param b (N) right-hand side, overwritten with x.
-  void solve(
+  /// @return true: a direct solve always succeeds (the same contract as
+  /// IterativeSolver::solve(), whose false sends the caller to LU).
+  bool solve(
     const double* omega, double sigma, double* b, Workspace& work) const;
 
   // =================================================================

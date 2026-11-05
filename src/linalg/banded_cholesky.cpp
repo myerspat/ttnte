@@ -1,4 +1,5 @@
 #include "ttnte/linalg/banded_cholesky.hpp"
+#include "ttnte/linalg/banded_lu.hpp"
 #include "ttnte/utils/exception.hpp"
 #include <algorithm>
 #include <cmath>
@@ -67,9 +68,13 @@ std::pair<torch::Tensor, int64_t> symmetric_band_from_pairs(
   const int64_t* rp = r.data_ptr<int64_t>();
   const int64_t* cp = c.data_ptr<int64_t>();
   const double* vp = v.data_ptr<double>();
-  int64_t kd = 0;
-  for (int64_t p = 0; p < P; p++)
-    kd = std::max(kd, rp[p] - cp[p]);
+  for (int64_t p = 0; p < P; p++) {
+    if (rp[p] < 0 || rp[p] >= n || cp[p] < 0 || cp[p] >= n)
+      throw utils::runtime_error(
+        "ttnte::linalg::banded::symmetric_band_from_pairs",
+        "A pair index is out of range");
+  }
+  const int64_t kd = bandwidth_from_pairs(r, c).first;
   auto ab = torch::zeros({n, kd + 1}, torch::kFloat64);
   double* a = ab.data_ptr<double>();
   for (int64_t p = 0; p < P; p++) {

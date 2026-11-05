@@ -1,4 +1,5 @@
 #include "ttnte/linalg/krylov.hpp"
+#include "ttnte/utils/exception.hpp"
 #include <torch/extension.h>
 
 namespace py = pybind11;
@@ -12,8 +13,14 @@ void register_krylov(py::module_& m)
     [](const torch::Tensor& A, const torch::Tensor& b,
       std::optional<torch::Tensor> x0, int64_t restart, double tol,
       int64_t max_applies) {
+      const char* where = "ttnte::linalg::krylov::dense_gmres";
+      if (A.dim() != 2 || A.size(0) != A.size(1))
+        throw ttnte::utils::runtime_error(where, "A must be square");
+      const int64_t n = A.size(0);
+      if (b.numel() != n || (x0.has_value() && x0->numel() != n))
+        throw ttnte::utils::runtime_error(
+          where, "b and x0 must have one entry per row of A");
       auto Ad = A.to(torch::kFloat64).contiguous();
-      const int64_t n = Ad.size(0);
       const double* a = Ad.data_ptr<double>();
       auto bd = b.to(torch::kFloat64).contiguous();
       std::vector<double> rhs(bd.data_ptr<double>(), bd.data_ptr<double>() + n);

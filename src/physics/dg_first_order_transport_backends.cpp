@@ -502,7 +502,6 @@ typename Return<Fmt, NumDim>::Type DGFirstOrderTransportBackend<cad::Patch, Fmt,
       // only case elsewhere in this file, would need every m instead --
       // this parity restriction is specific to the folded convention
       // here.)
-      const double l_f = l;
       const int64_t m_start = l % 2;
       const int64_t num_m = (l - m_start) / 2 + 1; // surviving m count
       const int32_t num_terms = static_cast<int32_t>(
@@ -523,16 +522,10 @@ typename Return<Fmt, NumDim>::Type DGFirstOrderTransportBackend<cad::Patch, Fmt,
         // gamma'))): squaring this per-column scale in the outer product
         // below must recover that 2x once, not once per column, so the
         // shared per-column prefactor is sqrt(2), not 2.
-        double log_front = std::log(two * l_f + one);
-        double log_factor =
-          std::lgamma(l_f - m_f + one) - std::lgamma(l_f + m_f + one);
-        double scale =
-          (m != 0 ? std::sqrt(two) : one) *
-          std::exp(static_cast<double>(0.5) * (log_front + log_factor));
-
         // Compute associated Legendre polynomials and the normalization
-        // factor
-        auto plm = scale * math::special::assoc_legendre(l, m, mu, false);
+        // factor (shared with the sweeper's moments)
+        auto plm = math::special::real_harmonic_scale(l, m) *
+                   math::special::assoc_legendre(l, m, mu, false);
         auto plm_outer = torch::outer(plm, plm);
 
         // Cosine column (always present for a surviving m)
@@ -822,16 +815,11 @@ typename Return<Fmt, NumDim>::Type DGFirstOrderTransportBackend<cad::Patch, Fmt,
       const auto& b = block_->get_basis()[i];
       const auto& quad = spatial_qset_->get_quads()[i];
 
-      // Get the unique knots in the knot vector
-      torch::Tensor unique_knots = b.get_unique_knots().to(options);
-
-      // Compute derivatives of affine mapping
-      // Note not dividing by 2 because that cancels out with the weight of the
-      // quadrature
+      // Quadrature weights in parametric space (span width times the rule's
+      // weights: the affine map's 1/2 cancels against them)
       torch::Tensor jac_1d =
-        (unique_knots.diff().unsqueeze(1) * quad->get_weights().unsqueeze(0))
-          .flatten()
-          .reshape({1, -1, 1, 1});
+        quad->map_to_spans(b.get_unique_knots().to(options))
+          .second.reshape({1, -1, 1, 1});
 
       // Apply rank-one Hadamard product
       mapping[i].mul_(jac_1d);
@@ -1786,16 +1774,11 @@ DGFirstOrderTransportBackend<cad::Patch, Fmt,
       const auto& b = boundary_block->get_basis()[i];
       const auto& quad = backend.get_spatial_qset()->get_quads()[i];
 
-      // Get the unique knots in the knot vector
-      torch::Tensor unique_knots = b.get_unique_knots().to(options);
-
-      // Compute derivatives of affine mapping
-      // Note not dividing by 2 because that cancels out with the weight of the
-      // quadrature
-      torch::Tensor jac_1d = (unique_knots.diff().unsqueeze(1) *
-                              quad->get_weights().to(options).unsqueeze(0))
-                               .flatten()
-                               .reshape({1, -1, 1, 1});
+      // Quadrature weights in parametric space (span width times the rule's
+      // weights: the affine map's 1/2 cancels against them)
+      torch::Tensor jac_1d =
+        quad->map_to_spans(b.get_unique_knots().to(options))
+          .second.reshape({1, -1, 1, 1});
 
       // Compute rank-one mapping
       mapping.push_back(jac_1d);
@@ -1898,9 +1881,8 @@ DGFirstOrderTransportBackend<cad::Patch, Fmt,
     const auto condition = block_->get_boundary_info(dim, is_upper).get_type();
     auto B_out = assemble_outflow_boundary_operator(basis, normal, mapping);
     std::optional<linalg::TTEngine> B_in;
-    const auto shared = condition == BoundaryType::INTERNAL
-                          ? nonconforming_quadrature(dim, is_upper)
-                          : std::nullopt;
+    // nullopt unless the face is a non-conforming internal interface
+    const auto shared = nonconforming_quadrature(dim, is_upper);
     if (shared) {
       auto trial = neighbor_trial_basis(dim, is_upper, *shared);
       B_in = project_boundary_mask(
@@ -2339,17 +2321,12 @@ DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim>::nonconforming_quadrature(
       own.push_back(b);
     for (const auto& b : conn.neighbor_face->get_basis())
       neighbor.push_back(b);
-    std::vector<int64_t> second_dim;
-    std::vector<bool> flip;
-    size_t k = 0;
-    for (int64_t d = 0; d < NumDim; d++) {
-      if (d == static_cast<int64_t>(dim))
-        continue;
-      const int64_t db = conn.mapping.perm[d];
-      second_dim.push_back(db - (db > static_cast<int64_t>(conn.dim) ? 1 : 0));
-      flip.push_back(conn.mapping.flip[k++]);
-    }
-    return cad::interface_quadrature(own, neighbor, second_dim, flip);
+    auto [second_dim, flip] = cad::tangential_mapping(NumDim,
+      static_cast<int64_t>(dim), static_cast<int64_t>(conn.dim), conn.mapping);
+    auto iq = cad::interface_quadrature(own, neighbor, second_dim, flip);
+    cad::check_shared_parametrization(
+      *block_->get_boundary(dim, is_upper), *conn.neighbor_face, iq);
+    return iq;
   }
   return std::nullopt;
 }
@@ -2377,22 +2354,11 @@ DGFirstOrderTransportBackend<cad::Patch, Fmt, NumDim>::neighbor_trial_basis(
     auto cores = neighbor.assemble_basis().get_cores();
 
     // Into this face's order: swap the two cores of a 2-D face whose
-    // parameters are transposed (exact SVD of the merged pair)
+    // parameters are transposed (SVD of the merged pair, to round-off)
     if (K == 2 && iq.second_dim[0] == 1) {
-      const auto& a = cores[0];
-      const auto& b = cores[1];
-      auto merged = torch::einsum("aqnb,bpmc->apmqnc", {a, b});
-      const int64_t r0 = a.size(0), r2 = b.size(3);
-      auto [U, S, Vh] = torch::linalg_svd(
-        merged.reshape({r0 * b.size(1) * b.size(2), -1}), false);
-      const double cut = S[0].template item<double>() * 1e-14;
-      const int64_t r =
-        std::max<int64_t>(1, (S > cut).sum().template item<int64_t>());
-      auto first = (U.narrow(1, 0, r) * S.narrow(0, 0, r))
-                     .reshape({r0, b.size(1), b.size(2), r});
-      auto second = Vh.narrow(0, 0, r).reshape({r, a.size(1), a.size(2), r2});
-      cores[0] = first.contiguous();
-      cores[1] = second.contiguous();
+      auto swapped = linalg::TTEngine(cores, false).permute_({1, 0}, 1e-14);
+      for (int64_t k = 0; k < K; k++)
+        cores[k] = swapped[k].contiguous();
     }
 
     // Reversed parameters: the mapped neighbor state is flipped there too

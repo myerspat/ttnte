@@ -78,9 +78,11 @@ struct UnitSweep {
   /// (dense). nullptr disables caching.
   double* factors = nullptr;
   int64_t* factor_pivots = nullptr;
-  /// Whether `factors` already holds this unit's factors (otherwise they
-  /// are computed and stored).
-  bool factors_ready = false;
+  /// With `factors`: (N_Omega, G) flags, whether the cache holds that
+  /// pair's factors; set here when a pair is factored into the cache.
+  /// Concurrent sweeps of one unit cover distinct pairs, so flags and slots
+  /// are never shared.
+  uint8_t* factor_ready = nullptr;
 };
 
 /// @brief The directions, groups and angular data of one sweep task.
@@ -163,7 +165,9 @@ void transfer_source(const KernelView& view, const double* transfer,
 /// @return Total production sum_{g,v} (T phi_0)_{g,v} of an order-0
 /// transfer (the fission production of one unit; k for a unit-normalized
 /// fission source).
+/// @param source_mask Optional (G): count only the source groups set in it.
 double transfer_total(const KernelView& view, const double* transfer,
-  int64_t num_groups, const double* scalar_flux, const double* basis_integral);
+  int64_t num_groups, const double* scalar_flux, const double* basis_integral,
+  const uint8_t* source_mask = nullptr);
 
 } // namespace ttnte::sweep

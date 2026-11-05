@@ -17,7 +17,8 @@ static void register_SweepDriver_impl(
   std::string class_name =
     typestr + "SweepDriver" + std::to_string(NumDim) + "D";
 
-  py::class_<SweepDriver, typename SweepDriver::Ptr>(m, class_name.c_str())
+  py::class_<SweepDriver, ttnte::sweep::SweepSolver, typename SweepDriver::Ptr>(
+    m, class_name.c_str())
     // =================================================================
     // Public constructors
     .def(py::init(
@@ -83,13 +84,16 @@ static void register_SweepDriver_impl(
       "The LayoutCross of a group set (transport = CROSS)")
     .def("get_patch_angular_flux_tt", &SweepDriver::get_patch_angular_flux_tt,
       py::arg("gid"), py::arg("group_set") = 0,
-      "Cores of a patch's angular flux TT (cross.keep_tt) in the configured "
+      "Cores of a patch's angular flux TT (cross.keep_angular_flux) in the "
+      "configured "
       "layout")
     .def_property_readonly(
       "cross_tolerances", &SweepDriver::get_cross_tolerances)
     .def_property_readonly("cross_fibers", &SweepDriver::get_cross_fibers)
     .def_property_readonly("cross_max_ranks", &SweepDriver::get_cross_max_ranks)
-    .def_property_readonly("cross_errors", &SweepDriver::get_cross_errors)
+    .def_property_readonly("cross_errors", &SweepDriver::get_cross_errors,
+      "Per transport solve, the error the cross's last check was accepted or "
+      "rejected on (LayoutCross.holdout_error)")
     .def_property_readonly("cross_ranks", &SweepDriver::get_cross_ranks,
       "TT ranks of every transport solve")
     .def_property_readonly(
@@ -102,7 +106,10 @@ static void register_SweepDriver_impl(
             sweeps.append(
               py::dict(py::arg("phase") = h.forward ? "forward" : "backward",
                 py::arg("ranks") = h.ranks, py::arg("fibers") = h.fibers,
-                py::arg("holdout_error") = h.holdout_error));
+                py::arg("holdout_error") = h.holdout_error,
+                py::arg("holdout_rms") = h.holdout_rms,
+                py::arg("swept_rms") = h.swept_rms,
+                py::arg("global_error") = h.global_error));
           out.append(sweeps);
         }
         return out;
@@ -111,7 +118,8 @@ static void register_SweepDriver_impl(
       "swept so far, hold-out error (backward only)")
     .def("angular_solution", &SweepDriver::angular_solution,
       "The solution with angular dependence: the stored angular flux, or with "
-      "transport = CROSS and cross.keep_tt the TT of the last transport solve")
+      "transport = CROSS and cross.keep_angular_flux the TT of the last "
+      "transport solve")
     .def_property_readonly("cross_seconds", &SweepDriver::get_cross_seconds)
     .def_property_readonly("cross_timings", &SweepDriver::get_cross_timings)
     .def_property_readonly("solve_timings", &SweepDriver::get_solve_timings,
@@ -120,7 +128,8 @@ static void register_SweepDriver_impl(
     .def_property_readonly(
       "cross_sweep_seconds", &SweepDriver::get_cross_sweep_seconds)
     .def("solve_fixed_source", &SweepDriver::solve_fixed_source,
-      "Solve a fixed-source problem with unaccelerated source iteration. "
+      "Solve a fixed-source problem with the configured within-group-set "
+      "solver (GMRES by default) and group-set iteration. "
       "Returns a TransportSolution holding the angular flux "
       "(store_angular_flux=True) or the scalar flux.",
       py::call_guard<py::gil_scoped_release>())
@@ -143,9 +152,11 @@ static void register_SweepDriver_impl(
           return;
         }
         self.set_callback(
-          [callback = std::move(*callback)](const SweepDriver& driver) {
+          [callback = std::move(*callback)](
+            const ttnte::sweep::SweepSolver& driver) {
             py::gil_scoped_acquire acquire;
-            callback(driver);
+            // The solver is this driver (its typed front end is registered)
+            callback(static_cast<const SweepDriver&>(driver));
           },
           frequency);
       },
@@ -186,12 +197,27 @@ static void register_SweepDriver_impl(
       "Group-set sweeps of each outer iteration of the last solve.")
     .def_property_readonly(
       "group_set_sweeps", &SweepDriver::get_group_set_sweeps)
+    .def_property_readonly("incremental_solves",
+      &SweepDriver::get_incremental_solves,
+      "Correction-form y0 solves done by increment (incremental_transport).")
+    .def_property_readonly("full_solves", &SweepDriver::get_full_solves,
+      "Correction-form y0 solves done by a full transport solve "
+      "(incremental_transport).")
     .def_property_readonly("equivalent_sweeps",
       &SweepDriver::get_equivalent_sweeps,
       "Full-sweep equivalents of the last solve (sum of |set| / G).")
     .def_property_readonly(
       "num_delayed_blocks", &SweepDriver::num_delayed_blocks)
     .def_property_readonly("converged", &SweepDriver::is_converged)
+    .def_property_readonly("certification_error",
+      &SweepDriver::get_certification_error,
+      "SweepConfig.certify: scalar-flux change (relative L2) of the exact "
+      "transport solve after the outer iteration; NaN without one.")
+    .def_property_readonly("certification_k_change",
+      &SweepDriver::get_certification_k_change,
+      "SweepConfig.certify: change in k of that solve (eigenvalue only).")
+    .def_property_readonly(
+      "certification_seconds", &SweepDriver::get_certification_seconds)
     .def_property_readonly("num_tasks", &SweepDriver::num_tasks)
     .def_property_readonly("chunks", &SweepDriver::get_chunks)
     .def("memory_report", &SweepDriver::memory_report,
@@ -209,6 +235,11 @@ static void register_SweepDriver_impl(
 
 void register_SweepDriver(py::module_& m)
 {
+  // The dimension-independent core: the base of every IGASweepDriver*D, so
+  // its methods bind once for all of them (not constructible from Python)
+  py::class_<ttnte::sweep::SweepSolver, ttnte::sweep::SweepSolver::Ptr>(
+    m, "SweepSolver");
+
   register_SweepDriver_impl<ttnte::cad::Patch, 1>(m, "IGA");
   register_SweepDriver_impl<ttnte::cad::Patch, 2>(m, "IGA");
   register_SweepDriver_impl<ttnte::cad::Patch, 3>(m, "IGA");

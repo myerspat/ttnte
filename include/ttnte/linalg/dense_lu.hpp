@@ -18,7 +18,8 @@ namespace ttnte::linalg::dense {
 /// diagonal) and U.
 /// @param n Matrix order.
 /// @param ipiv Output pivot rows (0-based), length n.
-/// @return 0 on success, or j + 1 if U(j, j) is exactly zero.
+/// @return 0 on success, or j + 1 if U(j, j) is exactly zero. Nearly
+/// singular matrices pass: the transport blocks are diagonally dominant.
 int64_t lu_factor(double* a, int64_t n, int64_t* ipiv);
 
 /// @brief Solve A x = b with a matrix factored by lu_factor(). `b` is

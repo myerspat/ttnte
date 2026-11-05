@@ -87,6 +87,38 @@ torch::Tensor direction_sketch(int64_t direction, int64_t k, int64_t n)
   return at::randn({k, n}, gen, torch::kFloat64);
 }
 
+namespace {
+
+/// Scores at or below this are no improvement (squared, relative).
+constexpr double NO_GAIN = 1e-28;
+
+/// @brief Among the unpicked candidates scoring within `near` of the best,
+/// the cheapest, then the best scoring.
+/// @return The pick, or -1 if no unpicked candidate gains anything.
+int64_t pick_near(const std::vector<double>& score,
+  const std::vector<double>& cost, const std::vector<uint8_t>& picked,
+  double near)
+{
+  const int64_t n = static_cast<int64_t>(score.size());
+  double best = -1.0;
+  for (int64_t u = 0; u < n; u++)
+    if (!picked[u])
+      best = std::max(best, score[u]);
+  if (best <= NO_GAIN)
+    return -1;
+  int64_t pick = -1;
+  for (int64_t u = 0; u < n; u++) {
+    if (picked[u] || score[u] < near * best)
+      continue;
+    if (pick < 0 || cost[u] < cost[pick] ||
+        (cost[u] == cost[pick] && score[u] > score[pick]))
+      pick = u;
+  }
+  return pick;
+}
+
+} // namespace
+
 void select_block_grams(const torch::Tensor& grams,
   const std::vector<int64_t>& sizes, const std::vector<double>& cost,
   std::vector<uint8_t>& picked, double cond, double near)
@@ -139,23 +171,9 @@ void select_block_grams(const torch::Tensor& grams,
       for (int64_t u = 0; u < nk; u++)
         score[u] = trace[u] / total;
     }
-    double best = -1.0;
-    for (int64_t u = 0; u < nk; u++) {
-      if (picked[u])
-        score[u] = -1.0;
-      best = std::max(best, score[u]);
-    }
-    if (best <= 1e-28)
+    const int64_t pick = pick_near(score, cost, picked, near);
+    if (pick < 0)
       break;
-    // Among blocks within `near` of the best, the cheapest, then the best
-    int64_t pick = -1;
-    for (int64_t u = 0; u < nk; u++) {
-      if (score[u] < near * best)
-        continue;
-      if (pick < 0 || cost[u] < cost[pick] ||
-          (cost[u] == cost[pick] && score[u] > score[pick]))
-        pick = u;
-    }
     picked[pick] = 1;
     num_rows += sizes[pick];
     gram += grams[pick];
@@ -180,11 +198,15 @@ void select_single_rows(const torch::Tensor& rows,
     total += x;
   total = std::max(total, 1e-300);
   auto Q = torch::empty({r, r}, torch::kFloat64);
+  // Gram of the chosen rows, for the stopping test and, once Q is full, the
+  // scores
+  auto gram = torch::zeros({r, r}, torch::kFloat64);
   int64_t q = 0, num_rows = 0;
 
   // Extend the basis by row i (twice orthogonalized) and update residuals
   auto add = [&](int64_t i) {
     num_rows++;
+    gram.addr_(B[i], B[i]);
     if (q >= r)
       return;
     auto v = B[i].clone();
@@ -207,76 +229,38 @@ void select_single_rows(const torch::Tensor& rows,
     if (picked[i])
       add(i);
 
+  std::vector<double> score(m);
   while (true) {
+    bool scored = false;
     if (num_rows >= r) {
-      std::vector<int64_t> chosen;
-      for (int64_t i = 0; i < m; i++)
-        if (picked[i])
-          chosen.push_back(i);
-      auto Bc = B.index_select(0, torch::tensor(chosen, torch::kInt64));
-      auto ev = torch::linalg_eigvalsh(Bc.t().mm(Bc)).clamp_min(0.0).sqrt();
-      if (ev[0].item<double>() >= cond * ev[r - 1].item<double>())
+      auto [ev, Z] = torch::linalg_eigh(gram); // ascending
+      auto sv = ev.clamp_min(0.0).sqrt();
+      const double smax = sv[r - 1].item<double>();
+      if (sv[0].item<double>() >= cond * smax)
         break;
+      if (q >= r) {
+        // The chosen rows span everything, so every Gram-Schmidt residual is
+        // zero up to round-off and cannot rank the rows. Score instead, as
+        // select_block_grams() does, by each row's energy in the poorly
+        // resolved directions (sigma_j <= cond sigma_max): the rows that
+        // can raise sigma_min
+        auto Zp = Z.index_select(1, (sv <= cond * smax).nonzero().flatten());
+        auto e = B.mm(Zp).square().sum(1).contiguous();
+        const double* ep = e.data_ptr<double>();
+        for (int64_t i = 0; i < m; i++)
+          score[i] = ep[i] / total;
+        scored = true;
+      }
     }
-    double best = -1.0;
-    for (int64_t i = 0; i < m; i++)
-      if (!picked[i])
-        best = std::max(best, resid[i] / total);
-    if (best <= 1e-28)
+    if (!scored)
+      for (int64_t i = 0; i < m; i++)
+        score[i] = resid[i] / total;
+    const int64_t pick = pick_near(score, cost, picked, near);
+    if (pick < 0)
       break;
-    // Among rows within `near` of the best, the cheapest, then the best
-    int64_t pick = -1;
-    for (int64_t i = 0; i < m; i++) {
-      if (picked[i] || resid[i] / total < near * best)
-        continue;
-      if (pick < 0 || cost[i] < cost[pick] ||
-          (cost[i] == cost[pick] && resid[i] > resid[pick]))
-        pick = i;
-    }
     picked[pick] = 1;
     add(pick);
   }
-}
-
-std::vector<int64_t> select_blocks(const torch::Tensor& B,
-  const std::vector<int64_t>& keys, const std::function<double(int64_t)>& cost,
-  const std::vector<int64_t>& start, double cond, double near)
-{
-  const int64_t m = B.size(0);
-  std::vector<int64_t> ukeys(keys.begin(), keys.end());
-  std::sort(ukeys.begin(), ukeys.end());
-  ukeys.erase(std::unique(ukeys.begin(), ukeys.end()), ukeys.end());
-  const int64_t nk = static_cast<int64_t>(ukeys.size());
-  std::vector<int64_t> inv(m);
-  std::vector<std::vector<int64_t>> members(nk);
-  for (int64_t i = 0; i < m; i++) {
-    inv[i] =
-      std::lower_bound(ukeys.begin(), ukeys.end(), keys[i]) - ukeys.begin();
-    members[inv[i]].push_back(i);
-  }
-  auto Bd = B.to(torch::kFloat64).contiguous();
-  const int64_t r = Bd.size(1);
-  auto grams = torch::empty({nk, r, r}, torch::kFloat64);
-  std::vector<int64_t> sizes(nk);
-  std::vector<double> kcost(nk);
-  for (int64_t u = 0; u < nk; u++) {
-    auto Bu = Bd.index_select(0, torch::tensor(members[u], torch::kInt64));
-    grams[u].copy_(Bu.t().mm(Bu));
-    sizes[u] = static_cast<int64_t>(members[u].size());
-    kcost[u] = cost(ukeys[u]);
-  }
-  std::vector<uint8_t> picked(nk, 0);
-  for (int64_t key : start) {
-    auto it = std::lower_bound(ukeys.begin(), ukeys.end(), key);
-    if (it != ukeys.end() && *it == key)
-      picked[it - ukeys.begin()] = 1;
-  }
-  select_block_grams(grams, sizes, kcost, picked, cond, near);
-  std::vector<int64_t> out;
-  for (int64_t i = 0; i < m; i++)
-    if (picked[inv[i]])
-      out.push_back(i);
-  return out;
 }
 
 } // namespace ttnte::cross
