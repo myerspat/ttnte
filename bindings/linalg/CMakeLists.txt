@@ -38,6 +38,7 @@ set(LINALG_BINDINGS_REL
     linear_system.cpp
     matrix_ops.cpp
     banded_lu.cpp
+    banded_cholesky.cpp
     dense_lu.cpp
     schur.cpp
     krylov.cpp

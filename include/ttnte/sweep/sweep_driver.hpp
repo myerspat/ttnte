@@ -159,6 +159,8 @@ private:
     torch::Tensor psi;
     /// Kronecker-sum solver (SYLVESTER on an affine patch), or null.
     KroneckerSolver::Ptr kronecker;
+    /// Partially separable solver (SYLVESTER on an extruded patch), or null.
+    ExtrudedSolver::Ptr extruded;
     /// Matrix-free iterative solver (ITERATIVE on a curved patch), or null.
     IterativeSolver::Ptr iterative;
     /// Factorization cache (see SweepConfig::cache_factorizations).
@@ -435,6 +437,14 @@ private:
     return work;
   }
 
+  /// @brief One sweep task: sweep the units of chunk `c` (in upwind order)
+  /// for the directions of a direction block at the groups of a group set,
+  /// storing psi when the patch keeps it and adding the units' moment
+  /// contributions into `moments_next` under the patch's mutex (blocks of
+  /// different angle sets run concurrently).
+  /// @param block_index Index into `direction_blocks_`.
+  /// @param group_set Index into `group_indices_`.
+  /// @param c Chunk of the block's angle-set schedule.
   void run_chunk(size_t block_index, size_t group_set, size_t c);
 
   /// @brief One fiber-sweep task: sweep the units of chunk `c` of task
@@ -649,14 +659,16 @@ private:
 public:
   // =================================================================
   // Public constructors
+  virtual ~SweepSolver() = default;
+
+protected:
+  /// @brief Construct a SweepSolver object.
+  /// @param num_dim Spatial dimension (1 to 3) of the mesh.
   /// @param mesh The (finalized or finalizable) mesh; every block local to
   /// this rank is a sweep unit.
   /// @param xs_server Multigroup cross sections.
   /// @param mpi_context The MPI context (same argument as TransportDriver).
-  virtual ~SweepSolver() = default;
-
-protected:
-  /// @param num_dim Spatial dimension (1 to 3) of the mesh.
+  /// @param serial Which MPI communicator to use.
   SweepSolver(int64_t num_dim, Mesh::Ptr mesh, xs::Server::Ptr xs_server,
     const parallel::ParallelContext& mpi_context, bool serial = false);
 
@@ -926,6 +938,12 @@ public:
   {
     return std::count_if(patches_.begin(), patches_.end(),
       [](const PatchState& P) { return P.kronecker != nullptr; });
+  }
+  /// @return Number of local units solved by the extruded-patch solver.
+  int64_t num_extruded_units() const noexcept
+  {
+    return std::count_if(patches_.begin(), patches_.end(),
+      [](const PatchState& P) { return P.extruded != nullptr; });
   }
   /// @return Local solves, GMRES operator applications and solves that fell
   /// back to LU of the ITERATIVE solver (all patches).

@@ -203,8 +203,20 @@ void SweepSolver::within_gmres(size_t s, bool jacobi,
   const std::vector<double>& rhs, std::vector<double>& x, double tol,
   double tol_min, double scale, const linalg::krylov::Reducer& reducer)
 {
+  // The unknown x is group set s's flux moments plus its lagged face traces
+  // (cycle breaks, reflective faces): everything one transport solve reads
+  // from the previous iterate. With T the transport solve (sweep or cross)
+  // and S the within-set scattering, the fixed point x = T(S x) + b is
+  // solved as (I - T S) x = rhs by GMRES. Standard form: rhs = b, the
+  // transport solve of the fixed sources with zero iterate. Correction
+  // form: x is the correction e and rhs the residual r0 = y0 - x0
   const int64_t n = static_cast<int64_t>(x.size());
   std::vector<double> tmp(n);
+
+  // One product out = (I - T S) in: scatter `in` into the Krylov moments
+  // and the lagged traces, build the source from the within-set
+  // scattering of those moments only (fixed = false: no external, fission
+  // or other-set terms, which are in rhs), transport, gather T S in
   auto apply = [&](const double* in, double* out) {
     timed("unpack", [&] { unpack(s, in, true); });
     timed("source", [&] { compute_source(s, Within::KRYLOV, false, jacobi); });
@@ -213,6 +225,9 @@ void SweepSolver::within_gmres(size_t s, bool jacobi,
     for (int64_t i = 0; i < n; i++)
       out[i] = in[i] - tmp[i];
   };
+
+  // Called after every GMRES iteration with the relative residual
+  // (relative to ||rhs||); true_residual marks one recomputed at a restart
   int64_t iteration = 0;
   double last_estimate = 1.0;
   auto progress = [&](double residual, bool true_residual) {
@@ -220,16 +235,27 @@ void SweepSolver::within_gmres(size_t s, bool jacobi,
       last_estimate = residual;
     report_progress(s, ++iteration, last_estimate * scale,
       true_residual && iteration > 1 ? "GMRES (restart)" : "GMRES");
+    // Relaxed inexact Krylov: the next product may be as inaccurate as
+    // tol_min / (current residual), since its error is damped by the
+    // residual. Products start at tol_min and loosen as GMRES converges,
+    // capped at cross_max_tol. `scale` puts the residual on the norm the
+    // tolerances are relative to (1, or ||r0|| / ||y0|| in correction
+    // form). Only CROSS transport reads cross_tol_; an exact sweep ignores
+    // it
     const double relative = residual * scale;
     cross_tol_ = config_.cross_relax ? std::min(config_.cross_max_tol,
                                          tol_min / std::max(relative, tol_min))
                                      : tol_min;
   };
+
+  // Restarted GMRES to tol (relative to the scaled norm), x warm-started by
+  // the caller; reducer sums inner products across ranks
   linalg::krylov::KrylovResult result;
   timed("gmres", [&] {
     result = linalg::krylov::gmres(apply, rhs, x, config_.gmres_restart,
       tol / scale, config_.inner_max_iter, reducer, progress);
   });
+  // Later transport solves (e.g. the caller's final one) at full accuracy
   cross_tol_ = tol_min;
   if (!result.converged && config_.verbose && comm_.rank() == 0) {
     std::cout << "-- warning: within-group-set GMRES (set " << s
@@ -401,14 +427,22 @@ bool SweepSolver::try_incremental_transport(size_t s,
 
 double SweepSolver::global_tolerance_scale(size_t s) const
 {
+  // Factor turning set s's inner tolerance (relative to the set's own flux)
+  // into one relative to the whole flux (global_inner_tolerance): a set
+  // carrying 1% of the flux only needs its error at tol of the whole, so it
+  // may solve to about 100 tol of its own. Measured on the current
+  // iterate's scalar flux (moment 0), in the outer test's coefficient norm
   const auto& groups = group_indices_[s];
   std::vector<uint8_t> in_set(num_groups_, 0);
   for (int64_t g : groups)
     in_set[g] = 1;
+  // Squared flux norms over all groups and over the set, and the fission
+  // production of all groups' flux and of the set's
   double all = 0.0, set = 0.0, prod_all = 0.0, prod_set = 0.0;
   for (const auto& P : patches_) {
     const int64_t N = P.disc->num_dofs();
     const double* m = P.moments.template data_ptr<double>();
+    // The first G * N entries are moment 0 (the scalar flux)
     for (int64_t g = 0; g < num_groups_; g++) {
       double sum = 0.0;
       for (int64_t i = g * N; i < (g + 1) * N; i++)
@@ -430,7 +464,12 @@ double SweepSolver::global_tolerance_scale(size_t s) const
   set = global_sum(set);
   prod_all = global_sum(prod_all);
   prod_set = global_sum(prod_set);
+  // ||phi|| / ||phi_s|| (1 before the set has flux)
   double scale = set > 0.0 ? std::sqrt(all / set) : 1.0;
+  // A set that makes neutrons stays as tight as its share of the fission
+  // production asks, however small its flux: its error feeds every group
+  // through the fission source. Sets without fission keep the flux ratio
+  // (their error reaches the others only through scattering)
   if (prod_set > 0.0 && prod_all > 0.0)
     scale = std::min(scale, prod_all / prod_set);
   return scale;
@@ -438,7 +477,16 @@ double SweepSolver::global_tolerance_scale(size_t s) const
 
 int64_t SweepSolver::inner_solve(size_t s, bool jacobi)
 {
+  // Solves group set s for its within-set scattering with everything else
+  // held fixed (external and fission sources, the other sets' scattering:
+  // from the start of the pass with jacobi, else their latest flux). On
+  // return the set's moments and traces are committed. Returns the
+  // transport solves (group-set sweeps) used
   const int64_t start = group_set_sweeps_;
+
+  // Inner tolerance: forced by the last outer change (inner_tolerance()),
+  // optionally made relative to the whole flux and capped so a small set
+  // still gets some accuracy
   double tol = inner_tolerance();
   if (config_.global_inner_tolerance)
     tol = std::min(GLOBAL_TOLERANCE_CAP, tol * global_tolerance_scale(s));
@@ -446,6 +494,8 @@ int64_t SweepSolver::inner_solve(size_t s, bool jacobi)
   const double tol_min = config_.cross_inner_factor * tol;
   cross_tol_ = tol_min;
 
+  // Richardson (source iteration): sweep with the latest moments, commit,
+  // stop when the set's moments change by less than tol (relative)
   if (config_.inner_solver == InnerSolver::RICHARDSON) {
     const auto& groups = group_indices_[s];
     for (int64_t it = 0; it < config_.inner_max_iter; it++) {
@@ -473,7 +523,8 @@ int64_t SweepSolver::inner_solve(size_t s, bool jacobi)
     return group_set_sweeps_ - start;
   }
 
-  // GMRES on (I - T) x = T(0 source...) with T the swept operator
+  // GMRES on (I - T S) x = b (see within_gmres), x the set's moments and
+  // lagged traces
   const int64_t n = krylov_size(s);
   std::vector<double> x(n), b(n), zero(n, 0.0);
   pack(s, false, false, x.data()); // warm start from the current iterate
@@ -483,8 +534,12 @@ int64_t SweepSolver::inner_solve(size_t s, bool jacobi)
       : linalg::krylov::Reducer();
   if (rhs_ratio_.size() != group_indices_.size())
     rhs_ratio_.assign(group_indices_.size(), 0.0);
+  // Correction form once a standard solve has measured ||b|| / ||x||: it
+  // solves for the change from the warm start instead and writes the result
+  // straight into the current moments and lagged traces (a final transport
+  // solve only when psi or the kept TT is wanted). Tolerances relative to
+  // ||b|| as in the standard form
   if (config_.correction_form && rhs_ratio_[s] > 0.0) {
-    // Tolerances relative to ||b|| as in the standard form
     correction_solve(
       s, jacobi, tol * rhs_ratio_[s], tol_min * rhs_ratio_[s], x, reducer);
     return group_set_sweeps_ - start;
@@ -497,13 +552,18 @@ int64_t SweepSolver::inner_solve(size_t s, bool jacobi)
   timed("pack", [&] { pack(s, true, true, b.data()); });
 
   within_gmres(s, jacobi, b, x, tol, tol_min, 1.0, reducer);
+  // Record ||b|| / ||x|| so later correction-form solves of this set can
+  // express their tolerances against ||b|| without forming b
   if (config_.correction_form) {
     const double bb = global_dot(b, b, reducer);
     const double xx = global_dot(x, x, reducer);
     rhs_ratio_[s] = xx > 0.0 ? std::sqrt(bb / xx) : 0.0;
   }
 
-  // Consistent final sweep from the solution (traces, angular flux)
+  // Consistent final sweep from the solution (traces, angular flux): the
+  // GMRES products wrote Krylov vectors, not the state, so one more
+  // transport solve (at tol_min) makes the moments, traces and psi agree
+  // with x, and commits them
   unpack(s, x.data(), false);
   compute_source(s, Within::MOMENTS, true, jacobi);
   transport_group_set(s);

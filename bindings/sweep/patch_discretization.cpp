@@ -1,4 +1,5 @@
 #include "ttnte/sweep/patch_discretization.hpp"
+#include "ttnte/sweep/extruded_solver.hpp"
 #include "ttnte/sweep/sum_factorization.hpp"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -89,4 +90,38 @@ void register_PatchDiscretization(py::module_& m)
       "Dense (ndim, N, N) streaming matrices (d_i R_v, R_u).")
     .def_property_readonly(
       "basis_integral", &PatchDiscretization::basis_integral);
+}
+
+void register_ExtrudedSolver(py::module_& m)
+{
+  using namespace ttnte::sweep;
+
+  py::class_<ExtrudedSolver, ExtrudedSolver::Ptr>(m, "ExtrudedSolver",
+    "Exact solver of an extruded 3-D patch's local operator (partially "
+    "separable: Schur along the extruded axis, one in-plane band solve per "
+    "mode)")
+    .def_static("try_create", &ExtrudedSolver::try_create, py::arg("disc"),
+      py::arg("tol") = 1e-10,
+      py::arg("max_eigvec_cond") = DEFAULT_MAX_EIGVEC_COND,
+      "The solver of an extruded patch, or None if the patch is not extruded. "
+      "max_eigvec_cond: largest condition number of the axial eigenvectors "
+      "for the diagonal (conjugate-pair) path, else Schur; 0 forces Schur")
+    .def(
+      "solve",
+      [](const ExtrudedSolver& self, const torch::Tensor& omega, double sigma,
+        const torch::Tensor& b) {
+        auto w = omega.to(torch::kFloat64).contiguous();
+        auto x = b.to(torch::kFloat64).contiguous().clone();
+        ExtrudedSolver::Workspace work;
+        self.solve(w.data_ptr<double>(), sigma, x.data_ptr<double>(), work);
+        return x;
+      },
+      py::arg("omega"), py::arg("sigma"), py::arg("b"),
+      "x with L(omega, sigma) x = b (L as PatchDiscretization.local_operator)")
+    .def_property_readonly(
+      "axis", &ExtrudedSolver::axis, "The separable (extruded) parametric axis")
+    .def_property_readonly("physical_axis", &ExtrudedSolver::physical_axis,
+      "The physical axis it maps to")
+    .def_property_readonly("plane_bandwidth", &ExtrudedSolver::plane_bandwidth,
+      "(kl, ku) of the in-plane band systems");
 }

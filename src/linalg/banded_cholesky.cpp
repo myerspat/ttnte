@@ -1,60 +1,39 @@
 #include "ttnte/linalg/banded_cholesky.hpp"
 #include "ttnte/linalg/banded_lu.hpp"
+#include "ttnte/linalg/lapack.hpp"
 #include "ttnte/utils/exception.hpp"
 #include <algorithm>
 #include <cmath>
 
 namespace ttnte::linalg::banded {
 
+// LAPACK/BLAS: the (n, kd + 1) storage, column j holding A(j + i, j) at i,
+// is LAPACK's lower band storage with ldab = kd + 1.
+
 int64_t cholesky_factor(double* ab, int64_t n, int64_t kd)
 {
-  const int64_t ld = kd + 1;
-  for (int64_t j = 0; j < n; j++) {
-    double* col = ab + j * ld;
-    const double diag = col[0];
-    if (!(diag > 0.0))
-      return j + 1;
-    const double ljj = std::sqrt(diag);
-    col[0] = ljj;
-    const int64_t m = std::min(kd, n - 1 - j);
-    for (int64_t i = 1; i <= m; i++)
-      col[i] /= ljj;
-    // Rank-one update of the trailing band: A(j+a, j+b) -= L(j+a, j) L(j+b, j)
-    for (int64_t b = 1; b <= m; b++) {
-      double* target = ab + (j + b) * ld;
-      const double lb = col[b];
-      for (int64_t a = b; a <= m; a++)
-        target[a - b] -= col[a] * lb;
-    }
-  }
-  return 0;
+  lapack::SingleThreaded single;
+  const int m = static_cast<int>(n), k = static_cast<int>(kd), ld = k + 1;
+  int info = 0;
+  dpbtrf_("L", &m, &k, ab, &ld, &info, 1);
+  if (info < 0)
+    throw utils::runtime_error(
+      "ttnte::linalg::banded::cholesky_factor", "dpbtrf: bad argument");
+  return info;
 }
 
 void cholesky_apply_upper(const double* ab, int64_t n, int64_t kd, double* x)
 {
-  // (L^T x)_j = sum_{i >= j} L(i, j) x_i, top to bottom keeps x_i (i > j)
-  const int64_t ld = kd + 1;
-  for (int64_t j = 0; j < n; j++) {
-    const double* col = ab + j * ld;
-    const int64_t m = std::min(kd, n - 1 - j);
-    double sum = col[0] * x[j];
-    for (int64_t i = 1; i <= m; i++)
-      sum += col[i] * x[j + i];
-    x[j] = sum;
-  }
+  const int m = static_cast<int>(n), k = static_cast<int>(kd), ld = k + 1,
+            one = 1;
+  dtbmv_("L", "T", "N", &m, &k, ab, &ld, x, &one, 1, 1, 1);
 }
 
 void cholesky_solve_upper(const double* ab, int64_t n, int64_t kd, double* b)
 {
-  const int64_t ld = kd + 1;
-  for (int64_t j = n - 1; j >= 0; j--) {
-    const double* col = ab + j * ld;
-    const int64_t m = std::min(kd, n - 1 - j);
-    double sum = b[j];
-    for (int64_t i = 1; i <= m; i++)
-      sum -= col[i] * b[j + i];
-    b[j] = sum / col[0];
-  }
+  const int m = static_cast<int>(n), k = static_cast<int>(kd), ld = k + 1,
+            one = 1;
+  dtbsv_("L", "T", "N", &m, &k, ab, &ld, b, &one, 1, 1, 1);
 }
 
 std::pair<torch::Tensor, int64_t> symmetric_band_from_pairs(

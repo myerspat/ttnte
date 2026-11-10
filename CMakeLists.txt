@@ -247,6 +247,31 @@ message(
          "${TTNTE_SERIAL_ROWS}, ${TTNTE_ROW_CHUNKS_PER_THREAD} chunks/thread, "
          ">= ${TTNTE_ROW_GRAIN_MIN} rows/chunk")
 
+# Sweep settings (src/sweep): the reflective boundaries' geometry tolerances
+# (loosen them for meshes or quadratures that are only approximately axis
+# aligned or symmetric) and the task split of fiber sweeps (speed only)
+set(TTNTE_AXIS_ALIGNED_TOL
+    1e-6
+    CACHE STRING
+          "Largest deviation of a reflective face's unit normals from its axis")
+set(TTNTE_REFLECTION_MATCH_TOL
+    1e-12
+    CACHE
+      STRING
+      "Largest 1 - cos between a reflected direction and its quadrature match")
+set(TTNTE_FIBER_TASKS_PER_THREAD
+    4
+    CACHE STRING
+          "Task families a fiber-sweep request is split into, per thread")
+target_compile_definitions(
+  ttnte_static
+  PRIVATE TTNTE_AXIS_ALIGNED_TOL=${TTNTE_AXIS_ALIGNED_TOL}
+          TTNTE_REFLECTION_MATCH_TOL=${TTNTE_REFLECTION_MATCH_TOL}
+          TTNTE_FIBER_TASKS_PER_THREAD=${TTNTE_FIBER_TASKS_PER_THREAD})
+message(STATUS "  Sweep settings: axis aligned <= ${TTNTE_AXIS_ALIGNED_TOL}, "
+               "quadrature match <= ${TTNTE_REFLECTION_MATCH_TOL}, "
+               "${TTNTE_FIBER_TASKS_PER_THREAD} fiber tasks/thread")
+
 option(TTNTE_OPENMP "Compile with OpenMP (parallel at::parallel_for)" ON)
 if(TTNTE_OPENMP)
   file(GLOB TORCH_OMP_LIBS "${TORCH_INSTALL_PREFIX}/lib/libgomp*.so*"

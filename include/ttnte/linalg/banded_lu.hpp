@@ -1,5 +1,6 @@
 #pragma once
 
+#include <complex>
 #include <cstdint>
 #include <torch/extension.h>
 
@@ -17,9 +18,9 @@ namespace ttnte::linalg::banded {
 // the fill-in created by row interchanges. As a torch tensor, one matrix is
 // a contiguous (n, ldab) array whose row j is column j of the band.
 //
-// Self-contained (no LAPACK link): torch's bundled LAPACK does not export
-// the banded routines, and the unblocked algorithm (dgbtf2) is adequate for
-// the bandwidths of IGA patch matrices.
+// Computed by the linked LAPACK (dgbtrf/dgbtrs, zgbtrf/zgbtrs; see
+// ttnte/linalg/lapack.hpp), single-threaded inside ttnte's tasks. Pivots are
+// 0-based int64 here (LAPACK's are 1-based int).
 
 /// @return The leading dimension needed to factor a band with `kl`/`ku`
 /// sub-/super-diagonals.
@@ -39,7 +40,7 @@ inline int64_t band_offset(
 std::pair<int64_t, int64_t> bandwidth_from_pairs(
   const torch::Tensor& rows, const torch::Tensor& cols);
 
-/// @brief Factor one band matrix in place (dgbtf2 semantics).
+/// @brief Factor one band matrix in place (dgbtrf).
 /// @param ab Band storage, column-major with leading dimension `ldab`.
 /// @param ldab Leading dimension (>= 2 * kl + ku + 1).
 /// @param n Matrix order.
@@ -51,10 +52,18 @@ std::pair<int64_t, int64_t> bandwidth_from_pairs(
 int64_t lu_factor(
   double* ab, int64_t ldab, int64_t n, int64_t kl, int64_t ku, int64_t* ipiv);
 
+/// @brief Complex lu_factor() (zgbtrf).
+int64_t lu_factor(std::complex<double>* ab, int64_t ldab, int64_t n, int64_t kl,
+  int64_t ku, int64_t* ipiv);
+
 /// @brief Solve A x = b for one right-hand side with a factored band matrix
 /// (dgbtrs, no transpose). `b` is overwritten with x.
 void lu_solve(const double* ab, int64_t ldab, int64_t n, int64_t kl, int64_t ku,
   const int64_t* ipiv, double* b);
+
+/// @brief Complex lu_solve() (zgbtrs, no transpose).
+void lu_solve(const std::complex<double>* ab, int64_t ldab, int64_t n,
+  int64_t kl, int64_t ku, const int64_t* ipiv, std::complex<double>* b);
 
 /// @brief Factor a batch of band matrices in place.
 /// @param ab (batch, n, ldab) contiguous float64 band storage.

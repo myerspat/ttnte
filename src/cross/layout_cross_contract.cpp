@@ -9,6 +9,23 @@ using namespace detail;
 // =================================================================
 // Contractions
 
+// contract() reduces the train core by core, left to right, keeping a
+// running environment `env` that holds everything contracted so far:
+//   env[(b,) free..., q]
+// with q the open bond to the next core, b the batch axis (if any core so
+// far had a BATCH mode) and `free` the kept (ALL or LIST) modes, by letter.
+// Each mode of each core is treated by its selector:
+//   ALL    kept whole as a free output axis;
+//   LIST   kept as a free axis, restricted to the listed indices;
+//   WEIGHT summed against the given weights (contracted away);
+//   BATCH  zipped with every other BATCH mode into one batch axis b: entry b
+//          takes index data[b] of every batched mode, wherever its core is,
+//          so (mu[b], gamma[b], E[b]) picks single tensor entries, not their
+//          product.
+// The result is (B, |S|, |E|). E.g. evaluate(): mu and gamma BATCH (one entry
+// per direction), space and energy LIST -> (directions, space, groups).
+// moments(): both angles WEIGHT (quadrature weights times one harmonic),
+// space and energy ALL -> (1, N_s, G).
 torch::Tensor LayoutCross::contract(const std::array<Selector, 4>& select,
   const torch::Tensor& angle_matrix) const
 {
@@ -17,14 +34,21 @@ torch::Tensor LayoutCross::contract(const std::array<Selector, 4>& select,
     throw utils::runtime_error(ctx("contract"),
       "No TT held: run() first, or set keep_angular_flux to "
       "keep it after a solve");
+  // einsum letter of each mode (MU, GA, S, E) and the core holding it
   const char letter[4] = {'m', 'g', 's', 'e'};
   int64_t core_of_mode[4] = {-1, -1, -1, -1};
   for (int64_t k = 0; k < K_; k++)
     for (int m : core_modes_[k])
       core_of_mode[m] = k;
+  // Joint angle weights: both angles WEIGHT in the same core are summed
+  // against one (N_mu, N_gamma) matrix, which need not factor into a polar
+  // times an azimuthal vector (e.g. quadrature weight times a harmonic)
   const bool joint = select[MU].kind == Kind::WEIGHT &&
                      select[GA].kind == Kind::WEIGHT && core_of_mode[GA] >= 0 &&
                      core_of_mode[MU] == core_of_mode[GA];
+
+  // Validate the selectors. The output keeps only space and energy, so the
+  // angle modes must be batched or weighted away; space is never summed
   for (int m = 0; m < 4; m++) {
     const auto& sel = select[m];
     const bool angle = m == MU || m == GA;
@@ -58,10 +82,14 @@ torch::Tensor LayoutCross::contract(const std::array<Selector, 4>& select,
       "Joint angle weights need an (N_mu, N_gamma) angle_matrix");
   }
 
+  // Running environment: env[(b,) env_free..., q], undefined before core 0
   torch::Tensor env;
   bool env_batch = false;
   std::string env_free;
   for (int64_t k = 0; k < K_; k++) {
+    // Core k with its modes unfolded: (r_{k-1}, n_{k,1}, ..., r_k). `axes`
+    // lists the modes still present, in order; axis_of() gives a mode's
+    // axis in t (bond first, so mode position + 1)
     std::vector<int64_t> shape {cores_[k].size(0)};
     shape.insert(shape.end(), core_dims_[k].begin(), core_dims_[k].end());
     shape.push_back(cores_[k].size(2));
@@ -72,15 +100,18 @@ torch::Tensor LayoutCross::contract(const std::array<Selector, 4>& select,
                std::find(axes.begin(), axes.end(), mode) - axes.begin()) +
              1;
     };
+    // LIST: restrict to the listed indices (the axis stays)
     for (int m : core_modes_[k])
       if (select[m].kind == Kind::LIST)
         t = t.index_select(axis_of(m), select[m].data);
+    // Joint angle weights: sum both angle axes against angle_matrix
     if (joint && core_of_mode[MU] == k) {
       t = torch::tensordot(t, angle_matrix, {axis_of(MU), axis_of(GA)}, {0, 1});
       // tensordot puts the (empty) result dims last: r_r stays last
       axes.erase(std::find(axes.begin(), axes.end(), MU));
       axes.erase(std::find(axes.begin(), axes.end(), GA));
     }
+    // WEIGHT: sum the axis against its weight vector (the axis goes)
     for (int m : core_modes_[k]) {
       if (select[m].kind != Kind::WEIGHT || (joint && (m == MU || m == GA)))
         continue;
@@ -116,12 +147,18 @@ torch::Tensor LayoutCross::contract(const std::array<Selector, 4>& select,
       for (int m : axes)
         free += letter[m];
     }
+    // t is now ((b,) r_{k-1}, free..., r_k). Core 0: its left bond has size
+    // 1, so drop it and t is the environment
     if (!env.defined()) {
       env = t.select(core_batch ? 1 : 0, 0);
       env_batch = core_batch;
       env_free = free;
       continue;
     }
+    // Absorb core k: contract env's open bond q with t's left bond. A batch
+    // axis on either side is shared (entry b with entry b, not an outer
+    // product), and is broadcast when only one side has it. E.g. env "bsq",
+    // t "qew" -> "bsew"; env "sq", t "bqw" -> "bsw"
     const bool out_batch = env_batch || core_batch;
     const std::string spec = std::string(env_batch ? "b" : "") + env_free +
                              "q," + (core_batch ? "b" : "") + "q" + free +
@@ -131,6 +168,8 @@ torch::Tensor LayoutCross::contract(const std::array<Selector, 4>& select,
     env_batch = out_batch;
     env_free += free;
   }
+  // The last core's right bond has size 1: drop it. No BATCH mode: a batch
+  // of one
   env = env.select(env.dim() - 1, 0);
   if (!env_batch)
     env = env.unsqueeze(0);
@@ -140,6 +179,7 @@ torch::Tensor LayoutCross::contract(const std::array<Selector, 4>& select,
     env = env.unsqueeze(-1), env_free += 's';
   if (pe == std::string::npos)
     env = env.unsqueeze(-1), env_free += 'e';
+  // Only space and energy may be left (the validation above guarantees it)
   if (env_free.size() != 2) {
     throw utils::runtime_error(
       ctx("contract"), "Angle modes must be batched or weighted");

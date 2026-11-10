@@ -23,7 +23,7 @@ void register_schur(py::module_& m)
             reinterpret_cast<std::complex<double>*>(
               q.data_ptr<c10::complex<double>>()))) {
         throw ttnte::utils::runtime_error(
-          "ttnte::linalg::complex_schur", "QR iteration did not converge");
+          "ttnte::linalg::complex_schur", "LAPACK zgees failed to converge");
       }
       return std::make_tuple(q, t);
     },

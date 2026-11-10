@@ -1,5 +1,6 @@
 #include "ttnte/linalg/banded_lu.hpp"
 #include "ttnte/linalg/batched_lu.hpp"
+#include "ttnte/linalg/lapack.hpp"
 #include "ttnte/utils/exception.hpp"
 #include <algorithm>
 #include <cmath>
@@ -16,109 +17,60 @@ void check_bands(const char* where, int64_t kl, int64_t ku)
 
 } // namespace
 
+// LAPACK (dgbtrf/dgbtrs, zgbtrf/zgbtrs): the band storage and the info
+// convention are LAPACK's already; only the pivots convert (0-based int64
+// here, 1-based int there).
+
 int64_t lu_factor(
   double* ab, int64_t ldab, int64_t n, int64_t kl, int64_t ku, int64_t* ipiv)
 {
-  const int64_t kv = kl + ku;
-  // A(i, j) accessor into the band storage
-  auto at = [=](int64_t i, int64_t j) -> double& {
-    return ab[band_offset(i, j, kl, ku, ldab)];
-  };
+  lapack::SingleThreaded single;
+  const int m = static_cast<int>(n), l = static_cast<int>(kl),
+            u = static_cast<int>(ku), ld = static_cast<int>(ldab);
+  int* lp = lapack::pivot_buffer(n);
+  int info = 0;
+  dgbtrf_(&m, &m, &l, &u, ab, &ld, lp, &info);
+  if (info < 0)
+    throw utils::runtime_error(
+      "ttnte::linalg::banded::lu_factor", "dgbtrf: bad argument");
+  lapack::from_lapack(lp, n, ipiv);
+  return info;
+}
 
-  // The fill-in rows of the first kv columns must start at zero
-  for (int64_t j = ku + 1; j < std::min(kv, n); j++) {
-    for (int64_t i = kv - j; i < kl; i++) {
-      ab[i + j * ldab] = 0.0;
-    }
-  }
-
-  int64_t ju = 0;
-  for (int64_t j = 0; j < n; j++) {
-    // Zero the fill-in elements of column j + kv
-    if (j + kv < n) {
-      for (int64_t i = 0; i < kl; i++) {
-        ab[i + (j + kv) * ldab] = 0.0;
-      }
-    }
-
-    // Find the pivot within the band of column j
-    const int64_t km = std::min(kl, n - 1 - j);
-    int64_t p = 0;
-    double pmax = std::abs(at(j, j));
-    for (int64_t t = 1; t <= km; t++) {
-      double v = std::abs(at(j + t, j));
-      if (v > pmax) {
-        pmax = v;
-        p = t;
-      }
-    }
-    ipiv[j] = j + p;
-    if (at(j + p, j) == 0.0) {
-      return j + 1;
-    }
-
-    // Row interchange over the columns touched by this pivot
-    ju = std::max(ju, std::min(j + ku + p, n - 1));
-    if (p != 0) {
-      for (int64_t c = j; c <= ju; c++) {
-        std::swap(at(j + p, c), at(j, c));
-      }
-    }
-
-    // Compute multipliers and update the trailing band
-    if (km > 0) {
-      const double inv = 1.0 / at(j, j);
-      for (int64_t t = 1; t <= km; t++) {
-        at(j + t, j) *= inv;
-      }
-      for (int64_t c = j + 1; c <= ju; c++) {
-        const double a = at(j, c);
-        if (a != 0.0) {
-          for (int64_t t = 1; t <= km; t++) {
-            at(j + t, c) -= at(j + t, j) * a;
-          }
-        }
-      }
-    }
-  }
-  return 0;
+int64_t lu_factor(std::complex<double>* ab, int64_t ldab, int64_t n, int64_t kl,
+  int64_t ku, int64_t* ipiv)
+{
+  lapack::SingleThreaded single;
+  const int m = static_cast<int>(n), l = static_cast<int>(kl),
+            u = static_cast<int>(ku), ld = static_cast<int>(ldab);
+  int* lp = lapack::pivot_buffer(n);
+  int info = 0;
+  zgbtrf_(&m, &m, &l, &u, ab, &ld, lp, &info);
+  if (info < 0)
+    throw utils::runtime_error(
+      "ttnte::linalg::banded::lu_factor", "zgbtrf: bad argument");
+  lapack::from_lapack(lp, n, ipiv);
+  return info;
 }
 
 void lu_solve(const double* ab, int64_t ldab, int64_t n, int64_t kl, int64_t ku,
   const int64_t* ipiv, double* b)
 {
-  const int64_t kv = kl + ku;
-  auto at = [=](int64_t i, int64_t j) -> double {
-    return ab[band_offset(i, j, kl, ku, ldab)];
-  };
+  const int m = static_cast<int>(n), l = static_cast<int>(kl),
+            u = static_cast<int>(ku), ld = static_cast<int>(ldab), one = 1;
+  int info = 0;
+  dgbtrs_("N", &m, &l, &u, &one, ab, &ld, lapack::to_lapack(ipiv, n), b, &m,
+    &info, 1);
+}
 
-  // Forward substitution with L (unit lower, row interchanges applied)
-  if (kl > 0) {
-    for (int64_t j = 0; j < n - 1; j++) {
-      const int64_t km = std::min(kl, n - 1 - j);
-      const int64_t l = ipiv[j];
-      if (l != j) {
-        std::swap(b[l], b[j]);
-      }
-      const double bj = b[j];
-      if (bj != 0.0) {
-        for (int64_t t = 1; t <= km; t++) {
-          b[j + t] -= at(j + t, j) * bj;
-        }
-      }
-    }
-  }
-
-  // Back substitution with U (upper band of width kv)
-  for (int64_t j = n - 1; j >= 0; j--) {
-    b[j] /= at(j, j);
-    const double bj = b[j];
-    if (bj != 0.0) {
-      for (int64_t i = std::max<int64_t>(0, j - kv); i < j; i++) {
-        b[i] -= at(i, j) * bj;
-      }
-    }
-  }
+void lu_solve(const std::complex<double>* ab, int64_t ldab, int64_t n,
+  int64_t kl, int64_t ku, const int64_t* ipiv, std::complex<double>* b)
+{
+  const int m = static_cast<int>(n), l = static_cast<int>(kl),
+            u = static_cast<int>(ku), ld = static_cast<int>(ldab), one = 1;
+  int info = 0;
+  zgbtrs_("N", &m, &l, &u, &one, ab, &ld, lapack::to_lapack(ipiv, n), b, &m,
+    &info, 1);
 }
 
 torch::Tensor batched_lu_factor_(torch::Tensor& ab, int64_t kl, int64_t ku)

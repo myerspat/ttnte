@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ttnte/sweep/extruded_solver.hpp"
 #include "ttnte/sweep/iterative_solver.hpp"
 #include "ttnte/sweep/kronecker_solver.hpp"
 #include "ttnte/sweep/patch_discretization.hpp"
@@ -52,6 +53,9 @@ struct UnitSweep {
   /// Kronecker-sum solver of the unit (affine patches with SYLVESTER), or
   /// nullptr for the LU path.
   const KroneckerSolver* kronecker = nullptr;
+  /// Partially separable solver of an extruded patch (SYLVESTER), or
+  /// nullptr.
+  const ExtrudedSolver* extruded = nullptr;
   /// Matrix-free iterative solver (ITERATIVE on a curved patch), or nullptr.
   const IterativeSolver* iterative = nullptr;
   /// (G) total cross section.
@@ -102,12 +106,13 @@ struct SweepBlock {
   const double* harmonics = nullptr;
   const double* weighted_harmonics = nullptr;
   /// Local solver.
-  LocalSolverType solver = LocalSolverType::BANDED_LU;
+  LocalSolverType solver = LocalSolverType::SYLVESTER;
 };
 
 /// @brief Scratch memory reused across units and tasks (one per worker).
 struct SweepWorkspace {
   KroneckerSolver::Workspace kronecker;
+  ExtrudedSolver::Workspace extruded;
   IterativeSolver::Workspace iterative;
   std::vector<double> saved;
   std::vector<double> values;

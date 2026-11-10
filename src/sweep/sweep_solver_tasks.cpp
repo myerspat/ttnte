@@ -5,8 +5,13 @@ namespace ttnte::sweep {
 
 namespace {
 
+// Default; CMake overrides it (TTNTE_FIBER_TASKS_PER_THREAD)
+#ifndef TTNTE_FIBER_TASKS_PER_THREAD
+#define TTNTE_FIBER_TASKS_PER_THREAD 4
+#endif
+
 /// Task families a fiber request is split into, per thread.
-constexpr int64_t TASKS_PER_THREAD = 4;
+constexpr int64_t TASKS_PER_THREAD = TTNTE_FIBER_TASKS_PER_THREAD;
 
 } // namespace
 
@@ -94,6 +99,7 @@ UnitSweep SweepSolver::make_unit(const AngleSet& set, int64_t local)
   UnitSweep unit;
   unit.disc = P.disc.get();
   unit.kronecker = P.kronecker.get();
+  unit.extruded = P.extruded.get();
   unit.iterative = P.iterative.get();
   unit.sigma_t = P.sigma_t.template data_ptr<double>();
   unit.source_moments = P.source_moments.template data_ptr<double>();
@@ -170,15 +176,30 @@ void SweepSolver::run_fiber_chunk(size_t t, size_t c, double* out)
 
 void SweepSolver::cross_group_set(size_t s)
 {
+  // The cross's stand-in for one transport sweep of group set s: build a
+  // low-rank psi of the set's groups from sampled fibers (the sources and
+  // traces were set by the caller), then produce from it everything an
+  // exact sweep would leave behind: the moments, the lagged traces and,
+  // if stored, psi. Groups are local to the set inside the cross (0..ng-1)
+  // and global (groups[bg]) in the solver's buffers.
   auto& cr = *crosses_[s];
   const auto& groups = group_indices_[s];
   const int64_t ng = static_cast<int64_t>(groups.size());
   const int64_t G = num_groups_;
+
+  // Tolerance: cross_tol_ when the within-set solver set one for this
+  // transport solve (relaxed inexact-Krylov products with cross_relax, the
+  // correction form's tol_min), else the fixed CrossConfig::tol
   cr.set_tolerance(cross_tol_ > 0 ? cross_tol_ : config_.cross.tol);
+  // The cross's linear algebra runs on at most cross_threads threads (its
+  // matrices are small; more threads cost more in synchronization). The
+  // fiber sweeps it requests still use the solver's task pool
   const int64_t solver_threads = std::max<int64_t>(1, config_.num_threads);
   std::optional<ThreadCountGuard> threads(std::in_place,
     config_.cross_threads > 0 ? std::min(config_.cross_threads, solver_threads)
                               : solver_threads);
+  // Forward/backward passes until the hold-out check accepts; every fiber
+  // it needs is swept through the sweep callback (sweep_fibers)
   cr.run();
 
   auto t0 = std::chrono::steady_clock::now();
@@ -187,6 +208,10 @@ void SweepSolver::cross_group_set(size_t s)
     cross_timings_[phase] += std::chrono::duration<double>(now - t0).count();
     t0 = now;
   };
+  // 1. Moments: (M, ng, fiber_length) from the TT (quadrature times
+  // harmonics contracted with the angle cores). Scatter each patch's
+  // segment of the fiber into its global groups of moments_next, which the
+  // within-set iteration reads as this transport solve's result
   auto moments = cr.moments();
   const int64_t M = moments.size(0);
   const double* mom = moments.template data_ptr<double>();
@@ -204,6 +229,13 @@ void SweepSolver::cross_group_set(size_t s)
       }
   }
   lap("moments");
+
+  // 2. Lagged traces. The next transport solve reads every lagged edge
+  // (cycle breaks, reflective faces) from the trace buffers at all of the
+  // edge's directions, but the fiber sweeps only wrote the pairs the cross
+  // sampled. So each delayed block (unit, face, directions) is evaluated
+  // from the TT at the face's dofs and written into its current buffer,
+  // at the set's groups only (other sets' traces are left alone).
   // One lagged block per task (each writes its own directions' rows); the
   // contractions inside run serially, nested in the parallel region
   at::parallel_for(
@@ -225,14 +257,21 @@ void SweepSolver::cross_group_set(size_t s)
       }
     });
   lap("traces");
+
+  // 3. Angular flux, if stored: each patch's psi at the set's groups,
+  // evaluated from the TT at every direction and dof
   if (config_.store_angular_flux) {
     const auto group_index = torch::tensor(groups, torch::kInt64);
     for (size_t i = 0; i < patches_.size(); i++)
       patches_[i].psi.index_copy_(1, group_index, cross_patch_psi(s, i));
     lap("angular_flux");
   }
+  // Restore torch's thread count before the bookkeeping
   threads.reset();
 
+  // Per-transport-solve records (rank, fibers, hold-out error, history).
+  // A full sweep of this set would be Nd * ng fibers, so the solve counts
+  // fibers / (Nd * G) sweep equivalents of the whole problem
   const auto ranks = cr.ranks();
   cross_tolerances_.push_back(cr.config().tol);
   cross_fibers_.push_back(cr.num_fibers());
@@ -276,8 +315,18 @@ void SweepSolver::parallel_for(
 
 void SweepSolver::sweep_group_set(size_t s)
 {
+  // The exact transport solve of group set s: one full sweep of every
+  // direction at the set's groups, against the source moments and lagged
+  // traces the caller set. It leaves the set's new moments in moments_next
+  // and its outgoing traces in trace_current (psi too, if stored); the
+  // caller decides whether to commit them (commit_group_set).
   const auto& groups = group_indices_[s];
   const int64_t M = harmonics_.size(1);
+
+  // The sweep tasks ADD their moment contributions (direction blocks of
+  // every angle set reduce into the same patch under its mutex), so zero
+  // the set's slice of moments_next first. Other sets' groups are left
+  // as they are
   for_each_patch([&](PatchState& P) {
     const int64_t N = P.disc->num_dofs();
     double* m = P.moments_next.template data_ptr<double>();
@@ -286,12 +335,19 @@ void SweepSolver::sweep_group_set(size_t s)
         std::fill(m + (k * num_groups_ + g) * N,
           m + (k * num_groups_ + g + 1) * N, 0.0);
   });
+
+  // Run the set's DAG, built once in setup: one copy of each angle set's
+  // chunk schedule per direction block (run_chunk), plus the MPI trace
+  // exchange tasks. reset() puts every task back to WAITING so the same
+  // graph runs again
   dags_[s]->reset();
   auto t0 = std::chrono::steady_clock::now();
   scheduler_->execute(*dags_[s], task::ExecutionMode::PUSH);
   dag_nanoseconds_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::steady_clock::now() - t0)
                         .count();
+
+  // One transport solve, |set| / G sweeps of the whole problem
   group_set_sweeps_++;
   equivalent_sweeps_ +=
     static_cast<double>(groups.size()) / static_cast<double>(num_groups_);
@@ -300,6 +356,12 @@ void SweepSolver::sweep_group_set(size_t s)
 void SweepSolver::sweep_fibers(
   const std::vector<FiberBlock>& blocks, double* out, const FiberDone& done)
 {
+  // Fills one row of `out` per requested (direction, group) pair: the
+  // angular flux of that pair over the whole local space (the patches'
+  // dofs end to end at fiber_offsets_), swept against the current sources
+  // and traces. Rows are in request order: block by block, direction-major,
+  // then group. Only the requested pairs are swept and no moments or psi
+  // are written, so the cross gets exact samples without a full sweep.
   if (!is_setup_)
     throw utils::runtime_error(ctx("sweep_fibers"), "Call setup() first");
   // TODO: exchange tasks for multi-rank fiber sweeps
@@ -311,8 +373,10 @@ void SweepSolver::sweep_fibers(
   const int64_t num_sets = static_cast<int64_t>(graph_->angle_sets().size());
   const int64_t per = config_.directions_per_task;
 
-  // Direction blocks per angle set, then group chunks so that the request
-  // exposes about four task families per thread
+  // A run is a slice of one request block's directions that share an angle
+  // set (and so one upwind schedule), at most directions_per_task long.
+  // rows[i] is the output row of directions[i] at the block's first group;
+  // group bg of that direction is row rows[i] + bg
   struct DirectionRun {
     size_t block;
     size_t set;
@@ -320,11 +384,16 @@ void SweepSolver::sweep_fibers(
     std::vector<int64_t> rows;
   };
   std::vector<DirectionRun> runs;
+  // Flags of the pairs seen so far, to reject repeats
   std::vector<uint8_t> requested(omega_.size(0) * num_groups_, 0);
+  // First output row of the current block (the total fiber count at the end)
   int64_t offset = 0;
+
+  // 1. Split each block's directions by angle set, then into runs
   for (size_t k = 0; k < blocks.size(); k++) {
     const auto& blk = blocks[k];
     const int64_t ng = static_cast<int64_t>(blk.groups.size());
+    // Bucket the block's directions (and their first rows) by angle set
     std::vector<std::vector<int64_t>> by_set(num_sets), rows(num_sets);
     for (size_t i = 0; i < blk.directions.size(); i++) {
       const int64_t d = blk.directions[i];
@@ -334,6 +403,8 @@ void SweepSolver::sweep_fibers(
       by_set[set_of[d]].push_back(d);
       rows[set_of[d]].push_back(offset + static_cast<int64_t>(i) * ng);
     }
+    // Cut each set's bucket into runs of at most directions_per_task
+    // (<= 0: the whole bucket)
     for (int64_t a = 0; a < num_sets; a++) {
       const int64_t n = static_cast<int64_t>(by_set[a].size());
       const int64_t step = per > 0 ? per : std::max<int64_t>(n, 1);
@@ -359,7 +430,13 @@ void SweepSolver::sweep_fibers(
       }
     offset += static_cast<int64_t>(blk.directions.size()) * ng;
   }
+  // 2. Split each run's groups into pieces so the request exposes about
+  // TASKS_PER_THREAD task families per thread (a cross request can be a
+  // few directions, too few families by direction alone). Each piece is a
+  // FiberTask; slots[i] is the row of directions[i] at the piece's first
+  // group, so the kernel writes (i, bg) to row slots[i] + bg
   const int64_t threads = std::max<int64_t>(1, config_.num_threads);
+  // Pieces per run: ceil(TASKS_PER_THREAD * threads / #runs)
   const int64_t wanted =
     (TASKS_PER_THREAD * threads + static_cast<int64_t>(runs.size()) - 1) /
     std::max<int64_t>(1, runs.size());
@@ -367,6 +444,7 @@ void SweepSolver::sweep_fibers(
   for (const auto& run : runs) {
     const auto& groups = blocks[run.block].groups;
     const int64_t ng = static_cast<int64_t>(groups.size());
+    // At least one group per piece
     const int64_t parts =
       std::clamp<int64_t>(wanted, 1, std::max<int64_t>(ng, 1));
     for (int64_t p = 0; p < parts; p++) {
@@ -383,6 +461,11 @@ void SweepSolver::sweep_fibers(
     }
   }
 
+  // 3. One copy of the angle set's chunk schedule per fiber task (a task
+  // family): one task per chunk with the schedule's upwind edges, the body
+  // sweeping the family's directions and groups through that chunk's
+  // units. Families share no edges, so they all run concurrently; within a
+  // family a chunk waits for its upstream chunks' traces
   task::TaskGraph dag;
   for (size_t t = 0; t < fiber_tasks_.size(); t++) {
     const auto& chunks = schedules_[fiber_tasks_[t].set];
@@ -410,12 +493,15 @@ void SweepSolver::sweep_fibers(
           fin->add_dependency(tasks[c]);
     }
   }
+  // 4. Run: the tasks are the parallelism, so torch inside them (e.g. the
+  // `done` callback's linear algebra) is serial while the DAG runs
   ThreadCountGuard serial_torch(config_.num_threads > 1 ? 1 : 0);
   auto t0 = std::chrono::steady_clock::now();
   scheduler_->execute(dag, task::ExecutionMode::PUSH);
   dag_nanoseconds_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::steady_clock::now() - t0)
                         .count();
+  // Fibers swept, the cross's cost measure (sweep equivalents)
   num_fibers_ += offset;
 }
 

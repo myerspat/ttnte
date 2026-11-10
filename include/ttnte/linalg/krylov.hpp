@@ -45,7 +45,14 @@ struct KrylovResult {
 /// expensive (e.g. a transport sweep per product) can be solved without
 /// forming it. The true residual is recomputed at every restart (without an
 /// application when the initial guess is zero); convergence within a cycle
-/// is accepted on the Arnoldi residual estimate.
+/// is accepted on the Arnoldi residual estimate. Single-pass modified
+/// Gram-Schmidt suffices: MGS-GMRES is backward stable, its loss of
+/// orthogonality setting in only once the residual is near rounding level
+/// (Paige, Rozloznik and Strakos, SIMAX 28, 2006). A breakdown (an
+/// invariant Krylov space, detected relative to ||A v_k||) ends the solve:
+/// converged when the projected system is nonsingular (exact solution),
+/// otherwise (A singular there) not converged, with the least-squares
+/// minimizer so far and its residual.
 /// @param apply y = A x.
 /// @param b Right-hand side (length n).
 /// @param x Initial guess on entry, solution on exit (length n).
@@ -55,7 +62,8 @@ struct KrylovResult {
 /// is made unless the initial guess is zero).
 /// @param reduce Optional global sum of inner products for vectors
 /// distributed across ranks (each rank passes its local slice); empty for
-/// a serial solve.
+/// a serial solve. Every rank must call gmres() together: all take the
+/// same branches (including the zero-initial-guess check, reduced too).
 /// @param progress Optional callback before every application.
 KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
   std::vector<double>& x, int64_t restart, double tol, int64_t max_applies,

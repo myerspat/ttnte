@@ -3,6 +3,7 @@ set(SWEEP_BINDINGS_REL bindings.cpp sweep_config.cpp patch_discretization.cpp
                        sweep_graph.cpp sweep_driver.cpp)
 set(SWEEP_SRC_REL
     angular_moments.cpp
+    extruded_solver.cpp
     iterative_solver.cpp
     kronecker_solver.cpp
     patch_discretization.cpp

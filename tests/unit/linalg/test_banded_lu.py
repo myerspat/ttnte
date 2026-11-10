@@ -45,3 +45,44 @@ def test_singular_raises():
     a = torch.zeros(1, 3, 3, dtype=torch.float64)
     with pytest.raises(RuntimeError):
         banded_lu_factor(dense_to_band(a, 1, 1), 1, 1)
+
+
+def _complex_band(a, kl, ku):
+    # Band packing is linear, so pack the real and imaginary parts separately
+    return torch.complex(dense_to_band(a.real, kl, ku), dense_to_band(a.imag, kl, ku))
+
+
+@pytest.mark.parametrize("n, kl, ku", [(1, 0, 0), (12, 3, 2), (40, 7, 7), (25, 0, 5)])
+@pytest.mark.parametrize("pivot", [False, True])
+def test_complex_matches_dense_solve(n, kl, ku, pivot):
+    """Complex banded LU (zgbtrf/zgbtrs, used by the ExtrudedSolver's conjugate-pair
+    modes) reproduces torch's dense complex solve.
+
+    With pivot=True the diagonal is small, so row interchanges are needed.
+    """
+    gen = torch.Generator().manual_seed(1)
+    re, im = (torch.randn(3, n, n, generator=gen, dtype=torch.float64) for _ in "ri")
+    a = torch.complex(re, im)
+    i = torch.arange(n)
+    mask = ((i[:, None] - i[None, :]) <= kl) & ((i[None, :] - i[:, None]) <= ku)
+    a = a * mask
+    if pivot:
+        a = a - torch.diag_embed(torch.diagonal(a, dim1=-2, dim2=-1)) * 0.999
+    else:
+        a = a + n * torch.eye(n, dtype=torch.complex128)
+    b = torch.complex(
+        *(torch.randn(3, n, generator=gen, dtype=torch.float64) for _ in "ri")
+    )
+    ab, ipiv = banded_lu_factor(_complex_band(a, kl, ku), kl, ku)
+    assert ab.dtype == torch.complex128
+    if pivot and kl > 0:
+        assert (ipiv != torch.arange(n)).any()
+    x = banded_lu_solve(ab, ipiv, kl, ku, b)
+    ref = torch.linalg.solve(a, b.unsqueeze(-1)).squeeze(-1)
+    assert ((x - ref).norm() / ref.norm()).item() < 1e-10
+
+
+def test_complex_singular_raises():
+    a = torch.zeros(1, 3, 3, dtype=torch.complex128)
+    with pytest.raises(RuntimeError):
+        banded_lu_factor(_complex_band(a, 1, 1), 1, 1)

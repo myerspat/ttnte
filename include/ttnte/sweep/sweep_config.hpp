@@ -17,11 +17,15 @@ enum class LocalSolverType : uint8_t {
   DENSE_LU,
   /// Kronecker-sum solver (see KroneckerSolver) on axis-aligned affine
   /// patches, sharing one Schur factorization per patch among all directions
-  /// and groups; other patches fall back to BANDED_LU.
+  /// and groups; on extruded 3-D patches (any in-plane curvature) the
+  /// partially separable ExtrudedSolver (Schur along the extruded axis, one
+  /// in-plane band solve per mode); other patches fall back to BANDED_LU.
+  /// Neither structured solver stores factorizations. The default.
   SYLVESTER,
-  /// SYLVESTER on affine patches; on curved ones GMRES on the matrix-free
-  /// sum-factorized operator, preconditioned by the patch's Kronecker-sum
-  /// parametric twin (see IterativeSolver). No factorization is stored.
+  /// SYLVESTER's structured solvers on affine and extruded patches; on other
+  /// curved ones GMRES on the matrix-free sum-factorized operator,
+  /// preconditioned by the patch's Kronecker-sum parametric twin (see
+  /// IterativeSolver). No factorization is stored.
   /// Experimental: the averaged-metric preconditioner weakens as curved
   /// patches grow, and unconverged solves fall back to LU.
   ITERATIVE,
@@ -73,8 +77,9 @@ enum class TransportSolve : uint8_t {
 inline constexpr double GLOBAL_TOLERANCE_CAP = 0.1;
 
 struct SweepConfig {
-  /// Local patch solver.
-  LocalSolverType local_solver = LocalSolverType::BANDED_LU;
+  /// Local patch solver (SYLVESTER: the structured solvers where the patch
+  /// separates, banded LU elsewhere).
+  LocalSolverType local_solver = LocalSolverType::SYLVESTER;
   /// Keep the full angular flux of every patch (N_Omega x G x N per patch).
   /// When false only the flux moments and the face traces needed by the
   /// sweep (interfaces and reflective faces) are stored.

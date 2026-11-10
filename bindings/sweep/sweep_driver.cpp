@@ -76,6 +76,10 @@ static void register_SweepDriver_impl(
     .def_property_readonly("local_gids", &SweepDriver::local_gids)
     .def_property_readonly(
       "num_kronecker_units", &SweepDriver::num_kronecker_units)
+    .def_property_readonly("num_extruded_units",
+      &SweepDriver::num_extruded_units,
+      "Local units solved by the extruded-patch (partially separable) "
+      "solver")
     .def_property_readonly("iterative_statistics",
       &SweepDriver::iterative_statistics,
       "(local solves, local GMRES applications, LU fallbacks) of the "

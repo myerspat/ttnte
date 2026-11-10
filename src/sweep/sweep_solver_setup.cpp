@@ -5,10 +5,19 @@ namespace ttnte::sweep {
 
 namespace {
 
+// Defaults; CMake overrides them (TTNTE_AXIS_ALIGNED_TOL,
+// TTNTE_REFLECTION_MATCH_TOL)
+#ifndef TTNTE_AXIS_ALIGNED_TOL
+#define TTNTE_AXIS_ALIGNED_TOL 1e-6
+#endif
+#ifndef TTNTE_REFLECTION_MATCH_TOL
+#define TTNTE_REFLECTION_MATCH_TOL 1e-12
+#endif
+
 /// Largest deviation of a reflective face's unit normals from its axis.
-constexpr double AXIS_ALIGNED_TOL = 1e-6;
+constexpr double AXIS_ALIGNED_TOL = TTNTE_AXIS_ALIGNED_TOL;
 /// Largest 1 - cos between a reflected direction and its quadrature match.
-constexpr double REFLECTION_MATCH_TOL = 1e-12;
+constexpr double REFLECTION_MATCH_TOL = TTNTE_REFLECTION_MATCH_TOL;
 
 } // namespace
 
@@ -265,6 +274,9 @@ std::vector<int> SweepSolver::partition(const std::vector<PatchState>& nodes)
   if (gid2rank.empty()) {
     // Vertex weights: a patch's sweep work scales with its dofs (the
     // directions and groups are the same for every patch)
+
+    // TODO: Allow different partitioning heuristics in the future. Some that
+    // might help with load balancing better in tensor network methods.
     auto dofs =
       std::make_shared<parallel::heuristics::DofHeuristic<cad::Patch>>();
     dofs->finalize(mesh_);
@@ -944,13 +956,19 @@ void SweepSolver::setup(const math::QuadratureSet::Ptr& qset,
     const bool structured =
       config_.local_solver == LocalSolverType::SYLVESTER ||
       config_.local_solver == LocalSolverType::ITERATIVE;
+    // Fully separable first, then extruded (partially separable), else the
+    // iterative solver (ITERATIVE) or banded LU
     P.kronecker = structured ? KroneckerSolver::try_create(*P.disc) : nullptr;
-    P.iterative =
-      config_.local_solver == LocalSolverType::ITERATIVE && !P.kronecker
-        ? IterativeSolver::create(*P.disc, config_.local_tol,
-            config_.local_restart, config_.local_max_iter)
-        : nullptr;
-    if (config_.cache_factorizations && !P.kronecker && !P.iterative) {
+    P.extruded = structured && !P.kronecker
+                   ? ExtrudedSolver::try_create(*P.disc)
+                   : nullptr;
+    P.iterative = config_.local_solver == LocalSolverType::ITERATIVE &&
+                      !P.kronecker && !P.extruded
+                    ? IterativeSolver::create(*P.disc, config_.local_tol,
+                        config_.local_restart, config_.local_max_iter)
+                    : nullptr;
+    if (config_.cache_factorizations && !P.kronecker && !P.extruded &&
+        !P.iterative) {
       const bool banded = config_.local_solver != LocalSolverType::DENSE_LU;
       const int64_t size = banded ? N * P.disc->ldab() : N * N;
       P.factors =

@@ -40,7 +40,9 @@ void sweep_unit(
   const int64_t num_faces = static_cast<int64_t>(v.faces.size());
   const int64_t Qmax = v.max_face_points;
   const bool banded = block.solver != LocalSolverType::DENSE_LU;
-  const bool kronecker = unit.kronecker != nullptr;
+  // Direct structured solvers assemble their own (smaller) systems: no
+  // patch matrix, no factor cache
+  const bool structured = unit.kronecker != nullptr || unit.extruded != nullptr;
   const int64_t matrix_size = banded ? N * v.ldab : N * N;
   const int64_t* index = banded ? v.band_index : v.dense_index;
 
@@ -64,7 +66,7 @@ void sweep_unit(
     auto ready = [&](int64_t g) {
       return unit.factors && unit.factor_ready[d * G + g];
     };
-    bool cached = kronecker;
+    bool cached = structured;
     if (!cached && unit.factors) {
       cached = true;
       for (int64_t bg = 0; bg < block.num_block_groups && cached; bg++)
@@ -110,7 +112,7 @@ void sweep_unit(
       // Operator: assembled and factored here, or read from the cache
       double* L = A;
       int64_t* piv = ipiv;
-      if (unit.factors && !kronecker && !unit.iterative) {
+      if (unit.factors && !structured && !unit.iterative) {
         L = unit.factors + (d * G + g) * matrix_size;
         piv = unit.factor_pivots + (d * G + g) * N;
       }
@@ -128,7 +130,7 @@ void sweep_unit(
               ", group " + std::to_string(g) + ")");
         }
       };
-      if (!kronecker && !unit.iterative && !ready(g)) {
+      if (!structured && !unit.iterative && !ready(g)) {
         assemble_and_factor();
         if (unit.factors)
           unit.factor_ready[d * G + g] = 1;
@@ -183,6 +185,8 @@ void sweep_unit(
         }
       } else if (unit.kronecker) {
         solved = unit.kronecker->solve(omega, unit.sigma_t[g], b, ws.kronecker);
+      } else if (unit.extruded) {
+        solved = unit.extruded->solve(omega, unit.sigma_t[g], b, ws.extruded);
       }
       if (!solved) {
         if (banded && v.band_order) {

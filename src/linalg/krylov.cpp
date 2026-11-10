@@ -2,6 +2,7 @@
 #include "ttnte/utils/exception.hpp"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace ttnte::linalg::krylov {
 
@@ -14,6 +15,11 @@ double dot(const double* a, const double* b, size_t n)
     s += a[i] * b[i];
   return s;
 }
+
+/// Breakdown threshold, relative to ||A v_k||: below it the new Arnoldi
+/// vector (or the new pivot of R) is rounding noise (a few ulps of
+/// cancellation in the Gram-Schmidt sums).
+constexpr double BREAKDOWN = 64.0 * std::numeric_limits<double>::epsilon();
 
 } // namespace
 
@@ -75,10 +81,15 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
     if (result.num_applies > 0 && result.num_applies >= max_applies) {
       return result;
     }
-    // A zero first guess needs no product: r = b
-    const bool zero =
-      result.num_applies == 0 &&
-      std::all_of(x.begin(), x.end(), [](double v) { return v == 0.0; });
+    // A zero first guess needs no product: r = b. Decided globally, so that
+    // ranks whose own slice is zero still apply the (collective) operator
+    // when another rank's is not
+    bool zero = false;
+    if (result.num_applies == 0) {
+      const bool local_zero =
+        std::all_of(x.begin(), x.end(), [](double v) { return v == 0.0; });
+      zero = reduce ? reduce(local_zero ? 0.0 : 1.0) == 0.0 : local_zero;
+    }
     if (zero) {
       std::fill(w.begin(), w.end(), 0.0);
     } else {
@@ -106,6 +117,8 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
 
     int64_t k = 0;
     bool estimate_converged = false;
+    // A singular on the Krylov space: no further progress possible
+    bool stagnated = false;
     for (; k < m && result.num_applies < max_applies; k++) {
       double* vk1 = V.data() + (k + 1) * n;
       if (progress)
@@ -123,7 +136,15 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
       }
       const double hk1 = std::sqrt(dot(vk1, vk1, n));
       H[(k + 1) * m + k] = hk1;
-      if (hk1 > 0.0) {
+      // ||A v_k|| from the orthogonal decomposition, without another
+      // reduction (identical on every rank, so all take the same branches)
+      double column = hk1 * hk1;
+      for (int64_t j = 0; j <= k; j++)
+        column += H[j * m + k] * H[j * m + k];
+      column = std::sqrt(column);
+      // (Numerical) breakdown: K_{k+1} is invariant under A
+      const bool breakdown = hk1 <= BREAKDOWN * column;
+      if (!breakdown) {
         for (size_t i = 0; i < n; i++)
           vk1[i] /= hk1;
       }
@@ -136,15 +157,27 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
       }
       const double a = H[k * m + k], c = H[(k + 1) * m + k];
       const double rho = std::hypot(a, c);
-      cs[k] = rho > 0.0 ? a / rho : 1.0;
-      sn[k] = rho > 0.0 ? c / rho : 0.0;
+      if (rho <= BREAKDOWN * column) {
+        // A v_k lies in span{A v_0, ..., A v_{k-1}}: R would be singular.
+        // Keep the minimizer over the first k vectors (residual |g[k]|) and
+        // stop: at a breakdown the space cannot grow, so GMRES cannot reach
+        // the tolerance (a singular, inconsistent system); otherwise the
+        // new direction is rounding noise either way
+        result.relative_residual = std::abs(g[k]) / bnorm;
+        stagnated = true;
+        break;
+      }
+      cs[k] = a / rho;
+      sn[k] = c / rho;
       H[k * m + k] = rho;
       H[(k + 1) * m + k] = 0.0;
       g[k + 1] = -sn[k] * g[k];
       g[k] = cs[k] * g[k];
 
       result.relative_residual = std::abs(g[k + 1]) / bnorm;
-      if (result.relative_residual <= tol || hk1 == 0.0) {
+      // A breakdown with nonsingular R solves the system exactly (lucky
+      // breakdown; the estimate is then rounding level)
+      if (result.relative_residual <= tol || breakdown) {
         estimate_converged = true;
         k++;
         break;
@@ -158,8 +191,8 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
       double s = g[i];
       for (int64_t j = i + 1; j < k; j++)
         s -= H[i * m + j] * y[j];
-      // A zero pivot (breakdown of a singular A) leaves that direction out
-      y[i] = H[i * m + i] != 0.0 ? s / H[i * m + i] : 0.0;
+      // Pivots are nonzero: a vanishing one stops the cycle above
+      y[i] = s / H[i * m + i];
     }
     for (int64_t j = 0; j < k; j++) {
       const double* vj = V.data() + j * n;
@@ -172,6 +205,8 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
       result.converged = true;
       return result;
     }
+    if (stagnated)
+      return result;
   }
 }
 

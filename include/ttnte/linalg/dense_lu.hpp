@@ -11,11 +11,12 @@ namespace ttnte::linalg::dense {
 // Raw-array kernels for many small systems (e.g. one per element and
 // direction in a transport sweep), where a framework call per system would
 // cost far more than the arithmetic. Matrices are row-major n x n arrays,
-// A(i, j) = a[i * n + j]; the algorithm is LAPACK's unblocked dgetf2/dgetrs.
+// A(i, j) = a[i * n + j], computed by the linked LAPACK (dgetrf/dgetrs on the
+// column-major transpose; see ttnte/linalg/lapack.hpp).
 
-/// @brief Factor one matrix in place, P A = L U.
-/// @param a Row-major n x n matrix, overwritten with L (unit, below the
-/// diagonal) and U.
+/// @brief Factor one matrix in place for lu_solve().
+/// @param a Row-major n x n matrix, overwritten with LAPACK's LU factors of
+/// its transpose (A^T = P L U, column-major in the same array).
 /// @param n Matrix order.
 /// @param ipiv Output pivot rows (0-based), length n.
 /// @return 0 on success, or j + 1 if U(j, j) is exactly zero. Nearly

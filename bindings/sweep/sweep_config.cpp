@@ -15,8 +15,9 @@ void register_SweepConfig(py::module_& m)
       "Dense LU (single-element, fully discontinuous patches)")
     .value("SYLVESTER", LocalSolverType::SYLVESTER,
       "Kronecker-sum solver on axis-aligned affine patches (one Schur "
-      "factorization per patch for all directions and groups); banded LU "
-      "elsewhere")
+      "factorization per patch for all directions and groups); the "
+      "partially separable ExtrudedSolver on extruded 3-D patches; banded LU "
+      "elsewhere (the default)")
     .value("ITERATIVE", LocalSolverType::ITERATIVE,
       "SYLVESTER on affine patches; preconditioned matrix-free GMRES (sum "
       "factorization) on curved ones")
