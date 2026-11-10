@@ -1219,6 +1219,10 @@ def c5g7(device=None, dtype=None):
     return labels, xs_server
 
 
+# Lowest group edge (eV) given to the server for a library's 0 eV lower edge
+KAIST_LOWEST_EDGE = 1e-5
+
+
 def kaist(
     problem: Literal["1A", "1B", "2A", "2B", "3A", "3B", "4A"] = "2B",
     is_isotropic: bool = False,
@@ -1244,7 +1248,24 @@ def kaist(
     list of ttnte.xs.MaterialLabel
         The labels for the materials in the problem.
     ttnte.xs.Server
-        XS data server object.
+        XS data server object, with the problem's group boundaries
+        (``group_bounds``, eV, descending): 2B's seven groups are
+
+        =====  ==========  ==========
+        Group  Upper (eV)  Lower (eV)
+        =====  ==========  ==========
+        1      2.000E+7    1.353E+6
+        2      1.353E+6    9.119E+3
+        3      9.119E+3    3.928E+0
+        4      3.928E+0    6.251E-1
+        5      6.251E-1    1.457E-1
+        6      1.457E-1    5.692E-2
+        7      5.692E-2    0.000E+0
+        =====  ==========  ==========
+
+        The library's 0 eV lower edge is stored as ``KAIST_LOWEST_EDGE``
+        (1e-5 eV), since the server's lethargy widths need positive bounds.
+        Clear them with ``xs_server.group_bounds = []``.
     """
     if problem != "2B":
         raise NotImplementedError(
@@ -1256,6 +1277,8 @@ def kaist(
 
     data = json.load(open(Path(__file__).parent / f"data/kaist{problem}.json"))
     chi = torch.tensor(data.pop("chi"), dtype=dtype, device=device)
+    bounds = [float(e) for e in data.pop("group_bounds")]
+    bounds[-1] = max(bounds[-1], KAIST_LOWEST_EDGE)
 
     labels = []
     xs_server = Server()
@@ -1289,4 +1312,5 @@ def kaist(
         xs_server.add_material(mat)
 
     xs_server.finalize()
+    xs_server.group_bounds = bounds
     return labels, xs_server

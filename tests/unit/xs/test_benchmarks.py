@@ -1,3 +1,5 @@
+import math
+
 import torch
 
 from ttnte.xs.benchmarks import kaist
@@ -26,6 +28,16 @@ def test_kaist():
     def get(name):
         label = next(l for l in labels if l.to_string() == name)
         return xs_server.get_material(label)
+
+    # Group structure: the library's edges, the 0 eV edge as the cutoff
+    bounds = [2.0e7, 1.353e6, 9.119e3, 3.928, 0.6251, 0.1457, 0.05692, 1e-5]
+    assert xs_server.group_bounds == bounds
+    widths = xs_server.lethargy_widths
+    assert len(widths) == 7
+    assert all(
+        abs(w - math.log(bounds[g] / bounds[g + 1])) < 1e-12
+        for g, w in enumerate(widths)
+    )
 
     # Check some XS data
     assert torch.allclose(
