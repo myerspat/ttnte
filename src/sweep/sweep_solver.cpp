@@ -198,7 +198,7 @@ void SweepSolver::outer_iterations(double k_tol)
     }
   }
   num_iterations_ = std::min<int64_t>(it, config_.max_iter);
-  if (config_.certify && config_.transport == TransportSolve::CROSS) {
+  if (config_.certify && sampled_transport()) {
     certify();
     if (verbose) {
       std::cout << "-- certification: exact transport solve, scalar flux "
@@ -211,9 +211,9 @@ void SweepSolver::outer_iterations(double k_tol)
                 << std::endl;
     }
   }
-  if (!config_.cross.keep_angular_flux)
-    for (auto& cr : crosses_)
-      cr->release();
+  for (auto& sampler : samplers_)
+    if (!sampler->keeps_flux())
+      sampler->release();
   if (verbose) {
     std::cout << "-- " << (converged_ ? "Converged!" : "Failed to Converge!")
               << " (" << num_iterations_ << " outer iterations, "
@@ -221,19 +221,30 @@ void SweepSolver::outer_iterations(double k_tol)
   }
 }
 
+cross::SampledTransport::Ptr SweepSolver::get_sampler(size_t s) const
+{
+  if (s >= samplers_.size())
+    throw utils::runtime_error(
+      ctx("get_sampler"), "No sampler for this group set (sampled transport?)");
+  return samplers_[s];
+}
+
 cross::LayoutCross::Ptr SweepSolver::get_cross(size_t s) const
 {
-  if (s >= crosses_.size())
+  auto cr = s < samplers_.size()
+              ? std::dynamic_pointer_cast<cross::LayoutCross>(samplers_[s])
+              : nullptr;
+  if (!cr)
     throw utils::runtime_error(
       ctx("get_cross"), "No cross for this group set (transport = CROSS?)");
-  return crosses_[s];
+  return cr;
 }
 
 std::map<std::string, double> SweepSolver::get_cross_timings() const
 {
   auto out = cross_timings_;
-  for (const auto& cr : crosses_)
-    for (const auto& [phase, sec] : cr->timings())
+  for (const auto& sampler : samplers_)
+    for (const auto& [phase, sec] : sampler->timings())
       out[phase] += sec;
   return out;
 }
@@ -292,10 +303,10 @@ torch::Tensor SweepSolver::get_angular_flux(int64_t gid) const
   const auto& P = patches_.at(local);
   torch::Tensor psi = P.psi;
   if (!psi.defined()) {
-    // A cross that kept its TT evaluates the patch's flux from it
+    // Samplers that kept their low-rank flux evaluate the patch's from it
     const bool held =
-      !crosses_.empty() && std::all_of(crosses_.begin(), crosses_.end(),
-                             [](const auto& c) { return c->has_tt(); });
+      !samplers_.empty() && std::all_of(samplers_.begin(), samplers_.end(),
+                              [](const auto& c) { return c->holds_flux(); });
     if (!held) {
       throw utils::runtime_error(ctx("get_angular_flux"),
         "The angular flux is only kept with store_angular_flux = true, or "
@@ -304,9 +315,9 @@ torch::Tensor SweepSolver::get_angular_flux(int64_t gid) const
     }
     psi = torch::empty(
       {omega_.size(0), num_groups_, P.disc->num_dofs()}, torch::kFloat64);
-    for (size_t s = 0; s < crosses_.size(); s++)
+    for (size_t s = 0; s < samplers_.size(); s++)
       psi.index_copy_(1, torch::tensor(group_indices_[s], torch::kInt64),
-        cross_patch_psi(s, local));
+        sampled_patch_psi(s, local));
   }
   std::vector<int64_t> shape = angular_modes();
   for (auto s : P.disc->shape())

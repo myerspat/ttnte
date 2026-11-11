@@ -188,6 +188,9 @@ def test_store_angular_flux_and_release():
     # keep_angular_flux is off: the TT is released after the solve
     with pytest.raises(RuntimeError):
         cross.get_patch_angular_flux_tt(cross.local_gids[0])
+    # An exact transport solve has no cross
+    with pytest.raises(RuntimeError, match="No cross"):
+        exact.get_cross()
 
 
 @pytest.mark.mpi(min_size=1)

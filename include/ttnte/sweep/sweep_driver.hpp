@@ -3,6 +3,7 @@
 #include "ttnte/cad/interface_quadrature.hpp"
 #include "ttnte/cad/patch.hpp"
 #include "ttnte/cross/layout_cross.hpp"
+#include "ttnte/cross/sampled_transport.hpp"
 #include "ttnte/driver/transport_solution.hpp"
 #include "ttnte/linalg/banded_cholesky.hpp"
 #include "ttnte/linalg/krylov.hpp"
@@ -292,10 +293,10 @@ private:
   int64_t dag_nanoseconds_ = 0;
   /// Fibers swept by sweep_fibers().
   int64_t num_fibers_ = 0;
-  /// TransportSolve::CROSS: one cross per group set, the tolerance of the
-  /// next transport solve, and per-solve history (tolerance, fibers, largest
-  /// rank, hold-out error).
-  std::vector<cross::LayoutCross::Ptr> crosses_;
+  /// Sampled transport solves (TransportSolve::CROSS): one sampler per
+  /// group set, the tolerance of the next transport solve, and per-solve
+  /// records (tolerance, fibers, largest rank, error).
+  std::vector<cross::SampledTransport::Ptr> samplers_;
   double cross_tol_ = 0.0;
   /// SweepConfig::correction_form: ||b|| / ||x|| of each group set from its
   /// last standard within-group-set solve (b the transport solve of the fixed
@@ -320,14 +321,15 @@ private:
   std::vector<int64_t> cross_fibers_;
   std::vector<int64_t> cross_max_ranks_;
   std::vector<double> cross_errors_;
-  /// Per transport solve: the ranks of the TT and the per-sweep history.
+  /// Per transport solve: the ranks of the approximation and, for a cross,
+  /// its per-sweep history.
   std::vector<std::vector<int64_t>> cross_ranks_;
   std::vector<std::vector<cross::LayoutCross::SweepRecord>> cross_histories_;
-  /// Wall time of the crosses and of their fiber sweeps (last solve).
+  /// Wall time of the samplers and of their fiber sweeps.
   double cross_seconds_ = 0.0;
   double cross_sweep_seconds_ = 0.0;
-  /// Seconds per phase of the cross transport solves outside LayoutCross::run
-  /// (moments, traces, angular flux).
+  /// Seconds per phase of the sampled transport solves outside the
+  /// samplers' runs (moments, traces, angular flux).
   std::map<std::string, double> cross_timings_;
   /// Seconds per step of the within-group-set solves (see solve_timings()).
   std::map<std::string, double> solve_timings_;
@@ -408,8 +410,8 @@ private:
   typename Solution::Ptr make_solution(bool angular) const;
 
   /// @return (N_Omega, |group set s|, N) angular flux of unit `local` from
-  /// group set s's cross.
-  torch::Tensor cross_patch_psi(size_t s, size_t local) const;
+  /// group set s's sampler.
+  torch::Tensor sampled_patch_psi(size_t s, size_t local) const;
 
   /// @brief Sets the ATen intra-op thread count for a scope (0 leaves it)
   /// and restores it on exit, also when a task throws.
@@ -463,13 +465,21 @@ private:
   /// sign.
   std::vector<int64_t> initial_directions() const;
 
-  /// @brief One cross per group set (TransportSolve::CROSS).
+  /// @return Whether transport solves are sampled (one SampledTransport per
+  /// group set) rather than exact sweeps.
+  bool sampled_transport() const noexcept
+  {
+    return config_.transport == TransportSolve::CROSS;
+  }
+
+  /// @brief One sampler per group set for a sampled transport solve (a
+  /// LayoutCross for TransportSolve::CROSS).
   void build_crosses();
 
-  /// @brief Transport solve of group set `s` by the cross: moments into
+  /// @brief Transport solve of group set `s` by its sampler: moments into
   /// moments_next, and the lagged and reflective traces (the delayed
   /// blocks) and the angular flux, if stored, from the low-rank flux.
-  void cross_group_set(size_t s);
+  void sampled_group_set(size_t s);
 
   /// @brief Run `fn` and add its wall time to solve_timings_[phase].
   template<typename Fn>
@@ -723,8 +733,12 @@ public:
   {
     return fiber_offsets_;
   }
+  /// @return The sampler of group set `s` (sampled transport solves),
+  /// holding the low-rank flux of the last transport solve.
+  cross::SampledTransport::Ptr get_sampler(size_t s = 0) const;
   /// @return The cross of group set `s` (TransportSolve::CROSS), holding
   /// the TT of the last transport solve.
+  /// @throws std::runtime_error If group set `s` has no cross.
   cross::LayoutCross::Ptr get_cross(size_t s = 0) const;
   /// @return Cores of patch `gid`'s angular flux TT for group set `s` (last
   /// transport solve), in the configured layout.
@@ -746,9 +760,9 @@ public:
     return cross_max_ranks_;
   }
   double get_cross_seconds() const noexcept { return cross_seconds_; }
-  /// @return Seconds per phase of the cross transport solves: the phases of
-  /// LayoutCross::run summed over the group sets' crosses (see
-  /// LayoutCross::timings()), and moments, traces and angular_flux.
+  /// @return Seconds per phase of the sampled transport solves: the phases
+  /// of the samplers' runs summed over the group sets (see
+  /// SampledTransport::timings()), and moments, traces and angular_flux.
   std::map<std::string, double> get_cross_timings() const;
   /// @return Seconds per step of the within-group-set solves, accumulated:
   /// inner (whole within-group-set solves), gmres (the Krylov solves within

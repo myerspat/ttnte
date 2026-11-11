@@ -147,8 +147,8 @@ std::vector<int64_t> SweepSolver::initial_directions() const
 
 void SweepSolver::build_crosses()
 {
-  crosses_.clear();
-  if (config_.transport != TransportSolve::CROSS)
+  samplers_.clear();
+  if (!sampled_transport())
     return;
   // TODO: exchange tasks and reductions for multi-rank crosses
   if (comm_.size() > 1)
@@ -197,7 +197,7 @@ void SweepSolver::build_crosses()
           g = group_indices_[s][g];
       sweep_fibers(global, out, done);
     };
-    crosses_.push_back(
+    samplers_.push_back(
       cross::LayoutCross::create(std::move(problem), config_.cross));
   }
 }

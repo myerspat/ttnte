@@ -3,6 +3,7 @@
 #include "ttnte/cross/cross_config.hpp"
 #include "ttnte/cross/cross_problem.hpp"
 #include "ttnte/cross/fiber_store.hpp"
+#include "ttnte/cross/sampled_transport.hpp"
 #include "ttnte/tensor/layout.hpp"
 #include <array>
 #include <cstdint>
@@ -28,7 +29,7 @@ namespace ttnte::cross {
 /// hold-out set of out-of-sample fibers fits within holdout_factor * tol.
 /// The moments, traces and TTs are contracted from the (unweighted) cores;
 /// the angular flux is never formed.
-class LayoutCross {
+class LayoutCross : public SampledTransport {
 public:
   // =================================================================
   // Public types
@@ -373,7 +374,7 @@ public:
 
   /// @brief Run the cross for the current state of the oracle (one
   /// transport solve).
-  void run();
+  void run() override final;
 
   /// @brief Contract the TT over every mode with a selector.
   /// @param select One selector per mode (MU, GA, S, E). Angle modes must be
@@ -387,7 +388,7 @@ public:
     const torch::Tensor& angle_matrix = {}) const;
 
   /// @return (num_moments, G, num_space) flux moments.
-  torch::Tensor moments() const;
+  torch::Tensor moments() const override final;
   /// @return (|pairs|, num_space) fibers of the TT at (direction, group)
   /// pairs (d * G + g): each pair's left and right factors, and one product
   /// per slice of the space core, so no slice is copied per pair. For
@@ -397,7 +398,7 @@ public:
   /// @return (|directions|, |groups|, |space|) angular flux values.
   torch::Tensor evaluate(const std::vector<int64_t>& directions,
     const std::vector<int64_t>& groups,
-    const std::vector<int64_t>& space) const;
+    const std::vector<int64_t>& space) const override final;
   /// @return The TT of patch `p` in the configured layout (x/y/z split as
   /// requested), rounded at the tolerance: cores (r_l, n_k, r_r), n_k the
   /// product of the core's index sizes. The rounding acts on the unweighted
@@ -412,8 +413,11 @@ public:
   const std::vector<torch::Tensor>& cores() const noexcept { return cores_; }
   const tensor::Layout& layout() const noexcept { return layout_; }
   const tensor::Layout& user_layout() const noexcept { return user_layout_; }
-  std::vector<int64_t> ranks() const;
-  int64_t num_fibers() const noexcept { return store_->num_swept(); }
+  std::vector<int64_t> ranks() const override final;
+  int64_t num_fibers() const noexcept override final
+  {
+    return store_->num_swept();
+  }
   /// @return The weighting factors in effect: those CrossConfig::weighting
   /// enables that the problem has the data for.
   const Weighting& weighting() const noexcept { return store_->weighting(); }
@@ -422,18 +426,23 @@ public:
   /// on: the pool's, or the global estimate when the pool failed and
   /// global_holdout is set.
   double holdout_error() const noexcept { return holdout_error_; }
+  /// @return holdout_error().
+  double error() const noexcept override final { return holdout_error_; }
   /// @return Estimated global relative error at the last check, NaN if the
   /// pool alone accepted it.
   double global_error() const noexcept { return global_error_; }
   /// @return One record per half-sweep of the last run.
   const std::vector<SweepRecord>& history() const noexcept { return history_; }
-  bool converged() const noexcept { return converged_; }
+  bool converged() const noexcept override final { return converged_; }
   /// @return Whether the last run stopped on stalled passes (see
   /// CrossConfig::stall_passes).
   bool stalled() const noexcept { return stalled_; }
   int64_t sweeps_done() const noexcept { return sweeps_done_; }
-  double sweep_seconds() const noexcept { return store_->sweep_seconds(); }
-  double seconds() const noexcept { return seconds_; }
+  double sweep_seconds() const noexcept override final
+  {
+    return store_->sweep_seconds();
+  }
+  double seconds() const noexcept override final { return seconds_; }
   /// @return Seconds per phase of run(), accumulated over every run and
   /// disjoint except weight_cpu: sweep (the oracle, including the weighting
   /// of finished fibers that runs inside it), weight_cpu (seconds in the
@@ -442,9 +451,9 @@ public:
   /// fibers into superblocks), project (B^+ and C^+ on superblocks), svd
   /// (truncations and end-core fits), select, basis (the left inverses of the
   /// new bases), init and check (both without their sweeps), unweight.
-  std::map<std::string, double> timings() const;
+  std::map<std::string, double> timings() const override final;
   /// @return Every sweep request of every run (see SweepCall).
-  const std::vector<SweepCall>& sweep_calls() const noexcept
+  const std::vector<SweepCall>& sweep_calls() const noexcept override final
   {
     return store_->sweep_calls();
   }
@@ -498,15 +507,23 @@ public:
   std::vector<torch::Tensor> recorded_bases(int64_t i) const;
   /// @return index_set() after recorded half pass i.
   torch::Tensor recorded_index_set(int64_t i, bool left, int64_t k) const;
-  void set_tolerance(double tol) { config_.tol = tol; }
+  void set_tolerance(double tol) override final { config_.tol = tol; }
+  double tolerance() const noexcept override final { return config_.tol; }
   /// @brief Drop the cores of the last run (see
   /// CrossConfig::keep_angular_flux).
-  void release() { cores_.clear(); }
+  void release() override final { cores_.clear(); }
   /// @return Whether the cores of the last run are held.
   bool has_tt() const noexcept
   {
     return static_cast<int64_t>(cores_.size()) == K_ && K_ > 0 &&
            cores_[0].defined();
+  }
+  /// @return has_tt().
+  bool holds_flux() const noexcept override final { return has_tt(); }
+  /// @return CrossConfig::keep_angular_flux.
+  bool keeps_flux() const noexcept override final
+  {
+    return config_.keep_angular_flux;
   }
 };
 

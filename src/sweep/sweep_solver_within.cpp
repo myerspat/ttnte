@@ -312,8 +312,8 @@ void SweepSolver::correction_solve(size_t s, bool jacobi, double tol,
 
   // The stored angular flux and the kept TT come from the last transport
   // solve: redo it from the accepted iterate when they are wanted
-  const bool keep_angular_flux = config_.transport == TransportSolve::CROSS &&
-                                 config_.cross.keep_angular_flux;
+  const bool keep_angular_flux =
+    !samplers_.empty() && samplers_[s]->keeps_flux();
   if (config_.store_angular_flux || keep_angular_flux) {
     unpack(s, x.data(), true);
     compute_source(s, Within::KRYLOV, true, jacobi);
