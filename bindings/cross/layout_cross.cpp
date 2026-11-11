@@ -89,6 +89,9 @@ void register_LayoutCross(py::module_& m)
     .def_property_readonly("user_layout",
       [](const LayoutCross& c) { return c.user_layout().to_string(); })
     .def_property_readonly("ranks", &LayoutCross::ranks)
+    .def_property_readonly("weighting", &LayoutCross::weighting,
+      "Weighting factors in effect: those enabled that the problem has data "
+      "for (lethargy widths, mass bands).")
     // Testing aids
     .def("index_set", &LayoutCross::index_set, py::arg("left"), py::arg("k"),
       "(|set|, 4) components (mu, gamma, s, E; -1 free) of left_[k] or "

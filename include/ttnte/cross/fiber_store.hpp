@@ -1,0 +1,172 @@
+#pragma once
+
+#include "ttnte/cross/cross_problem.hpp"
+#include "ttnte/cross/weighting.hpp"
+#include <c10/core/Allocator.h>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <string>
+#include <torch/extension.h>
+#include <vector>
+
+namespace ttnte::cross {
+
+/// @brief The swept fibers of one sampled transport solve, weighted as they
+/// finish.
+///
+/// Every request goes to the problem's sweep oracle once, for the pairs not
+/// yet stored; directions sharing a group list are swept as one block. A
+/// finished fiber of (direction d, group g) is stored as
+///   a_d e_g R_P psi_{d,g}
+/// on each patch P, each factor only if enabled (see Weighting). The
+/// weighting runs inside the oracle's tasks as fibers finish.
+///
+/// Shared by the samplers of one transport solve (LayoutCross and the
+/// Galerkin samplers): they differ in which pairs they request and what they
+/// fit, not in how pairs are swept, weighted and stored.
+class FiberStore {
+public:
+  // =================================================================
+  // Public types
+  using Ptr = std::shared_ptr<FiberStore>;
+
+  /// @brief One request to the sweep oracle: the phase of the sampler that
+  /// made it, its new fibers, sweep blocks (a direction list sharing one
+  /// group list) and distinct directions, and its seconds.
+  struct SweepCall {
+    std::string phase;
+    int64_t fibers = 0;
+    int64_t blocks = 0;
+    int64_t directions = 0;
+    double seconds = 0.0;
+  };
+
+protected:
+  // =================================================================
+  // Protected data
+  /// The problem (sizes, oracle, weights, patch layout); not owned elsewhere.
+  CrossProblem problem_;
+  int64_t num_directions_ = 0;
+  int64_t num_groups_ = 0;
+  int64_t num_space_ = 0;
+  /// The factors in effect: those asked for that the problem has data for
+  /// (none until the constructor enables them).
+  Weighting weighting_ {false, false, false};
+
+  /// Weight factors: sqrt(w_d) per direction and 1 / sqrt(du_g) per group
+  /// (1 where disabled), and the Cholesky factors of the patch mass matrices
+  /// (empty where disabled), banded and, for small patches, dense.
+  std::vector<double> angle_weight_;
+  std::vector<double> energy_weight_;
+  std::vector<torch::Tensor> mass_factors_;
+  std::vector<int64_t> mass_kd_;
+  /// The same factors as dense upper triangular R_P for patches small enough
+  /// to apply them to batches of fibers with BLAS-3 (undefined otherwise).
+  std::vector<torch::Tensor> mass_dense_;
+
+  /// Swept fibers (weighted): one block per sweep request, never moved, and
+  /// each pair's fiber within it (null: not swept). Blocks come from
+  /// torch's CPU allocator, which puts large ones on huge pages when
+  /// THP_MEM_ALLOC_ENABLE=1.
+  std::vector<c10::DataPtr> blocks_;
+  std::vector<const double*> slot_;
+  int64_t num_swept_ = 0;
+  /// Sum of squared norms of the stored (weighted) fibers.
+  double swept_sq_ = 0.0;
+
+  /// Oracle seconds since the last clear(), and accumulated over every
+  /// request: "sweep" (the oracle, including the weighting inside it) and
+  /// "weight_cpu" (seconds in the weighting callbacks summed over the
+  /// threads running them, overlapping "sweep").
+  double sweep_seconds_ = 0.0;
+  std::map<std::string, double> timings_;
+  /// Every request, over every run.
+  std::vector<SweepCall> sweep_calls_;
+
+  // =================================================================
+  // Protected constructors
+  /// @param weighting The factors to apply; energy and space are applied
+  /// only where the problem carries lethargy widths and mass bands.
+  /// @throws std::runtime_error If the problem's patch layout is
+  /// inconsistent with its sizes or, for an enabled factor, its mass bands
+  /// or lethargy widths are, or a mass matrix is not positive definite.
+  FiberStore(CrossProblem problem, Weighting weighting);
+
+  [[nodiscard]] static std::string ctx(const std::string& f)
+  {
+    return "ttnte::cross::FiberStore::" + f;
+  }
+
+public:
+  // =================================================================
+  // Public methods
+  template<typename... Args>
+  static Ptr create(Args&&... args)
+  {
+    return Ptr(new FiberStore(std::forward<Args>(args)...));
+  }
+
+  /// @brief Make every fiber of `pairs` (d * G + g) available: sweep those
+  /// not yet stored in one oracle request (directions sharing a group list
+  /// form one block), weight them as they finish, store them in a new block,
+  /// and record the request.
+  /// @param pairs Pair indices, in any order, repeats allowed.
+  /// @param phase The sampler phase making the request (for SweepCall).
+  void ensure(std::vector<int64_t> pairs, const char* phase);
+
+  /// @brief Start a new run: drop every stored fiber and zero the run's
+  /// counters (fibers, squared norm, sweep seconds); the SweepCall records
+  /// and accumulated timings are kept.
+  void clear();
+
+  /// @brief Free the stored fibers but keep the run's counters (the
+  /// samplers report them after the run).
+  void release();
+
+  /// @brief Apply R_P (or R_P^{-1}) of every patch to `count` contiguous
+  /// fibers at `rows`, serially (callers parallelize over rows). Nothing
+  /// happens without space weighting.
+  void apply_mass(double* rows, int64_t count, bool inverse) const;
+
+  // =================================================================
+  // Public getters
+  /// @return Whether fiber `pair` is stored.
+  bool swept(int64_t pair) const { return slot_[pair] != nullptr; }
+  /// @return The stored (weighted) fiber of `pair`, num_space values; it
+  /// must be swept.
+  const double* fiber(int64_t pair) const { return slot_[pair]; }
+  /// @return The slot of every pair (d * G + g), null where not swept.
+  const std::vector<const double*>& slots() const noexcept { return slot_; }
+  int64_t num_swept() const noexcept { return num_swept_; }
+  /// @return Sum of squared norms of the stored (weighted) fibers.
+  double swept_sq() const noexcept { return swept_sq_; }
+  /// @return Oracle seconds since the last clear() (the current run).
+  double sweep_seconds() const noexcept { return sweep_seconds_; }
+  /// @return Accumulated "sweep" and "weight_cpu" seconds (see timings_).
+  const std::map<std::string, double>& timings() const noexcept
+  {
+    return timings_;
+  }
+  const std::vector<SweepCall>& sweep_calls() const noexcept
+  {
+    return sweep_calls_;
+  }
+  const CrossProblem& problem() const noexcept { return problem_; }
+  /// @return sqrt(w_d) per direction (1 without angle weighting).
+  const std::vector<double>& angle_weights() const noexcept
+  {
+    return angle_weight_;
+  }
+  /// @return 1 / sqrt(du_g) per group (1 without energy weighting).
+  const std::vector<double>& energy_weights() const noexcept
+  {
+    return energy_weight_;
+  }
+  /// @return The factors in effect (asked for, with the data to apply them).
+  const Weighting& weighting() const noexcept { return weighting_; }
+  /// @return Whether fibers are weighted by R_P.
+  bool has_space_weights() const noexcept { return weighting_.space; }
+};
+
+} // namespace ttnte::cross

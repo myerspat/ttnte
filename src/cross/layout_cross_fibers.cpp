@@ -1,5 +1,4 @@
-// LayoutCross: The fiber store: sweeping and weighting fibers, superblocks,
-// unweighting.
+// LayoutCross: Requesting fibers from the store, superblocks, unweighting.
 #include "cross/layout_cross_detail.hpp"
 #include "ttnte/cross/layout_cross.hpp"
 
@@ -9,86 +8,10 @@ using namespace detail;
 
 void LayoutCross::ensure(std::vector<int64_t> pairs, const char* phase)
 {
-  std::sort(pairs.begin(), pairs.end());
-  pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
   if (std::strcmp(phase, "check") != 0)
     for (int64_t p : pairs)
       fitted_[p] = 1;
-  pairs.erase(std::remove_if(pairs.begin(), pairs.end(),
-                [&](int64_t p) { return swept(p); }),
-    pairs.end());
-  if (pairs.empty())
-    return;
-  const int64_t G = size_[E];
-  const int64_t Ns = size_[S];
-  // Directions sharing a group list are swept as one block
-  std::map<int64_t, std::vector<int64_t>> by_direction;
-  for (int64_t p : pairs)
-    by_direction[p / G].push_back(p % G);
-  std::map<std::vector<int64_t>, std::vector<int64_t>> by_groups;
-  for (auto& [d, groups] : by_direction)
-    by_groups[groups].push_back(d);
-  std::vector<sweep::FiberBlock> blocks;
-  for (auto& [groups, dirs] : by_groups)
-    blocks.push_back({dirs, groups});
-
-  // A new block per request: the earlier fibers are never moved
-  const int64_t count = static_cast<int64_t>(pairs.size());
-  fiber_blocks_.push_back(c10::GetCPUAllocator()->allocate(
-    static_cast<size_t>(count * Ns) * sizeof(double)));
-  double* block = static_cast<double*>(fiber_blocks_.back().get());
-  // The pairs in the order of the output rows (block by block,
-  // direction-major, then group)
-  std::vector<int64_t> new_pairs;
-  new_pairs.reserve(count);
-  for (const auto& blk : blocks)
-    for (int64_t d : blk.directions)
-      for (int64_t g : blk.groups)
-        new_pairs.push_back(d * G + g);
-
-  // Weight finished rows: R_P per patch (BLAS-3 where the dense factor is
-  // held), then sqrt(w_d) / sqrt(du_g). The oracle calls this as fibers
-  // finish, inside its tasks (serial there), so it overlaps the rest of the
-  // sweep; called on many rows at once it runs in parallel over chunks
-  std::atomic<int64_t> weight_ns {0};
-  auto weigh = [&](int64_t r0, int64_t n) {
-    const auto w0 = Clock::now();
-    // Small calls come from the sweep's worker threads (one task family's
-    // rows): serial there, rather than an OpenMP team per worker
-    const int64_t grain = n < SERIAL_ROWS ? n : row_grain(n);
-    at::parallel_for(0, n, grain, [&](int64_t b0, int64_t b1) {
-      apply_mass(block + (r0 + b0) * Ns, b1 - b0, false);
-      for (int64_t i = b0; i < b1; i++) {
-        const int64_t p = new_pairs[r0 + i];
-        const double scale = angle_weight_[p / G] * energy_weight_[p % G];
-        double* f = block + (r0 + i) * Ns;
-        for (int64_t s = 0; s < Ns; s++)
-          f[s] *= scale;
-      }
-    });
-    weight_ns +=
-      std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - w0)
-        .count();
-  };
-
-  auto t0 = Clock::now();
-  problem_.sweep(blocks, block, weigh);
-  const double swept = elapsed(t0);
-  sweep_seconds_ += swept;
-  timings_["sweep"] += swept;
-  timings_["weight_cpu"] += 1e-9 * static_cast<double>(weight_ns.load());
-  sweep_calls_.push_back({phase, static_cast<int64_t>(pairs.size()),
-    static_cast<int64_t>(blocks.size()),
-    static_cast<int64_t>(by_direction.size()), swept});
-
-  for (int64_t i = 0; i < count; i++) {
-    slot_[new_pairs[i]] = block + i * Ns;
-  }
-  num_swept_ += count;
-  double sq = 0.0;
-  for (int64_t i = 0; i < count * Ns; i++)
-    sq += block[i] * block[i];
-  swept_sq_ += sq;
+  store_->ensure(std::move(pairs), phase);
 }
 
 // =================================================================
@@ -268,9 +191,7 @@ torch::Tensor LayoutCross::superblock(size_t k, bool raw)
 
 void LayoutCross::unweight()
 {
-  const bool angle = config_.weighted;
-  const bool energy = config_.weighted && !problem_.lethargy_widths.empty();
-  const bool space = !mass_factors_.empty();
+  const auto [angle, energy, space] = store_->weighting();
   if (!angle && !energy && !space)
     return;
   auto w = problem_.weights.to(torch::kFloat64);
@@ -313,7 +234,7 @@ void LayoutCross::unweight()
     }
     const int64_t ae = axis_of(E);
     if (energy && ae >= 0) {
-      auto ew = torch::tensor(energy_weight_, torch::kFloat64);
+      auto ew = torch::tensor(store_->energy_weights(), torch::kFloat64);
       scale_axis(ae, ew.reciprocal());
     }
     const int64_t as = axis_of(S);
@@ -331,34 +252,6 @@ void LayoutCross::unweight()
     }
     cores_[k] =
       t.reshape({cores_[k].size(0), n_[k], cores_[k].size(2)}).contiguous();
-  }
-}
-
-void LayoutCross::apply_mass(double* rows, int64_t count, bool inverse) const
-{
-  const int64_t Ns = size_[S];
-  auto t = torch::from_blob(rows, {count, Ns}, torch::kFloat64);
-  for (size_t q = 0; q < mass_factors_.size(); q++) {
-    const int64_t off = problem_.patch_offsets[q];
-    const int64_t n = mass_factors_[q].size(0);
-    if (mass_dense_[q].defined()) {
-      // Rows are fibers: f R^T applies R, and solving R^T on the right
-      // (R from the left on the transposed rows) applies R^{-1}
-      auto part = t.narrow(1, off, n);
-      part.copy_(inverse ? torch::linalg_solve_triangular(
-                             mass_dense_[q], part.t(), /*upper=*/true)
-                             .t()
-                         : part.mm(mass_dense_[q].t()));
-      continue;
-    }
-    const double* factor = mass_factors_[q].data_ptr<double>();
-    for (int64_t i = 0; i < count; i++) {
-      double* f = rows + i * Ns + off;
-      if (inverse)
-        linalg::banded::cholesky_solve_upper(factor, n, mass_kd_[q], f);
-      else
-        linalg::banded::cholesky_apply_upper(factor, n, mass_kd_[q], f);
-    }
   }
 }
 

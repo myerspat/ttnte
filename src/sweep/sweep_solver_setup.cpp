@@ -167,19 +167,18 @@ void SweepSolver::build_crosses()
   base.harmonics = harmonics_;
   base.initial_directions = initial_directions();
   base.patch_offsets = fiber_offsets_;
+  // The problem carries the data of every weighting factor; each sampler
+  // applies the factors its own config enables
   for (const auto& P : patches_) {
     base.patch_shapes.push_back(P.disc->shape());
-    if (config_.cross.weighted) {
-      base.mass_bands.push_back(
-        linalg::banded::symmetric_band_from_pairs(P.disc->pair_row(),
-          P.disc->pair_col(), P.disc->mass_values(), P.disc->num_dofs())
-          .first);
-    }
+    base.mass_bands.push_back(
+      linalg::banded::symmetric_band_from_pairs(P.disc->pair_row(),
+        P.disc->pair_col(), P.disc->mass_values(), P.disc->num_dofs())
+        .first);
   }
-  // Energy weighting by lethargy when the cross sections carry their group
-  // boundaries (the server checked them: G + 1, decreasing, positive)
-  const auto widths = config_.cross.weighted ? xs_server_->lethargy_widths()
-                                             : std::vector<double> {};
+  // Lethargy widths when the cross sections carry their group boundaries
+  // (the server checked them: G + 1, decreasing, positive)
+  const auto widths = xs_server_->lethargy_widths();
   if (!widths.empty() && static_cast<int64_t>(widths.size()) != num_groups_)
     throw utils::runtime_error(ctx("setup"),
       "The cross-section server's group boundaries do not match the groups");

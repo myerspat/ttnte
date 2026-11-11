@@ -10,7 +10,7 @@ double LayoutCross::check()
 {
   const int64_t total = num_directions_ * size_[E];
   const int64_t holdout = std::max<int64_t>(config_.holdout, 1);
-  const int64_t free = total - num_swept_;
+  const int64_t free = total - store_->num_swept();
   const bool fresh = free >= holdout;
   // Pool pairs the fit has since used (forced after a failed check, or
   // picked by selection) are in sample now: drop them from the pool
@@ -125,13 +125,13 @@ double LayoutCross::check()
   double err_sq = 0.0, norm_sq = 0.0;
   if (fresh) {
     const double out = static_cast<double>(free + B - holdout);
-    const double in = static_cast<double>(num_swept_ - B);
-    norm_sq = (swept_sq_ - pool_sq) + out * pool_sq / B;
+    const double in = static_cast<double>(store_->num_swept() - B);
+    norm_sq = (store_->swept_sq() - pool_sq) + out * pool_sq / B;
     err_sq = out * pool_err_sq / B;
     if (in > 0) {
       std::unordered_set<int64_t> in_pool(pool_.begin(), pool_.end());
       std::vector<int64_t> candidates;
-      candidates.reserve(num_swept_ - B);
+      candidates.reserve(store_->num_swept() - B);
       for (int64_t p = 0; p < total; p++)
         if (swept(p) && !in_pool.count(p))
           candidates.push_back(p);
@@ -147,7 +147,8 @@ double LayoutCross::check()
     }
   } else {
     const double unswept = static_cast<double>(free);
-    norm_sq = swept_sq_ + unswept * swept_sq_ / std::max<double>(num_swept_, 1);
+    norm_sq = store_->swept_sq() + unswept * store_->swept_sq() /
+                                     std::max<double>(store_->num_swept(), 1);
     err_sq = static_cast<double>(total) * pool_err_sq / B;
   }
   global_error_ = std::sqrt(err_sq / std::max(norm_sq, 1e-300));
