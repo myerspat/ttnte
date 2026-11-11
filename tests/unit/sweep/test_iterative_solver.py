@@ -40,7 +40,14 @@ def test_matrix_free_operator_matches_assembled(num_dim):
 @pytest.mark.parametrize("reflective", [False, True])
 def test_iterative_matches_banded_lu_on_curved_patches(num_dim, reflective):
     lu = _solved(num_dim, LocalSolverType.BANDED_LU, BUILDERS[num_dim](G, reflective))
-    it = _solved(num_dim, LocalSolverType.ITERATIVE, BUILDERS[num_dim](G, reflective))
+    # The 3-D solves average 85-95 operator applies, but many exceed the
+    # default 100 iterations (then fall back to LU); 200 converges every one
+    it = _solved(
+        num_dim,
+        LocalSolverType.ITERATIVE,
+        BUILDERS[num_dim](G, reflective),
+        local_max_iter=200,
+    )
     a = torch.cat([it.get_moments(g).flatten() for g in it.local_gids])
     b = torch.cat([lu.get_moments(g).flatten() for g in lu.local_gids])
     assert ((a - b).norm() / b.norm()).item() < 1e-7
