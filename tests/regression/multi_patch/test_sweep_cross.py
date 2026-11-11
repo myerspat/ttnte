@@ -2,10 +2,14 @@
 reach the same discrete solution to the requested tolerance, in 1/2/3-D, with vacuum and
 reflective boundaries, for fixed-source and k-eigenvalue problems."""
 
+import math
+
+import mpi4py.MPI
 import pytest
 import torch
 
 from tests.unit.sweep.problems import BUILDERS, driver, quadrature
+from ttnte import mpi_context
 from ttnte.cross import CrossConfig
 from ttnte.sweep import InnerSolver, SweepConfig, TransportSolve
 
@@ -14,6 +18,12 @@ TOL = 1e-6
 
 
 def _solve(num_dim, reflective, transport, fissile=False, n=3, **kw):
+    # CROSS is serial in space (SweepSolver::build_crosses throws on more than
+    # one rank). Skip on every rank alike, before any collective: a throw
+    # partway through setup leaves the ranks out of step and hangs later tests.
+    # (pytest-mpi has no max_size for the mpi marker.)
+    if transport == TransportSolve.CROSS and mpi_context.world_size > 1:
+        pytest.skip("CROSS transport solves are serial in space for now")
     cross = kw.pop("cross", CrossConfig())
     mesh, xs = BUILDERS[num_dim](G, reflective, fissile)
     sw = driver(num_dim, mesh, xs)
@@ -36,11 +46,24 @@ def _solve(num_dim, reflective, transport, fissile=False, n=3, **kw):
 
 
 def _scalar_flux(sw):
-    return torch.cat([sw.get_moments(gid)[0].flatten() for gid in sw.local_gids])
+    """The rank's scalar flux (empty on a rank that owns no patches)."""
+    parts = [sw.get_moments(gid)[0].flatten() for gid in sw.local_gids]
+    return torch.cat(parts) if parts else torch.zeros(0, dtype=torch.float64)
 
 
 def _rel(a, b):
+    """Relative error of local tensors (no communication)."""
     return ((a - b).norm() / b.norm()).item()
+
+
+def _flux_rel(sw, ref):
+    """Relative error of sw's scalar flux against ref's over all ranks: every rank gets
+    the same value (a collective; call it on every rank)."""
+    a, b = _scalar_flux(sw), _scalar_flux(ref)
+    sums = [((a - b) ** 2).sum().item(), (b**2).sum().item()]
+    if mpi_context.world_size > 1:
+        sums = [mpi4py.MPI.COMM_WORLD.allreduce(v) for v in sums]
+    return math.sqrt(sums[0] / sums[1])
 
 
 CASES = [(d, r) for d in (1, 2, 3) for r in (False, True)]
@@ -51,7 +74,7 @@ CASES = [(d, r) for d in (1, 2, 3) for r in (False, True)]
 def test_fixed_source_matches_exact(num_dim, reflective):
     exact = _solve(num_dim, reflective, TransportSolve.EXACT)
     cross = _solve(num_dim, reflective, TransportSolve.CROSS)
-    assert _rel(_scalar_flux(cross), _scalar_flux(exact)) < 10 * TOL
+    assert _flux_rel(cross, exact) < 10 * TOL
     assert len(cross.cross_fibers) > 0
     assert max(cross.cross_tolerances) <= SweepConfig().cross_max_tol
 
@@ -62,7 +85,7 @@ def test_eigenvalue_matches_exact(num_dim, reflective):
     exact = _solve(num_dim, reflective, TransportSolve.EXACT, fissile=True)
     cross = _solve(num_dim, reflective, TransportSolve.CROSS, fissile=True)
     assert abs(cross.k_eff - exact.k_eff) < 1e-5
-    assert _rel(_scalar_flux(cross), _scalar_flux(exact)) < 1e-4
+    assert _flux_rel(cross, exact) < 1e-4
 
 
 @pytest.mark.mpi(min_size=1)
@@ -71,7 +94,7 @@ def test_eigenvalue_matches_exact(num_dim, reflective):
 def test_correction_form_fixed_source(num_dim, reflective, transport):
     exact = _solve(num_dim, reflective, TransportSolve.EXACT)
     corr = _solve(num_dim, reflective, transport, correction_form=True)
-    assert _rel(_scalar_flux(corr), _scalar_flux(exact)) < 10 * TOL
+    assert _flux_rel(corr, exact) < 10 * TOL
 
 
 @pytest.mark.mpi(min_size=1)
@@ -81,7 +104,7 @@ def test_correction_form_eigenvalue(num_dim, reflective, transport):
     exact = _solve(num_dim, reflective, TransportSolve.EXACT, fissile=True)
     corr = _solve(num_dim, reflective, transport, fissile=True, correction_form=True)
     assert abs(corr.k_eff - exact.k_eff) < 1e-5
-    assert _rel(_scalar_flux(corr), _scalar_flux(exact)) < 1e-4
+    assert _flux_rel(corr, exact) < 1e-4
     # One transport solve per group set per outer (no right-hand side and
     # final sweeps): fewer group-set sweeps than the standard form
     if transport == TransportSolve.EXACT:
@@ -98,7 +121,7 @@ def test_correction_form_with_forcing(transport):
         2, True, transport, fissile=True, inner_forcing=0.1, correction_form=True
     )
     assert abs(corr.k_eff - standard.k_eff) < 1e-5
-    assert _rel(_scalar_flux(corr), _scalar_flux(standard)) < 1e-4
+    assert _flux_rel(corr, standard) < 1e-4
     assert corr.num_iterations <= standard.num_iterations + 2
 
 
@@ -120,7 +143,7 @@ def test_layouts_and_richardson(layout):
         cross=CrossConfig(layout=layout),
         inner_solver=InnerSolver.RICHARDSON,
     )
-    assert _rel(_scalar_flux(cross), _scalar_flux(exact)) < 10 * TOL
+    assert _flux_rel(cross, exact) < 10 * TOL
 
 
 @pytest.mark.mpi(min_size=1)
@@ -213,7 +236,7 @@ def test_warm_start_eigenvalue(num_dim, reflective, correction_form):
         cross=CrossConfig(warm_start=True),
     )
     assert abs(warm.k_eff - exact.k_eff) < 1e-5
-    assert _rel(_scalar_flux(warm), _scalar_flux(exact)) < 1e-4
+    assert _flux_rel(warm, exact) < 1e-4
 
     def mean_sweeps(sw):
         runs = sw.cross_histories
@@ -229,7 +252,7 @@ def test_warm_start_fixed_source(num_dim, reflective):
     warm = _solve(
         num_dim, reflective, TransportSolve.CROSS, cross=CrossConfig(warm_start=True)
     )
-    assert _rel(_scalar_flux(warm), _scalar_flux(exact)) < 10 * TOL
+    assert _flux_rel(warm, exact) < 10 * TOL
 
 
 @pytest.mark.mpi(min_size=1)
@@ -248,7 +271,7 @@ def test_incremental_transport_eigenvalue(num_dim, reflective, transport):
         incremental_transport=True,
     )
     assert abs(inc.k_eff - exact.k_eff) < 1e-5
-    assert _rel(_scalar_flux(inc), _scalar_flux(exact)) < 1e-4
+    assert _flux_rel(inc, exact) < 1e-4
 
 
 @pytest.mark.mpi(min_size=1)
@@ -256,7 +279,7 @@ def test_incremental_transport_eigenvalue(num_dim, reflective, transport):
 def test_incremental_transport_fixed_source(transport):
     exact = _solve(2, True, TransportSolve.EXACT)
     inc = _solve(2, True, transport, correction_form=True, incremental_transport=True)
-    assert _rel(_scalar_flux(inc), _scalar_flux(exact)) < 10 * TOL
+    assert _flux_rel(inc, exact) < 10 * TOL
 
 
 @pytest.mark.mpi(min_size=1)
