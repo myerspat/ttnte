@@ -139,6 +139,32 @@ struct SweepWorkspace {
 void sweep_unit(
   const UnitSweep& unit, const SweepBlock& block, SweepWorkspace& workspace);
 
+/// @brief Transport residual of one unit for one direction:
+///   r_g = sum_m Y_m(d) s_{m,g} + inflow_g - L_{d,g} x_g
+/// for every group of the block, with L, the source and the inflow
+/// assembled exactly as sweep_unit() assembles them (the same helpers), so
+/// a swept fiber has a residual at rounding level whatever the local
+/// solver. The inflow of a face comes from `upstream` where given (the
+/// candidate flux of the upwind unit, for faces whose upwind unit is swept
+/// before this one), else from the FaceInflow's buffer (lagged and
+/// reflected traces). Thread-safe like sweep_unit().
+/// @param unit The unit (psi, fibers, moments, traces out and factors are
+/// ignored).
+/// @param block Exactly one direction, and the groups.
+/// @param x (num_block_groups, stride) candidate flux: group bg's dofs at
+/// x + bg * stride.
+/// @param stride Distance between the groups of x and of r.
+/// @param upstream Per face: (num_block_groups, source face dofs) upwind
+/// values, or nullptr to read the FaceInflow's buffer.
+/// @param r (num_block_groups, stride) output, overwritten at the unit's N
+/// dofs of each group.
+/// @param workspace Scratch.
+/// @throws std::runtime_error If the block has more than one direction.
+void unit_residual(const UnitSweep& unit, const SweepBlock& block,
+  const double* x, int64_t stride,
+  const std::array<const double*, MAX_FACES>& upstream, double* r,
+  SweepWorkspace& workspace);
+
 /// @brief Accumulate a group-to-group transfer source of one unit, in raw
 /// loops:
 ///   out_{m,g} += scale * M sum_{g' in src} T_{l(m), g <- g'} phi_{m,g'}

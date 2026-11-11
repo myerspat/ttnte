@@ -101,8 +101,9 @@ def slab(num_groups, reflective=False, fissile=False):
     return _finish(mesh, 1, reflective), xs
 
 
-def quarter_circle(num_groups, reflective=False, fissile=False, factor=2):
-    """Four curved patches (the mc27 shielded quarter circle, multigroup)."""
+def quarter_circle(num_groups, reflective=False, fissile=False, factor=2, split=False):
+    """Four curved patches (the mc27 shielded quarter circle, multigroup), optionally
+    split into their Bezier elements (FDG: the upwind graph has cycles)."""
     fills, xs = multigroup_xs(num_groups, fissile)
     c0 = cad.circle(radius=5, angle=torch.pi / 2)
     c1, c2 = c0.slice(0, 0, 0.5), c0.slice(0, 0.5, 1)
@@ -125,7 +126,8 @@ def quarter_circle(num_groups, reflective=False, fissile=False, factor=2):
         )
         if k < 2 and not fissile:
             patch.source = _source(num_groups)
-        mesh.add_block(patch)
+        for block in patch.split_elements() if split else [patch]:
+            mesh.add_block(block)
     return _finish(mesh, 2, reflective), xs
 
 

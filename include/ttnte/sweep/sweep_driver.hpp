@@ -428,10 +428,32 @@ private:
     int previous;
   };
 
+  /// @return Group `bg`'s values of unit `local` in a fiber-layout array
+  /// (|groups|, fiber_length()).
+  template<typename T>
+  T* fiber_at(T* fibers, int64_t bg, size_t local) const noexcept
+  {
+    return fibers + bg * fiber_length_ + fiber_offsets_[local];
+  }
+
+  /// @brief The inflow transport_residual() takes from the candidate flux:
+  /// on each face of unit `local` whose edge is a DEPENDENCY for angle set
+  /// `set`, the upwind unit's x at the dofs of its face (what that unit's
+  /// sweep would write to the trace buffer), (ng, Nf_upwind) per face.
+  /// @param x (ng, fiber_length()) candidate flux.
+  /// @param buffer Storage for the values (resized; the result points into
+  /// it).
+  /// @return Per face, its values, or nullptr if the face is not a
+  /// DEPENDENCY.
+  /// @throws std::runtime_error If an upwind neighbor is on another rank.
+  std::array<const double*, MAX_FACES> gather_upwind(const AngleSet& set,
+    size_t local, int64_t ng, const double* x,
+    std::vector<double>& buffer) const;
+
   /// @return Unit `local` swept for angle set `set`: its operators, source,
   /// inflow and outgoing traces (outputs and factor cache left to the
   /// caller).
-  UnitSweep make_unit(const AngleSet& set, int64_t local);
+  UnitSweep make_unit(const AngleSet& set, int64_t local) const;
 
   /// @brief Point `unit` at patch P's factorization cache, if it has one.
   static void use_factor_cache(PatchState& P, UnitSweep& unit);
@@ -725,6 +747,26 @@ public:
   /// of the sweep.
   void sweep_fibers(const std::vector<FiberBlock>& blocks, double* out,
     const FiberDone& done = {});
+
+  /// @brief Transport residual of a candidate angular flux for one
+  /// direction, with the current source moments and lagged traces (those a
+  /// fiber sweep reads):
+  ///   r_g = sum_m Y_m(d) s_{m,g} + inflow_g - L_{d,g} x_g
+  /// on every local unit (see unit_residual()). Inflow across a face the
+  /// direction sweeps upwind first (a DEPENDENCY edge) is the upwind
+  /// unit's x; across a lagged edge or a reflective face it is the stored
+  /// trace, as in the sweep. So the fiber sweep_fibers() returns for
+  /// (direction, groups) has a residual at rounding level. Serial (one
+  /// direction per call; callers parallelize over directions), and only on
+  /// one rank.
+  /// @param direction The direction.
+  /// @param groups The groups (global indices, distinct).
+  /// @param x (|groups|, fiber_length()) candidate flux, fiber layout.
+  /// @param r (|groups|, fiber_length()) output.
+  /// @throws std::runtime_error On an index out of range, a repeated group
+  /// or a remote upwind neighbor.
+  void transport_residual(int64_t direction, const std::vector<int64_t>& groups,
+    const double* x, double* r) const;
 
   /// @return Length of a fiber (dofs of every local unit).
   int64_t fiber_length() const noexcept { return fiber_length_; }

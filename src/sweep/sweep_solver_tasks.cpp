@@ -93,7 +93,7 @@ torch::Tensor SweepSolver::sampled_patch_psi(size_t s, size_t local) const
   return samplers_[s]->evaluate(dirs, groups, space);
 }
 
-UnitSweep SweepSolver::make_unit(const AngleSet& set, int64_t local)
+UnitSweep SweepSolver::make_unit(const AngleSet& set, int64_t local) const
 {
   auto& P = patches_[local];
   UnitSweep unit;
@@ -172,6 +172,87 @@ void SweepSolver::run_fiber_chunk(size_t t, size_t c, double* out)
     unit.fiber_stride = fiber_length_;
     sweep_unit(unit, block, workspace());
   }
+}
+
+void SweepSolver::transport_residual(int64_t direction,
+  const std::vector<int64_t>& groups, const double* x, double* r) const
+{
+  const int64_t num_directions = omega_.size(0);
+  if (direction < 0 || direction >= num_directions)
+    throw utils::runtime_error(
+      ctx("transport_residual"), "Direction out of range");
+  std::vector<uint8_t> seen(num_groups_, 0);
+  for (int64_t g : groups) {
+    if (g < 0 || g >= num_groups_ || seen[g]++)
+      throw utils::runtime_error(
+        ctx("transport_residual"), "Groups must be distinct and in range");
+  }
+  const int64_t ng = static_cast<int64_t>(groups.size());
+  const int64_t d = direction;
+  const auto& set =
+    graph_
+      ->angle_sets()[graph_->direction_set().template data_ptr<int64_t>()[d]];
+  const std::vector<int64_t> dirs {d};
+  const auto block = make_block(dirs, groups);
+  auto& ws = workspace();
+  thread_local std::vector<double> gathered;
+
+  for (size_t local = 0; local < patches_.size(); local++) {
+    const auto unit = make_unit(set, static_cast<int64_t>(local));
+    const auto upstream = gather_upwind(set, local, ng, x, gathered);
+    // The unit's slice of x and r; its groups stay fiber_length_ apart
+    unit_residual(unit, block, fiber_at(x, 0, local), fiber_length_, upstream,
+      fiber_at(r, 0, local), ws);
+  }
+}
+
+std::array<const double*, MAX_FACES> SweepSolver::gather_upwind(
+  const AngleSet& set, size_t local, int64_t ng, const double* x,
+  std::vector<double>& buffer) const
+{
+  // The DEPENDENCY faces, their upwind unit's face, and where its values go
+  struct Upwind {
+    size_t face;
+    const FaceGeometry* upwind_face;
+    int64_t neighbor;
+    size_t offset;
+  };
+  const auto& P = patches_[local];
+  std::vector<Upwind> faces;
+  size_t total = 0;
+  for (size_t f = 0; f < P.links.size(); f++) {
+    const auto& link = P.links[f];
+    if (link.type != physics::BoundaryType::INTERNAL)
+      continue;
+    const EdgeState state = link.is_first ? set.backward[link.interface]
+                                          : set.forward[link.interface];
+    if (state != EdgeState::DEPENDENCY)
+      continue;
+    if (link.remote_rank >= 0)
+      throw utils::runtime_error(
+        ctx("gather_upwind"), "An upwind neighbor is on another rank");
+    const auto& face =
+      patches_[link.neighbor].disc->faces()[link.neighbor_face];
+    faces.push_back({f, &face, link.neighbor, total});
+    total += static_cast<size_t>(ng * face.num_dofs());
+  }
+
+  // (ng, Nf) per face: the upwind unit's x at its face dofs, in the order
+  // its sweep writes them to the trace buffer
+  buffer.resize(total);
+  std::array<const double*, MAX_FACES> upstream {};
+  for (const auto& u : faces) {
+    const int64_t Nf = u.upwind_face->num_dofs();
+    const int64_t* dofs = u.upwind_face->dofs.template data_ptr<int64_t>();
+    double* dst = buffer.data() + u.offset;
+    for (int64_t bg = 0; bg < ng; bg++) {
+      const double* src = fiber_at(x, bg, u.neighbor);
+      for (int64_t k = 0; k < Nf; k++)
+        dst[bg * Nf + k] = src[dofs[k]];
+    }
+    upstream[u.face] = dst;
+  }
+  return upstream;
 }
 
 void SweepSolver::sampled_group_set(size_t s)

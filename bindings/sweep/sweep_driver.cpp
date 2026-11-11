@@ -70,6 +70,28 @@ static void register_SweepDriver_impl(
       "block, direction-major then group; each row holds the local units' "
       "dofs in local order (see fiber_offsets).",
       py::arg("blocks"))
+    .def(
+      "transport_residual",
+      [](const SweepDriver& self, int64_t direction,
+        const std::vector<int64_t>& groups, const torch::Tensor& psi) {
+        const int64_t ng = static_cast<int64_t>(groups.size());
+        if (psi.dim() != 2 || psi.size(0) != ng ||
+            psi.size(1) != self.fiber_length())
+          throw py::value_error("psi must be (len(groups), fiber_length)");
+        auto x = psi.to(torch::kFloat64).contiguous();
+        auto r = torch::empty_like(x);
+        {
+          py::gil_scoped_release release;
+          self.transport_residual(direction, groups,
+            x.template data_ptr<double>(), r.template data_ptr<double>());
+        }
+        return r;
+      },
+      "Transport residual source + inflow - L psi of a candidate flux psi "
+      "(len(groups), fiber_length) of one direction, with the current "
+      "sources and lagged traces (those sweep_fibers reads); a swept fiber's "
+      "is at rounding level (testing aid).",
+      py::arg("direction"), py::arg("groups"), py::arg("psi"))
     .def_property_readonly("fiber_length", &SweepDriver::fiber_length)
     .def_property_readonly("fiber_offsets", &SweepDriver::fiber_offsets)
     .def_property_readonly("num_fibers", &SweepDriver::num_fibers)
