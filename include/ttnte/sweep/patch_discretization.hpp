@@ -87,7 +87,37 @@ struct KernelView {
   const double* grad = nullptr;
   const int64_t* band_index = nullptr;
   const int64_t* dense_index = nullptr;
+  /// (N) dof at each position of the band ordering, or nullptr when the
+  /// band ordering is the natural one.
+  const int64_t* band_order = nullptr;
   std::vector<FaceView> faces;
+};
+
+/// @brief Basis and geometry of one face of a patch at arbitrary parametric
+/// points (see PatchDiscretization::evaluate_face()).
+struct FacePoints {
+  /// (Q, A) values of the A non-vanishing face basis functions (rational if
+  /// the patch is) and their (Q, A) face-local indices.
+  torch::Tensor R;
+  torch::Tensor index;
+  /// (Q, ndim) physical points.
+  torch::Tensor x;
+  /// (Q, ndim) scaled outward normal (as FaceGeometry::normal).
+  torch::Tensor normal;
+};
+
+/// @brief One parametric dimension's B-spline data on the volume quadrature:
+/// the p + 1 non-vanishing functions at each point (sum factorization).
+struct DimBasis {
+  /// (n_q) index of the first non-vanishing function at each point.
+  torch::Tensor first;
+  /// (n_q, p + 1) values and first derivatives of those functions.
+  torch::Tensor values;
+  torch::Tensor derivs;
+  /// (n_q) parametric quadrature measure.
+  torch::Tensor weights;
+  /// Number of basis functions.
+  int64_t num_functions = 0;
 };
 
 /// @brief Discrete operators of one IGA patch for the discrete-ordinates sweep.
@@ -132,18 +162,45 @@ protected:
   /// Sub- and super-diagonal bandwidth of the operator pattern.
   int64_t kl_ = 0;
   int64_t ku_ = 0;
-  /// (P) flat index of each pair in (n, 2kl+ku+1) band storage.
+  /// (P) flat index of each pair in (n, 2kl+ku+1) band storage, rows and
+  /// columns in the band ordering.
   torch::Tensor band_index_;
+  /// (N) dof at each position of the band ordering (the largest parametric
+  /// dimension varies slowest, which minimizes the bandwidth of the tensor
+  /// product pattern), undefined when the natural ordering is as narrow.
+  torch::Tensor band_order_;
   /// (P) flat index of each pair in row-major (n, n) dense storage.
   torch::Tensor dense_index_;
   /// (N) integral of each basis function (load vector of a unit source).
   torch::Tensor basis_integral_;
+  /// Tensor-product data for matrix-free application: per dimension the
+  /// B-spline data, the (N) control weights (undefined if not rational),
+  /// and on the (Q) volume quadrature grid (C order over the dimensions) the
+  /// physical measure |det J| w and the inverse Jacobian (Q, ndim, ndim),
+  /// [q, k, i] = d xi_k / d x_i.
+  std::vector<DimBasis> dim_basis_;
+  torch::Tensor control_weights_;
+  torch::Tensor quad_measure_;
+  torch::Tensor quad_inverse_jacobian_;
+  /// Geometry kept to evaluate faces at arbitrary points: the B-spline
+  /// bases, the (N, ndim) control points and the orientation of the patch.
+  std::vector<cad::BSplineBasis> bases_;
+  torch::Tensor ctrlpts_;
+  double orientation_ = 1.0;
   /// Raw pointers into the tensors above.
   KernelView view_;
 
   // =================================================================
   // Protected constructors
   explicit PatchDiscretization(const cad::Patch& patch);
+
+  // =================================================================
+  // Protected methods
+  /// @brief Locate each pair of a face in the coalesced volume pair list.
+  /// @throws std::runtime_error If a face pair has no volume pair.
+  void locate_face_pairs(FaceGeometry& face) const;
+  /// @brief Rebuild the raw view after a tensor member was replaced.
+  void build_view();
 
 public:
   // =================================================================
@@ -162,8 +219,30 @@ public:
 
   /// @brief Write pair values into band storage ready for factorization.
   /// @param values (B, P) pair values.
-  /// @return (B, N, 2kl+ku+1) band storage.
+  /// @return (B, N, 2kl+ku+1) band storage, rows and columns in the band
+  /// ordering (see band_order()).
   torch::Tensor to_band(const torch::Tensor& values) const;
+
+  /// @brief Evaluate a face's basis and geometry at arbitrary points.
+  /// @param dim Parametric dimension the face is normal to.
+  /// @param is_upper Upper or lower face.
+  /// @param u (Q, ndim - 1) parametric coordinates in the face's tangential
+  /// dimensions (natural order, `dim` removed).
+  /// @return Basis values, physical points and scaled outward normals.
+  FacePoints evaluate_face(
+    int64_t dim, bool is_upper, const torch::Tensor& u) const;
+
+  /// @brief Replace the quadrature of a face, e.g. by one shared with the
+  /// neighbor across a non-conforming interface so both sides integrate
+  /// the interface flux with the same points, weights and normals.
+  /// @param dim Parametric dimension the face is normal to.
+  /// @param is_upper Upper or lower face.
+  /// @param u (Q, ndim - 1) parametric coordinates of the points.
+  /// @param weights (Q) quadrature measure.
+  /// @param normal (Q, ndim) scaled outward normal, so that the face
+  /// integral of f (Omega . n)_+ is sum_q f_q max(Omega . n_q, 0) w_q.
+  void set_face_quadrature(int64_t dim, bool is_upper, const torch::Tensor& u,
+    const torch::Tensor& weights, const torch::Tensor& normal);
 
   /// @brief Write pair values into dense matrices.
   /// @param values (B, P) pair values.
@@ -196,6 +275,10 @@ public:
   /// @return Leading dimension of the band storage, 2 kl + ku + 1.
   int64_t ldab() const noexcept { return 2 * kl_ + ku_ + 1; }
   const torch::Tensor& band_index() const noexcept { return band_index_; }
+  /// @return (N) dof at each band position (undefined: natural ordering).
+  const torch::Tensor& band_order() const noexcept { return band_order_; }
+  /// @return The B-spline basis of a parametric dimension.
+  const cad::BSplineBasis& basis(size_t dim) const { return bases_.at(dim); }
   const torch::Tensor& dense_index() const noexcept { return dense_index_; }
   const torch::Tensor& pair_row() const noexcept { return pair_row_; }
   const torch::Tensor& pair_col() const noexcept { return pair_col_; }
@@ -204,6 +287,16 @@ public:
   const torch::Tensor& basis_integral() const noexcept
   {
     return basis_integral_;
+  }
+  const std::vector<DimBasis>& dim_basis() const noexcept { return dim_basis_; }
+  const torch::Tensor& control_weights() const noexcept
+  {
+    return control_weights_;
+  }
+  const torch::Tensor& quad_measure() const noexcept { return quad_measure_; }
+  const torch::Tensor& quad_inverse_jacobian() const noexcept
+  {
+    return quad_inverse_jacobian_;
   }
   const FaceGeometry& face(size_t dim, bool is_upper) const
   {

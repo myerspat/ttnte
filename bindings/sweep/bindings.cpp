@@ -8,6 +8,7 @@ namespace py = pybind11;
 // Forward declarations
 void register_SweepConfig(py::module_& m);
 void register_PatchDiscretization(py::module_& m);
+void register_ExtrudedSolver(py::module_& m);
 void register_SweepGraph(py::module_& m);
 void register_SweepDriver(py::module_& m);
 
@@ -19,6 +20,7 @@ void init_sweep(py::module_& m)
   // Register classes
   register_SweepConfig(m);
   register_PatchDiscretization(m);
+  register_ExtrudedSolver(m);
   register_SweepGraph(m);
   register_SweepDriver(m);
 

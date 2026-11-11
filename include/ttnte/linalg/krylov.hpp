@@ -13,6 +13,21 @@ using LinearOperator = std::function<void(const double* x, double* y)>;
 /// allreduce), applied to every inner product of a distributed vector.
 using Reducer = std::function<double(double)>;
 
+/// @brief Called before every operator application with the current relative
+/// residual: the Arnoldi estimate, or 1 before a true-residual product
+/// (`true_residual`, at the start of every cycle), which should be applied
+/// accurately. Lets an inexact operator relax its accuracy as the residual
+/// drops (Simoncini and Szyld, SISC 25, 2003).
+using Progress =
+  std::function<void(double relative_residual, bool true_residual)>;
+
+/// @brief Scratch of gmres(): the Krylov basis, Hessenberg matrix and
+/// rotations, kept between calls so a solver called many times (e.g. one
+/// local solve per direction and group) does not reallocate them.
+struct Workspace {
+  std::vector<double> V, H, cs, sn, g, w, r, y;
+};
+
 /// @brief Outcome of a Krylov solve.
 struct KrylovResult {
   /// Operator applications performed.
@@ -28,19 +43,35 @@ struct KrylovResult {
 ///
 /// Matrix-free and framework-free, so any operator whose application is
 /// expensive (e.g. a transport sweep per product) can be solved without
-/// forming it. The true residual is recomputed at every restart; convergence
-/// within a cycle is accepted on the Arnoldi residual estimate.
+/// forming it. The true residual is recomputed at every restart (without an
+/// application when the initial guess is zero); convergence within a cycle
+/// is accepted on the Arnoldi residual estimate. Single-pass modified
+/// Gram-Schmidt suffices: MGS-GMRES is backward stable, its loss of
+/// orthogonality setting in only once the residual is near rounding level
+/// (Paige, Rozloznik and Strakos, SIMAX 28, 2006). A breakdown (an
+/// invariant Krylov space, detected relative to ||A v_k||) ends the solve:
+/// converged when the projected system is nonsingular (exact solution),
+/// otherwise (A singular there) not converged, with the least-squares
+/// minimizer so far and its residual.
 /// @param apply y = A x.
 /// @param b Right-hand side (length n).
 /// @param x Initial guess on entry, solution on exit (length n).
 /// @param restart Krylov subspace size m before restarting (>= 1).
 /// @param tol Relative residual tolerance.
-/// @param max_applies Maximum number of operator applications.
+/// @param max_applies Maximum number of operator applications (at least one
+/// is made unless the initial guess is zero).
 /// @param reduce Optional global sum of inner products for vectors
 /// distributed across ranks (each rank passes its local slice); empty for
-/// a serial solve.
+/// a serial solve. Every rank must call gmres() together: all take the
+/// same branches (including the zero-initial-guess check, reduced too).
+/// @param progress Optional callback before every application.
 KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
   std::vector<double>& x, int64_t restart, double tol, int64_t max_applies,
-  const Reducer& reduce = {});
+  const Reducer& reduce = {}, const Progress& progress = {});
+
+/// @brief gmres() with caller-owned scratch (see Workspace).
+KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
+  std::vector<double>& x, int64_t restart, double tol, int64_t max_applies,
+  Workspace& work, const Reducer& reduce = {}, const Progress& progress = {});
 
 } // namespace ttnte::linalg::krylov

@@ -96,6 +96,21 @@ linalg::State QuadratureSet::integrate(
     state.get_variant());
 }
 
+std::pair<torch::Tensor, torch::Tensor> QuadratureSet1D::map_to_spans(
+  const torch::Tensor& breakpoints) const
+{
+  const auto options = breakpoints.options();
+  auto x = get_points().to(options).flatten();
+  auto w = get_weights().to(options).flatten();
+  auto starts = breakpoints.slice(0, 0, -1);
+  auto widths = breakpoints.diff();
+  auto points =
+    ((x.unsqueeze(0) + 1.0) * widths.unsqueeze(1) / 2.0 + starts.unsqueeze(1))
+      .flatten();
+  auto weights = (widths.unsqueeze(1) * w.unsqueeze(0)).flatten();
+  return {points, weights};
+}
+
 QuadratureSet1D::Ptr QuadratureSet1D::gauss_legendre(
   int64_t n, double weighting_factor)
 {

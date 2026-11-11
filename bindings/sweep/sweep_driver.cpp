@@ -1,5 +1,6 @@
 #include "ttnte/sweep/sweep_driver.hpp"
 #include "ttnte/cad/patch.hpp"
+#include "ttnte/cross/layout_cross.hpp"
 #include "ttnte/parallel/parallel_context.hpp"
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
@@ -16,7 +17,8 @@ static void register_SweepDriver_impl(
   std::string class_name =
     typestr + "SweepDriver" + std::to_string(NumDim) + "D";
 
-  py::class_<SweepDriver, typename SweepDriver::Ptr>(m, class_name.c_str())
+  py::class_<SweepDriver, ttnte::sweep::SweepSolver, typename SweepDriver::Ptr>(
+    m, class_name.c_str())
     // =================================================================
     // Public constructors
     .def(py::init(
@@ -44,8 +46,94 @@ static void register_SweepDriver_impl(
       "Run one transport sweep with the current moments as the scattering "
       "source.",
       py::call_guard<py::gil_scoped_release>())
+    .def(
+      "sweep_fibers",
+      [](SweepDriver& self,
+        const std::vector<
+          std::pair<std::vector<int64_t>, std::vector<int64_t>>>& blocks) {
+        std::vector<typename SweepDriver::FiberBlock> request;
+        int64_t num_fibers = 0;
+        for (const auto& [dirs, groups] : blocks) {
+          request.push_back({dirs, groups});
+          num_fibers += static_cast<int64_t>(dirs.size() * groups.size());
+        }
+        auto out =
+          torch::empty({num_fibers, self.fiber_length()}, torch::kFloat64);
+        {
+          py::gil_scoped_release release;
+          self.sweep_fibers(request, out.template data_ptr<double>());
+        }
+        return out;
+      },
+      "Sweep (directions, groups) blocks of fibers with the current sources "
+      "and lagged traces. Returns (num_fibers, fiber_length): block by "
+      "block, direction-major then group; each row holds the local units' "
+      "dofs in local order (see fiber_offsets).",
+      py::arg("blocks"))
+    .def_property_readonly("fiber_length", &SweepDriver::fiber_length)
+    .def_property_readonly("fiber_offsets", &SweepDriver::fiber_offsets)
+    .def_property_readonly("num_fibers", &SweepDriver::num_fibers)
+    .def_property_readonly("local_gids", &SweepDriver::local_gids)
+    .def_property_readonly(
+      "num_kronecker_units", &SweepDriver::num_kronecker_units)
+    .def_property_readonly("num_extruded_units",
+      &SweepDriver::num_extruded_units,
+      "Local units solved by the extruded-patch (partially separable) "
+      "solver")
+    .def_property_readonly("iterative_statistics",
+      &SweepDriver::iterative_statistics,
+      "(local solves, local GMRES applications, LU fallbacks) of the "
+      "ITERATIVE solver")
+    .def("get_cross", &SweepDriver::get_cross, py::arg("group_set") = 0,
+      "The LayoutCross of a group set (transport = CROSS)")
+    .def("get_patch_angular_flux_tt", &SweepDriver::get_patch_angular_flux_tt,
+      py::arg("gid"), py::arg("group_set") = 0,
+      "Cores of a patch's angular flux TT (cross.keep_angular_flux) in the "
+      "configured "
+      "layout")
+    .def_property_readonly(
+      "cross_tolerances", &SweepDriver::get_cross_tolerances)
+    .def_property_readonly("cross_fibers", &SweepDriver::get_cross_fibers)
+    .def_property_readonly("cross_max_ranks", &SweepDriver::get_cross_max_ranks)
+    .def_property_readonly("cross_errors", &SweepDriver::get_cross_errors,
+      "Per transport solve, the error the cross's last check was accepted or "
+      "rejected on (LayoutCross.holdout_error)")
+    .def_property_readonly("cross_ranks", &SweepDriver::get_cross_ranks,
+      "TT ranks of every transport solve")
+    .def_property_readonly(
+      "cross_histories",
+      [](const SweepDriver& self) {
+        py::list out;
+        for (const auto& run : self.get_cross_histories()) {
+          py::list sweeps;
+          for (const auto& h : run)
+            sweeps.append(
+              py::dict(py::arg("phase") = h.forward ? "forward" : "backward",
+                py::arg("ranks") = h.ranks, py::arg("fibers") = h.fibers,
+                py::arg("holdout_error") = h.holdout_error,
+                py::arg("holdout_rms") = h.holdout_rms,
+                py::arg("swept_rms") = h.swept_rms,
+                py::arg("global_error") = h.global_error));
+          out.append(sweeps);
+        }
+        return out;
+      },
+      "Per transport solve, per half-sweep of its cross: phase, ranks, fibers "
+      "swept so far, hold-out error (backward only)")
+    .def("angular_solution", &SweepDriver::angular_solution,
+      "The solution with angular dependence: the stored angular flux, or with "
+      "transport = CROSS and cross.keep_angular_flux the TT of the last "
+      "transport solve")
+    .def_property_readonly("cross_seconds", &SweepDriver::get_cross_seconds)
+    .def_property_readonly("cross_timings", &SweepDriver::get_cross_timings)
+    .def_property_readonly("solve_timings", &SweepDriver::get_solve_timings,
+      "Seconds per step of the within-group-set solves: gmres (whole Krylov "
+      "solves), unpack, source, transport, pack.")
+    .def_property_readonly(
+      "cross_sweep_seconds", &SweepDriver::get_cross_sweep_seconds)
     .def("solve_fixed_source", &SweepDriver::solve_fixed_source,
-      "Solve a fixed-source problem with unaccelerated source iteration. "
+      "Solve a fixed-source problem with the configured within-group-set "
+      "solver (GMRES by default) and group-set iteration. "
       "Returns a TransportSolution holding the angular flux "
       "(store_angular_flux=True) or the scalar flux.",
       py::call_guard<py::gil_scoped_release>())
@@ -68,9 +156,11 @@ static void register_SweepDriver_impl(
           return;
         }
         self.set_callback(
-          [callback = std::move(*callback)](const SweepDriver& driver) {
+          [callback = std::move(*callback)](
+            const ttnte::sweep::SweepSolver& driver) {
             py::gil_scoped_acquire acquire;
-            callback(driver);
+            // The solver is this driver (its typed front end is registered)
+            callback(static_cast<const SweepDriver&>(driver));
           },
           frequency);
       },
@@ -111,14 +201,32 @@ static void register_SweepDriver_impl(
       "Group-set sweeps of each outer iteration of the last solve.")
     .def_property_readonly(
       "group_set_sweeps", &SweepDriver::get_group_set_sweeps)
+    .def_property_readonly("incremental_solves",
+      &SweepDriver::get_incremental_solves,
+      "Correction-form y0 solves done by increment (incremental_transport).")
+    .def_property_readonly("full_solves", &SweepDriver::get_full_solves,
+      "Correction-form y0 solves done by a full transport solve "
+      "(incremental_transport).")
     .def_property_readonly("equivalent_sweeps",
       &SweepDriver::get_equivalent_sweeps,
       "Full-sweep equivalents of the last solve (sum of |set| / G).")
     .def_property_readonly(
       "num_delayed_blocks", &SweepDriver::num_delayed_blocks)
     .def_property_readonly("converged", &SweepDriver::is_converged)
+    .def_property_readonly("certification_error",
+      &SweepDriver::get_certification_error,
+      "SweepConfig.certify: scalar-flux change (relative L2) of the exact "
+      "transport solve after the outer iteration; NaN without one.")
+    .def_property_readonly("certification_k_change",
+      &SweepDriver::get_certification_k_change,
+      "SweepConfig.certify: change in k of that solve (eigenvalue only).")
+    .def_property_readonly(
+      "certification_seconds", &SweepDriver::get_certification_seconds)
     .def_property_readonly("num_tasks", &SweepDriver::num_tasks)
     .def_property_readonly("chunks", &SweepDriver::get_chunks)
+    .def("memory_report", &SweepDriver::memory_report,
+      "Bytes of the solver's large buffers on this rank, by kind (gmres is "
+      "allocated during a solve).")
     .def_property_readonly("factorization_bytes",
       &SweepDriver::factorization_bytes,
       "Bytes held by the factorization cache (0 if disabled).")
@@ -131,6 +239,11 @@ static void register_SweepDriver_impl(
 
 void register_SweepDriver(py::module_& m)
 {
+  // The dimension-independent core: the base of every IGASweepDriver*D, so
+  // its methods bind once for all of them (not constructible from Python)
+  py::class_<ttnte::sweep::SweepSolver, ttnte::sweep::SweepSolver::Ptr>(
+    m, "SweepSolver");
+
   register_SweepDriver_impl<ttnte::cad::Patch, 1>(m, "IGA");
   register_SweepDriver_impl<ttnte::cad::Patch, 2>(m, "IGA");
   register_SweepDriver_impl<ttnte::cad::Patch, 3>(m, "IGA");

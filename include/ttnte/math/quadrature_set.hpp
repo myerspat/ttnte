@@ -143,6 +143,17 @@ public:
   static Ptr gauss_chebyshev(
     int64_t n, double weighting_factor = 2.0 * std::numbers::pi);
 
+  /// @brief This rule (on (-1, 1)) mapped to every span between consecutive
+  /// breakpoints, as every IGA quadrature (volume, face, interface) maps its
+  /// Gauss-Legendre rule: the sweeper and the TT assembler must agree, or
+  /// particle balance breaks.
+  /// @param breakpoints (S + 1) increasing span ends.
+  /// @return (S n) points, span-major, and their weights: the rule's weights
+  /// (summing to 1 for gauss_legendre) times the span width, in the
+  /// breakpoints' dtype and device.
+  std::pair<torch::Tensor, torch::Tensor> map_to_spans(
+    const torch::Tensor& breakpoints) const;
+
   /// @brief In-place send the data of this quadrature set to a device or to
   /// another data type.
   /// @param options The tensor options.

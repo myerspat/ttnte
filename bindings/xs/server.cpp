@@ -51,5 +51,11 @@ void register_Server(py::module_& m)
         return std::vector<Material::Label::ID>(c10_vec.begin(), c10_vec.end());
       })
     .def_property_readonly("material_map", &Server::get_material_map,
-      py::return_value_policy::reference_internal);
+      py::return_value_policy::reference_internal)
+    .def_property("group_bounds", &Server::get_group_bounds,
+      &Server::set_group_bounds,
+      "Energy group boundaries (G + 1, descending, positive; [] clears). "
+      "With them a weighted CROSS solve weights energy by lethargy.")
+    .def_property_readonly("lethargy_widths", &Server::lethargy_widths,
+      "ln(E_{g-1} / E_g) per group ([] without group boundaries).");
 }

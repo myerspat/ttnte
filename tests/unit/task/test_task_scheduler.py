@@ -94,6 +94,52 @@ def test_push_rejects_incomplete_payload():
     graph.add_dependency(b, a)
     with pytest.raises(RuntimeError, match="COMPLETED"):
         TaskScheduler(2).execute(graph, ExecutionMode.PUSH)
+    assert b.status == TaskStatus.WAITING, "a successor of a failed task never runs"
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_payload_exception_is_raised(mode):
+    """A Python payload's exception reaches the caller of execute() instead of aborting
+    the process, and the scheduler stays usable."""
+    graph = TaskGraph()
+    task = graph.create_task(DeviceTarget.CPU_ASYNC, "bad")
+
+    def bad():
+        raise ValueError("payload failed")
+
+    task.set_payload(bad)
+    scheduler = TaskScheduler(2)
+    with pytest.raises(ValueError, match="payload failed"):
+        scheduler.execute(graph, mode)
+    ok, _, log = _random_dag(20, 2, seed=3)
+    scheduler.execute(ok, mode)
+    assert sorted(log) == list(range(20))
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_rerun_without_reset_is_rejected(mode):
+    graph, _, _ = _random_dag(10, 2, seed=5)
+    scheduler = TaskScheduler(2)
+    scheduler.execute(graph, mode)
+    with pytest.raises(RuntimeError, match="reset"):
+        scheduler.execute(graph, mode)
+
+
+def test_zero_threads_rejected():
+    with pytest.raises(RuntimeError, match="at least one"):
+        TaskScheduler(0)
+
+
+def test_push_rejects_cycle():
+    graph = TaskGraph()
+    r, a, b = (graph.create_task(DeviceTarget.CPU_ASYNC, n) for n in "rab")
+    for t in (r, a, b):
+        t.set_payload(lambda: TaskStatus.COMPLETED)
+    graph.add_dependency(a, r)
+    graph.add_dependency(a, b)
+    graph.add_dependency(b, a)
+    with pytest.raises(RuntimeError, match="cycle"):
+        TaskScheduler(2).execute(graph, ExecutionMode.PUSH)
 
 
 @pytest.mark.parametrize("mode", MODES)

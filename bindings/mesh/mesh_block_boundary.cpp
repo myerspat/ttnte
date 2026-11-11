@@ -1,4 +1,5 @@
 #include "ttnte/mesh/mesh_block_boundary.hpp"
+#include "ttnte/cad/patch.hpp"
 #include <sstream>
 #include <torch/extension.h>
 
@@ -46,14 +47,20 @@ void register_Boundary(py::module_& m)
 
   // NeighborInfo struct
   py::class_<NeighborInfo>(m, "NeighborInfo")
-    .def(py::init([](int64_t global_id, size_t face_id, int mpi_rank,
-                    size_t dim, bool is_upper, const BoundaryMapping& mapping) {
-      return NeighborInfo {
-        global_id, face_id, mpi_rank, dim, is_upper, mapping};
-    }),
+    .def(
+      py::init([](int64_t global_id, size_t face_id, int mpi_rank, size_t dim,
+                 bool is_upper, const BoundaryMapping& mapping, bool conforming,
+                 std::shared_ptr<ttnte::cad::Patch> neighbor_face) {
+        return NeighborInfo {global_id, face_id, mpi_rank, dim, is_upper,
+          mapping, conforming, std::move(neighbor_face)};
+      }),
       py::arg("global_id"), py::arg("face_id"), py::arg("mpi_rank"),
       py::arg("dim") = size_t(0), py::arg("is_upper") = false,
-      py::arg("mapping") = BoundaryMapping())
+      py::arg("mapping") = BoundaryMapping(), py::arg("conforming") = true,
+      py::arg("neighbor_face") = nullptr,
+      "A connection to a neighbor face. A non-conforming one (conforming = "
+      "False) needs the neighbor's face patch as neighbor_face for the TT "
+      "assembly; Mesh.connect() sets it.")
     .def("__repr__", &NeighborInfo::to_string)
     .def("__str__",
       [](const NeighborInfo& self) {
@@ -67,7 +74,10 @@ void register_Boundary(py::module_& m)
     .def_readwrite("mpi_rank", &NeighborInfo::mpi_rank)
     .def_readwrite("dim", &NeighborInfo::dim)
     .def_readwrite("is_upper", &NeighborInfo::is_upper)
-    .def_readwrite("mapping", &NeighborInfo::mapping);
+    .def_readwrite("mapping", &NeighborInfo::mapping)
+    .def_readwrite("conforming", &NeighborInfo::conforming)
+    .def_readwrite("neighbor_face", &NeighborInfo::neighbor_face,
+      "The neighbor's face as a patch (non-conforming connections).");
 
   // Boundary struct
   py::class_<BoundaryInfo>(m, "BoundaryInfo")

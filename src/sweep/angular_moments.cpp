@@ -86,11 +86,8 @@ std::pair<torch::Tensor, torch::Tensor> discrete_harmonics(
       const int64_t m_start = ndim == 2 ? l % 2 : 0;
       const int64_t m_step = ndim == 2 ? 2 : 1;
       for (int64_t m = m_start; m <= l; m += m_step) {
-        double log_factor =
-          0.5 * (std::log(2.0 * l + 1.0) + std::lgamma(l - m + 1.0) -
-                  std::lgamma(l + m + 1.0));
-        double scale = (m != 0 ? std::sqrt(2.0) : 1.0) * std::exp(log_factor);
-        auto plm = scale * math::special::assoc_legendre(l, m, mu, false);
+        auto plm = math::special::real_harmonic_scale(l, m) *
+                   math::special::assoc_legendre(l, m, mu, false);
         columns.push_back(
           (plm.unsqueeze(1) * torch::cos(m * gamma).unsqueeze(0)).flatten());
         orders.push_back(l);

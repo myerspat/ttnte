@@ -175,6 +175,8 @@ add_subdirectory(bindings/linalg)
 add_subdirectory(bindings/task)
 add_subdirectory(bindings/solvers)
 add_subdirectory(bindings/sweep)
+add_subdirectory(bindings/tensor)
+add_subdirectory(bindings/cross)
 add_subdirectory(bindings/python)
 add_subdirectory(bindings/math)
 
@@ -192,6 +194,8 @@ add_library(
   ${LINALG_SRC}
   ${SOLVERS_SRC}
   ${SWEEP_SRC}
+  ${TENSOR_SRC}
+  ${CROSS_SRC}
   ${PY_SRC}
   ${PHYSICS_SRC}
   ${MATH_SRC})
@@ -212,6 +216,85 @@ else()
   target_link_libraries(ttnte_static PUBLIC "-llapack -lblas")
 endif()
 
+# OpenMP: ATen's at::parallel_for is inlined into this code and runs in parallel
+# only when it is compiled with OpenMP. Prefer the OpenMP runtime torch ships,
+# so one runtime serves torch and ttnte and torch.set_num_threads /
+# at::set_num_threads govern both. The library is recorded by its soname, so at
+# run time it binds to whichever copy torch (imported first) has loaded.
+# Performance settings of the cross (src/cross/layout_cross_detail.hpp): they
+# change speed or memory, never the results beyond round-off, and depend on the
+# machine (cores, memory, BLAS)
+set(TTNTE_DENSE_MASS_MAX
+    3000
+    CACHE STRING "Largest patch (dofs) whose mass factor is also kept dense")
+set(TTNTE_SERIAL_ROWS
+    64
+    CACHE STRING "Fewer fiber rows than this are weighted serially")
+set(TTNTE_ROW_CHUNKS_PER_THREAD
+    4
+    CACHE STRING "Chunks per thread of the cross's parallel row loops")
+set(TTNTE_ROW_GRAIN_MIN
+    8
+    CACHE STRING "Fewest fiber rows per chunk of those loops")
+target_compile_definitions(
+  ttnte_static
+  PRIVATE TTNTE_DENSE_MASS_MAX=${TTNTE_DENSE_MASS_MAX}
+          TTNTE_SERIAL_ROWS=${TTNTE_SERIAL_ROWS}
+          TTNTE_ROW_CHUNKS_PER_THREAD=${TTNTE_ROW_CHUNKS_PER_THREAD}
+          TTNTE_ROW_GRAIN_MIN=${TTNTE_ROW_GRAIN_MIN})
+message(
+  STATUS "  Cross tuning: dense mass <= ${TTNTE_DENSE_MASS_MAX}, serial rows < "
+         "${TTNTE_SERIAL_ROWS}, ${TTNTE_ROW_CHUNKS_PER_THREAD} chunks/thread, "
+         ">= ${TTNTE_ROW_GRAIN_MIN} rows/chunk")
+
+# Sweep settings (src/sweep): the reflective boundaries' geometry tolerances
+# (loosen them for meshes or quadratures that are only approximately axis
+# aligned or symmetric) and the task split of fiber sweeps (speed only)
+set(TTNTE_AXIS_ALIGNED_TOL
+    1e-6
+    CACHE STRING
+          "Largest deviation of a reflective face's unit normals from its axis")
+set(TTNTE_REFLECTION_MATCH_TOL
+    1e-12
+    CACHE
+      STRING
+      "Largest 1 - cos between a reflected direction and its quadrature match")
+set(TTNTE_FIBER_TASKS_PER_THREAD
+    4
+    CACHE STRING
+          "Task families a fiber-sweep request is split into, per thread")
+target_compile_definitions(
+  ttnte_static
+  PRIVATE TTNTE_AXIS_ALIGNED_TOL=${TTNTE_AXIS_ALIGNED_TOL}
+          TTNTE_REFLECTION_MATCH_TOL=${TTNTE_REFLECTION_MATCH_TOL}
+          TTNTE_FIBER_TASKS_PER_THREAD=${TTNTE_FIBER_TASKS_PER_THREAD})
+message(STATUS "  Sweep settings: axis aligned <= ${TTNTE_AXIS_ALIGNED_TOL}, "
+               "quadrature match <= ${TTNTE_REFLECTION_MATCH_TOL}, "
+               "${TTNTE_FIBER_TASKS_PER_THREAD} fiber tasks/thread")
+
+option(TTNTE_OPENMP "Compile with OpenMP (parallel at::parallel_for)" ON)
+if(TTNTE_OPENMP)
+  file(GLOB TORCH_OMP_LIBS "${TORCH_INSTALL_PREFIX}/lib/libgomp*.so*"
+       "${TORCH_INSTALL_PREFIX}/../torch.libs/libgomp*.so*")
+  if(TORCH_OMP_LIBS)
+    list(GET TORCH_OMP_LIBS 0 TORCH_OMP_LIB)
+    target_compile_options(ttnte_static
+                           PUBLIC $<$<COMPILE_LANGUAGE:CXX>:-fopenmp>)
+    target_link_libraries(ttnte_static PUBLIC "${TORCH_OMP_LIB}")
+    message(STATUS "  OpenMP runtime: ${TORCH_OMP_LIB} (torch's)")
+  else()
+    # e.g. conda-forge torch or macOS (libomp): use the toolchain's runtime
+    find_package(OpenMP COMPONENTS CXX)
+    if(OpenMP_CXX_FOUND)
+      target_link_libraries(ttnte_static PUBLIC OpenMP::OpenMP_CXX)
+      message(STATUS "  OpenMP runtime: toolchain (torch ships none)")
+    else()
+      message(WARNING "TTNTE_OPENMP: no OpenMP runtime found; building "
+                      "without it (at::parallel_for in ttnte runs serially)")
+    endif()
+  endif()
+endif()
+
 # ==============================================================================
 # Python side
 # ==============================================================================
@@ -229,6 +312,8 @@ add_library(
   ${TASK_BINDINGS}
   ${SOLVERS_BINDINGS}
   ${SWEEP_BINDINGS}
+  ${TENSOR_BINDINGS}
+  ${CROSS_BINDINGS}
   ${PY_BINDINGS}
   ${MATH_BINDINGS})
 

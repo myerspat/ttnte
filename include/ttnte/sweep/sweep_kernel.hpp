@@ -1,5 +1,8 @@
 #pragma once
 
+#include "ttnte/sweep/extruded_solver.hpp"
+#include "ttnte/sweep/iterative_solver.hpp"
+#include "ttnte/sweep/kronecker_solver.hpp"
 #include "ttnte/sweep/patch_discretization.hpp"
 #include "ttnte/sweep/sweep_config.hpp"
 #include <array>
@@ -30,6 +33,14 @@ struct FaceInflow {
   int64_t source_face_dofs = 0;
   /// NEIGHBOR: (Nf) source-face index of each of this face's dofs.
   const int64_t* trace_map = nullptr;
+  /// NEIGHBOR across a non-conforming interface (used instead of
+  /// trace_map): pairs of (quadrature point of this face, this face's dof,
+  /// source-face dof) with value R_a(q) R^src_b(q).
+  int64_t num_coupling_pairs = 0;
+  const int64_t* coupling_q = nullptr;
+  const int64_t* coupling_a = nullptr;
+  const int64_t* coupling_b = nullptr;
+  const double* coupling_val = nullptr;
   /// REFLECTIVE: (N_Omega) reflected direction of each direction.
   const int64_t* reflected = nullptr;
   /// REFLECTIVE: specular albedo.
@@ -39,6 +50,14 @@ struct FaceInflow {
 /// @brief Raw views of everything one unit's sweep reads and writes.
 struct UnitSweep {
   const PatchDiscretization* disc = nullptr;
+  /// Kronecker-sum solver of the unit (affine patches with SYLVESTER), or
+  /// nullptr for the LU path.
+  const KroneckerSolver* kronecker = nullptr;
+  /// Partially separable solver of an extruded patch (SYLVESTER), or
+  /// nullptr.
+  const ExtrudedSolver* extruded = nullptr;
+  /// Matrix-free iterative solver (ITERATIVE on a curved patch), or nullptr.
+  const IterativeSolver* iterative = nullptr;
   /// (G) total cross section.
   const double* sigma_t = nullptr;
   /// (num_moments, G, N) scattering + external source moments.
@@ -49,17 +68,25 @@ struct UnitSweep {
   std::array<double*, MAX_FACES> trace_out {};
   /// (N_Omega, G, N) angular flux, or nullptr if not stored.
   double* psi = nullptr;
+  /// Compact angular flux of the swept fibers, or nullptr: the solution of
+  /// (block direction bd, block group bg) is written to
+  /// fibers + (fiber_slot[bd] + bg) * fiber_stride.
+  double* fibers = nullptr;
+  const int64_t* fiber_slot = nullptr;
+  int64_t fiber_stride = 0;
   /// (num_moments, num_block_groups, N) moments ACCUMULATED by the sweep
-  /// (the caller zeroes and reduces it).
+  /// (the caller zeroes and reduces it), or nullptr.
   double* moments = nullptr;
   /// Optional factorization cache: (N_Omega, G, matrix size) factors and
   /// (N_Omega, G, N) pivots, matrix size being N * ldab (banded) or N * N
   /// (dense). nullptr disables caching.
   double* factors = nullptr;
   int64_t* factor_pivots = nullptr;
-  /// Whether `factors` already holds this unit's factors (otherwise they
-  /// are computed and stored).
-  bool factors_ready = false;
+  /// With `factors`: (N_Omega, G) flags, whether the cache holds that
+  /// pair's factors; set here when a pair is factored into the cache.
+  /// Concurrent sweeps of one unit cover distinct pairs, so flags and slots
+  /// are never shared.
+  uint8_t* factor_ready = nullptr;
 };
 
 /// @brief The directions, groups and angular data of one sweep task.
@@ -79,14 +106,19 @@ struct SweepBlock {
   const double* harmonics = nullptr;
   const double* weighted_harmonics = nullptr;
   /// Local solver.
-  LocalSolverType solver = LocalSolverType::BANDED_LU;
+  LocalSolverType solver = LocalSolverType::SYLVESTER;
 };
 
 /// @brief Scratch memory reused across units and tasks (one per worker).
 struct SweepWorkspace {
+  KroneckerSolver::Workspace kronecker;
+  ExtrudedSolver::Workspace extruded;
+  IterativeSolver::Workspace iterative;
+  std::vector<double> saved;
   std::vector<double> values;
   std::vector<double> matrix;
   std::vector<double> rhs;
+  std::vector<double> permuted;
   std::vector<double> inflow;
   std::vector<int64_t> pivots;
 };
@@ -138,7 +170,9 @@ void transfer_source(const KernelView& view, const double* transfer,
 /// @return Total production sum_{g,v} (T phi_0)_{g,v} of an order-0
 /// transfer (the fission production of one unit; k for a unit-normalized
 /// fission source).
+/// @param source_mask Optional (G): count only the source groups set in it.
 double transfer_total(const KernelView& view, const double* transfer,
-  int64_t num_groups, const double* scalar_flux, const double* basis_integral);
+  int64_t num_groups, const double* scalar_flux, const double* basis_integral,
+  const uint8_t* source_mask = nullptr);
 
 } // namespace ttnte::sweep

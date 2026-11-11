@@ -1,8 +1,19 @@
 # Define the relative filenames
 set(SWEEP_BINDINGS_REL bindings.cpp sweep_config.cpp patch_discretization.cpp
                        sweep_graph.cpp sweep_driver.cpp)
-set(SWEEP_SRC_REL angular_moments.cpp patch_discretization.cpp sweep_graph.cpp
-                  sweep_kernel.cpp)
+set(SWEEP_SRC_REL
+    angular_moments.cpp
+    extruded_solver.cpp
+    iterative_solver.cpp
+    kronecker_solver.cpp
+    patch_discretization.cpp
+    sum_factorization.cpp
+    sweep_graph.cpp
+    sweep_kernel.cpp
+    sweep_solver.cpp
+    sweep_solver_setup.cpp
+    sweep_solver_tasks.cpp
+    sweep_solver_within.cpp)
 
 # Define the directory paths (Use local variables here, then push if needed)
 set(SWEEP_SRC_DIR "${PROJECT_SOURCE_DIR}/src/sweep")

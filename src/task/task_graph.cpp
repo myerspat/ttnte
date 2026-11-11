@@ -64,6 +64,14 @@ const TaskGraph::PushPlan& TaskGraph::push_plan()
     if (plan.num_dependencies[i] == 0)
       plan.roots.push_back(static_cast<int64_t>(i));
   }
+  // Kahn's algorithm: every task is reached from the roots iff acyclic
+  std::vector<int64_t> pending = plan.num_dependencies;
+  std::vector<int64_t> queue = plan.roots;
+  for (size_t head = 0; head < queue.size(); head++)
+    for (int64_t next : plan.successors[queue[head]])
+      if (--pending[next] == 0)
+        queue.push_back(next);
+  plan.acyclic = queue.size() == n;
   plan.num_tasks = n;
   plan.num_edges = num_edges;
   push_plan_ = std::move(plan);

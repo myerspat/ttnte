@@ -7,6 +7,14 @@
 
 namespace ttnte::math::special {
 
+double real_harmonic_scale(int64_t l, int64_t m)
+{
+  const double log_factor =
+    0.5 * (std::log(2.0 * l + 1.0) + std::lgamma(l - m + 1.0) -
+            std::lgamma(l + m + 1.0));
+  return (m != 0 ? std::sqrt(2.0) : 1.0) * std::exp(log_factor);
+}
+
 torch::Tensor legendre(uint32_t l, const torch::Tensor& x, bool skip_checks)
 {
   if (!skip_checks) {

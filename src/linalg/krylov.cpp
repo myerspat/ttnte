@@ -1,6 +1,8 @@
 #include "ttnte/linalg/krylov.hpp"
 #include "ttnte/utils/exception.hpp"
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace ttnte::linalg::krylov {
 
@@ -14,11 +16,24 @@ double dot(const double* a, const double* b, size_t n)
   return s;
 }
 
+/// Breakdown threshold, relative to ||A v_k||: below it the new Arnoldi
+/// vector (or the new pivot of R) is rounding noise (a few ulps of
+/// cancellation in the Gram-Schmidt sums).
+constexpr double BREAKDOWN = 64.0 * std::numeric_limits<double>::epsilon();
+
 } // namespace
 
 KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
   std::vector<double>& x, int64_t restart, double tol, int64_t max_applies,
-  const Reducer& reduce)
+  const Reducer& reduce, const Progress& progress)
+{
+  Workspace work;
+  return gmres(apply, b, x, restart, tol, max_applies, work, reduce, progress);
+}
+
+KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
+  std::vector<double>& x, int64_t restart, double tol, int64_t max_applies,
+  Workspace& work, const Reducer& reduce, const Progress& progress)
 {
   const size_t n = b.size();
   // Inner products of (possibly distributed) vectors
@@ -44,8 +59,21 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
   }
 
   const int64_t m = restart;
-  std::vector<double> V((m + 1) * n), H((m + 1) * m, 0.0);
-  std::vector<double> cs(m), sn(m), g(m + 1), w(n), r(n);
+  // resize() keeps the storage of earlier calls of the same size
+  auto& V = work.V;
+  auto& H = work.H;
+  auto& cs = work.cs;
+  auto& sn = work.sn;
+  auto& g = work.g;
+  auto& w = work.w;
+  auto& r = work.r;
+  V.resize((m + 1) * n);
+  H.assign((m + 1) * m, 0.0);
+  cs.resize(m);
+  sn.resize(m);
+  g.resize(m + 1);
+  w.resize(n);
+  r.resize(n);
 
   while (true) {
     // True residual (only if the budget allows another application; the
@@ -53,8 +81,23 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
     if (result.num_applies > 0 && result.num_applies >= max_applies) {
       return result;
     }
-    apply(x.data(), w.data());
-    result.num_applies++;
+    // A zero first guess needs no product: r = b. Decided globally, so that
+    // ranks whose own slice is zero still apply the (collective) operator
+    // when another rank's is not
+    bool zero = false;
+    if (result.num_applies == 0) {
+      const bool local_zero =
+        std::all_of(x.begin(), x.end(), [](double v) { return v == 0.0; });
+      zero = reduce ? reduce(local_zero ? 0.0 : 1.0) == 0.0 : local_zero;
+    }
+    if (zero) {
+      std::fill(w.begin(), w.end(), 0.0);
+    } else {
+      if (progress)
+        progress(1.0, true);
+      apply(x.data(), w.data());
+      result.num_applies++;
+    }
     for (size_t i = 0; i < n; i++)
       r[i] = b[i] - w[i];
     double beta = std::sqrt(dot(r.data(), r.data(), n));
@@ -74,8 +117,12 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
 
     int64_t k = 0;
     bool estimate_converged = false;
+    // A singular on the Krylov space: no further progress possible
+    bool stagnated = false;
     for (; k < m && result.num_applies < max_applies; k++) {
       double* vk1 = V.data() + (k + 1) * n;
+      if (progress)
+        progress(std::abs(g[k]) / bnorm, false);
       apply(V.data() + k * n, vk1);
       result.num_applies++;
 
@@ -89,7 +136,15 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
       }
       const double hk1 = std::sqrt(dot(vk1, vk1, n));
       H[(k + 1) * m + k] = hk1;
-      if (hk1 > 0.0) {
+      // ||A v_k|| from the orthogonal decomposition, without another
+      // reduction (identical on every rank, so all take the same branches)
+      double column = hk1 * hk1;
+      for (int64_t j = 0; j <= k; j++)
+        column += H[j * m + k] * H[j * m + k];
+      column = std::sqrt(column);
+      // (Numerical) breakdown: K_{k+1} is invariant under A
+      const bool breakdown = hk1 <= BREAKDOWN * column;
+      if (!breakdown) {
         for (size_t i = 0; i < n; i++)
           vk1[i] /= hk1;
       }
@@ -102,15 +157,27 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
       }
       const double a = H[k * m + k], c = H[(k + 1) * m + k];
       const double rho = std::hypot(a, c);
-      cs[k] = rho > 0.0 ? a / rho : 1.0;
-      sn[k] = rho > 0.0 ? c / rho : 0.0;
+      if (rho <= BREAKDOWN * column) {
+        // A v_k lies in span{A v_0, ..., A v_{k-1}}: R would be singular.
+        // Keep the minimizer over the first k vectors (residual |g[k]|) and
+        // stop: at a breakdown the space cannot grow, so GMRES cannot reach
+        // the tolerance (a singular, inconsistent system); otherwise the
+        // new direction is rounding noise either way
+        result.relative_residual = std::abs(g[k]) / bnorm;
+        stagnated = true;
+        break;
+      }
+      cs[k] = a / rho;
+      sn[k] = c / rho;
       H[k * m + k] = rho;
       H[(k + 1) * m + k] = 0.0;
       g[k + 1] = -sn[k] * g[k];
       g[k] = cs[k] * g[k];
 
       result.relative_residual = std::abs(g[k + 1]) / bnorm;
-      if (result.relative_residual <= tol || hk1 == 0.0) {
+      // A breakdown with nonsingular R solves the system exactly (lucky
+      // breakdown; the estimate is then rounding level)
+      if (result.relative_residual <= tol || breakdown) {
         estimate_converged = true;
         k++;
         break;
@@ -118,11 +185,13 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
     }
 
     // Solve the upper-triangular system and update x
-    std::vector<double> y(k, 0.0);
+    auto& y = work.y;
+    y.assign(k, 0.0);
     for (int64_t i = k - 1; i >= 0; i--) {
       double s = g[i];
       for (int64_t j = i + 1; j < k; j++)
         s -= H[i * m + j] * y[j];
+      // Pivots are nonzero: a vanishing one stops the cycle above
       y[i] = s / H[i * m + i];
     }
     for (int64_t j = 0; j < k; j++) {
@@ -136,6 +205,8 @@ KrylovResult gmres(const LinearOperator& apply, const std::vector<double>& b,
       result.converged = true;
       return result;
     }
+    if (stagnated)
+      return result;
   }
 }
 

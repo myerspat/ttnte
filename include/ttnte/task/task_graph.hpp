@@ -33,6 +33,8 @@ public:
     std::vector<uint8_t> is_network;
     /// Whether every task is CPU_ASYNC or NETWORK_* (what PUSH supports).
     bool supported = true;
+    /// Whether the dependencies form no cycle (else PUSH never finishes).
+    bool acyclic = true;
     /// Number of tasks and edges the plan was built from (staleness check).
     size_t num_tasks = 0;
     size_t num_edges = 0;
@@ -78,6 +80,7 @@ public:
   /// @brief Index form of the DAG, rebuilt whenever tasks or dependencies
   /// were added since it was last built (dependencies may be added through
   /// Task::add_dependency(), so staleness is detected from the edge count).
+  /// A graph runs on one scheduler at a time: the plan is shared state.
   /// @return The push-based execution plan.
   const PushPlan& push_plan();
   /// @brief Reset all tasks to WAITING so the graph can be re-executed without

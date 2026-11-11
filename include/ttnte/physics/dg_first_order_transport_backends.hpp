@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ttnte/cad/interface_quadrature.hpp"
 #include "ttnte/cad/patch.hpp"
 #include "ttnte/linalg/operator.hpp"
 #include "ttnte/linalg/state.hpp"
@@ -10,6 +11,7 @@
 #include "ttnte/physics/fixed_source.hpp"
 #include "ttnte/xs/server.hpp"
 #include <c10/util/SmallVector.h>
+#include <optional>
 
 namespace ttnte::physics::backends {
 
@@ -358,19 +360,10 @@ private:
       spatial_quads.push_back(
         math::QuadratureSet1D::gauss_legendre(basis.get_degree() + 1));
 
-      // Get the unique knots in the knot vector
-      torch::Tensor unique_knots = basis.get_unique_knots().to(options);
-
-      // Get the start and width of each span
-      torch::Tensor span_starts = unique_knots.slice(0, 0, -1);
-      torch::Tensor span_widths = unique_knots.diff();
-
-      // Map parent element space to parametric space
-      quad_points_.push_back(
-        ((spatial_quads.back()->get_points().unsqueeze(0).to(options) + 1.0) *
-            span_widths.unsqueeze(1) / 2.0 +
-          span_starts.unsqueeze(1))
-          .flatten());
+      // Map parent element space to parametric space, span by span
+      quad_points_.push_back(spatial_quads.back()
+          ->map_to_spans(basis.get_unique_knots().to(options))
+          .first);
     }
 
     spatial_qset_ = math::ProductQuadrature::create(spatial_quads);
@@ -411,8 +404,26 @@ private:
   /// already applied.
   /// @param basis Per-tangential-dim DG basis matrices.
   /// @param mapping Per-tangential-dim quadrature-weighted affine mapping.
+  /// @param trial Per-tangential-dim trial basis (columns) when it differs
+  /// from the test basis `basis` (rows): the neighbor's face basis at a
+  /// non-conforming interface; nullptr for `basis`.
   auto project_boundary_mask(linalg::TTEngine mask, const ReturnType& basis,
-    const ReturnType& mapping) -> ReturnType;
+    const ReturnType& mapping, const ReturnType* trial = nullptr) -> ReturnType;
+
+  /// @return The quadrature this face shares with its neighbor when it is a
+  /// non-conforming INTERNAL face (see cad::interface_quadrature()), or
+  /// nullopt. Every face integral of such a face (operators, currents,
+  /// leakage) uses it, so both sides integrate the interface flux alike.
+  std::optional<cad::InterfaceQuadrature> nonconforming_quadrature(
+    size_t dim, bool is_upper) const;
+
+  /// @return The neighbor's face basis at the shared quadrature points of a
+  /// non-conforming face, as per-tangential-dim cores (r, q, n, r) in this
+  /// face's tangential order and orientation (the order of the neighbor's
+  /// face state after NeighborCoupling::set_recv_buffer() maps it): the
+  /// trial basis of the inflow operator.
+  auto neighbor_trial_basis(size_t dim, bool is_upper,
+    const cad::InterfaceQuadrature& iq) -> ReturnType;
 
   /// @brief Compute a boundary face's tangential DG basis, pointwise outward
   /// normal (accounting for IGA/NURBS curvature via the Jacobian cross
@@ -467,14 +478,15 @@ public:
 
   /// @brief Construct a backend with no material and EXTERNALLY supplied
   /// quadrature points, bypassing init_spatial_quadrature_()'s
-  /// self-derivation from this block's own knot vector. Only valid for
-  /// assemble_basis() (spatial_qset_ is left unset, so
-  /// assemble_integral_mapping() and anything depending on it is not valid
-  /// on an instance built this way). Intended for evaluating a DIFFERENT
-  /// patch's basis -- e.g. a differently-refined (more knot spans and/or
-  /// higher polynomial degree) reference solution sharing the same
-  /// parametric domain -- at another patch's own quadrature points, so the
-  /// two can be compared pointwise (see
+  /// self-derivation from this block's own knot vector. Valid for the
+  /// point evaluations assemble_basis(), assemble_basis_ders() and
+  /// assemble_jacobian() (the non-conforming interface terms use these);
+  /// spatial_qset_ is left unset, so assemble_integral_mapping() and
+  /// anything depending on it is not valid on an instance built this way.
+  /// Intended for evaluating a DIFFERENT patch's basis -- e.g. a
+  /// differently-refined (more knot spans and/or higher polynomial degree)
+  /// reference solution sharing the same parametric domain -- at another
+  /// patch's own quadrature points, so the two can be compared pointwise (see
   /// TransportSolution::compute_errors()).
   DGFirstOrderTransportBackend(const cad::Patch::Ptr& block,
     const math::QuadratureSet::Ptr& angular_qset, Tensors quad_points,

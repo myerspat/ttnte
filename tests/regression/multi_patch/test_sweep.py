@@ -53,7 +53,7 @@ def _xs():
     return [source, void], server
 
 
-def _quarter_circle(fills, factor, split, parents=None):
+def _quarter_circle(fills, factor, split, parents=None, factors=None):
     """Shielded quarter circle (mc27 benchmark geometry): a scattering source disk with
     a void shield, reflective on x = 0 and y = 0, vacuum outside.
 
@@ -74,7 +74,7 @@ def _quarter_circle(fills, factor, split, parents=None):
     for k, surface in enumerate(surfaces):
         fill = fills[0] if k < 2 else fills[1]
         patch = Patch.from_igakit(
-            cad.refine(surface, factor, 2),
+            cad.refine(surface, factors[k] if factors else factor, 2),
             device=CPU,
             dtype=torch.float64,
             fill=fill.label,
@@ -156,6 +156,35 @@ def test_pdg_sweep_matches_tt():
     sweeper = _sweep(_quarter_circle(fills, 2, False), xs, qset)
     phi = {g: sweeper.get_scalar_flux(g) for g in range(4)}
     ref = _tt_scalar_flux(_quarter_circle(fills, 2, False), xs, qset)
+    assert _rel_diff(phi, ref) < 1e-8
+
+
+@pytest.mark.mpi(min_size=1)
+def test_nonconforming_sweep_matches_tt():
+    """The same geometry with every patch refined differently: non-conforming curved
+    and straight interfaces (no T-junctions). The sweeper and block-Jacobi AMEn
+    integrate both sides of each interface with one shared quadrature, so they solve
+    the same discrete problem."""
+    if mpi_context.world_size > 1:
+        pytest.skip("Sweeps run on one rank")
+    torch.set_default_dtype(torch.float64)
+    fills, xs = _xs()
+    qset = _qset(2)
+    factors = [(2, 3), (3, 2), (4, 2), (2, 3)]
+    mesh = _quarter_circle(fills, None, False, factors=factors)
+    conns = [
+        c
+        for b in mesh.blocks
+        for d in range(2)
+        for up in (False, True)
+        for c in b.get_boundary_info(d, up).connections
+    ]
+    assert conns and not all(c.conforming for c in conns)
+    sweeper = _sweep(mesh, xs, qset)
+    phi = {g: sweeper.get_scalar_flux(g) for g in range(4)}
+    ref = _tt_scalar_flux(
+        _quarter_circle(fills, None, False, factors=factors), xs, qset
+    )
     assert _rel_diff(phi, ref) < 1e-8
 
 

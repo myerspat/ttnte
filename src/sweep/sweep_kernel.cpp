@@ -39,13 +39,17 @@ void sweep_unit(
   const int64_t G = block.num_groups;
   const int64_t num_faces = static_cast<int64_t>(v.faces.size());
   const int64_t Qmax = v.max_face_points;
-  const bool banded = block.solver == LocalSolverType::BANDED_LU;
+  const bool banded = block.solver != LocalSolverType::DENSE_LU;
+  // Direct structured solvers assemble their own (smaller) systems: no
+  // patch matrix, no factor cache
+  const bool structured = unit.kronecker != nullptr || unit.extruded != nullptr;
   const int64_t matrix_size = banded ? N * v.ldab : N * N;
   const int64_t* index = banded ? v.band_index : v.dense_index;
 
   ws.values.resize(P);
   ws.matrix.resize(matrix_size);
   ws.rhs.resize(N);
+  ws.permuted.resize(N);
   ws.inflow.resize((num_faces + 1) * Qmax);
   ws.pivots.resize(N);
   double* values = ws.values.data();
@@ -58,7 +62,16 @@ void sweep_unit(
   for (int64_t bd = 0; bd < block.num_block_directions; bd++) {
     const int64_t d = block.directions[bd];
     const double* omega = block.omega + d * ndim;
-    const bool cached = unit.factors && unit.factors_ready;
+    // Every group of this direction cached: no operator values needed
+    auto ready = [&](int64_t g) {
+      return unit.factors && unit.factor_ready[d * G + g];
+    };
+    bool cached = structured;
+    if (!cached && unit.factors) {
+      cached = true;
+      for (int64_t bg = 0; bg < block.num_block_groups && cached; bg++)
+        cached = ready(block.groups[bg]);
+    }
 
     // Streaming + outflow pair values (group independent), not needed when
     // the factors are cached
@@ -99,11 +112,11 @@ void sweep_unit(
       // Operator: assembled and factored here, or read from the cache
       double* L = A;
       int64_t* piv = ipiv;
-      if (unit.factors) {
+      if (unit.factors && !structured && !unit.iterative) {
         L = unit.factors + (d * G + g) * matrix_size;
         piv = unit.factor_pivots + (d * G + g) * N;
       }
-      if (!cached) {
+      auto assemble_and_factor = [&]() {
         std::fill(L, L + matrix_size, 0.0);
         const double sigma = unit.sigma_t[g];
         for (int64_t p = 0; p < P; p++)
@@ -116,6 +129,11 @@ void sweep_unit(
             "Singular local system (direction " + std::to_string(d) +
               ", group " + std::to_string(g) + ")");
         }
+      };
+      if (!structured && !unit.iterative && !ready(g)) {
+        assemble_and_factor();
+        if (unit.factors)
+          unit.factor_ready[d * G + g] = 1;
       }
 
       // Source: sum_m Y_m(d) s_{m,g}
@@ -140,6 +158,13 @@ void sweep_unit(
           in.kind == FaceInflow::Kind::REFLECTIVE ? in.reflected[d] : d;
         const double* trace =
           in.trace + (src_dir * G + g) * in.source_face_dofs;
+        if (in.coupling_q) {
+          for (int64_t k = 0; k < in.num_coupling_pairs; k++)
+            b[face.dofs[in.coupling_a[k]]] += c[in.coupling_q[k]] *
+                                              in.coupling_val[k] *
+                                              trace[in.coupling_b[k]];
+          continue;
+        }
         for (int64_t k = 0; k < face.num_pairs; k++) {
           const int64_t u =
             in.trace_map ? in.trace_map[face.pair_b[k]] : face.pair_b[k];
@@ -148,11 +173,33 @@ void sweep_unit(
         }
       }
 
-      // Solve
-      if (banded) {
-        linalg::banded::lu_solve(L, v.ldab, N, v.kl, v.ku, piv, b);
-      } else {
-        linalg::dense::lu_solve(L, N, piv, b);
+      // Solve: the structured solver of the unit if it has one, LU when it
+      // has none or reports failure (an unconverged iterative solve)
+      bool solved = false;
+      if (unit.iterative) {
+        ws.saved.assign(b, b + N);
+        solved = unit.iterative->solve(omega, unit.sigma_t[g], b, ws.iterative);
+        if (!solved) {
+          std::copy(ws.saved.begin(), ws.saved.end(), b);
+          assemble_and_factor();
+        }
+      } else if (unit.kronecker) {
+        solved = unit.kronecker->solve(omega, unit.sigma_t[g], b, ws.kronecker);
+      } else if (unit.extruded) {
+        solved = unit.extruded->solve(omega, unit.sigma_t[g], b, ws.extruded);
+      }
+      if (!solved) {
+        if (banded && v.band_order) {
+          double* x = ws.permuted.data();
+          for (int64_t j = 0; j < N; j++)
+            x[j] = b[v.band_order[j]];
+          linalg::banded::lu_solve(L, v.ldab, N, v.kl, v.ku, piv, x);
+          for (int64_t j = 0; j < N; j++)
+            b[v.band_order[j]] = x[j];
+        } else if (banded)
+          linalg::banded::lu_solve(L, v.ldab, N, v.kl, v.ku, piv, b);
+        else
+          linalg::dense::lu_solve(L, N, piv, b);
       }
 
       // Outgoing traces, angular flux and moments
@@ -168,7 +215,11 @@ void sweep_unit(
       if (unit.psi) {
         std::copy(b, b + N, unit.psi + (d * G + g) * N);
       }
-      for (int64_t m = 0; m < M; m++) {
+      if (unit.fibers) {
+        std::copy(b, b + N,
+          unit.fibers + (unit.fiber_slot[bd] + bg) * unit.fiber_stride);
+      }
+      for (int64_t m = 0; m < M && unit.moments; m++) {
         const double y = Yw[m];
         if (y == 0.0)
           continue;
@@ -223,13 +274,16 @@ void transfer_source(const KernelView& view, const double* transfer,
 }
 
 double transfer_total(const KernelView& view, const double* transfer,
-  int64_t num_groups, const double* scalar_flux, const double* basis_integral)
+  int64_t num_groups, const double* scalar_flux, const double* basis_integral,
+  const uint8_t* source_mask)
 {
   // sum_v (M phi)_v = sum_u (int R_u) phi_u (partition of unity)
   const int64_t N = view.num_dofs;
   const int64_t G = num_groups;
   double total = 0.0;
   for (int64_t gp = 0; gp < G; gp++) {
+    if (source_mask && !source_mask[gp])
+      continue;
     double column = 0.0;
     for (int64_t g = 0; g < G; g++)
       column += transfer[g * G + gp];

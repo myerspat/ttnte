@@ -1,4 +1,5 @@
 #include "ttnte/task/task_scheduler.hpp"
+#include "payload_error.hpp"
 #include <torch/extension.h>
 
 namespace py = pybind11;
@@ -22,9 +23,17 @@ void register_TaskScheduler(py::module_& m)
 
     // =================================================================
     // Public methods
-    .def("execute", &TaskScheduler::execute, py::arg("graph"),
-      py::arg("mode") = ExecutionMode::POLL,
-      py::call_guard<py::gil_scoped_release>())
+    .def(
+      "execute",
+      [](TaskScheduler& self, TaskGraph& graph, ExecutionMode mode) {
+        {
+          py::gil_scoped_release release;
+          self.execute(graph, mode);
+        }
+        // A Python payload's exception, with the GIL held
+        ttnte::bindings::PayloadError::instance().rethrow();
+      },
+      py::arg("graph"), py::arg("mode") = ExecutionMode::POLL)
 
     .def("get_label", &TaskScheduler::get_label,
       py::return_value_policy::reference_internal)
