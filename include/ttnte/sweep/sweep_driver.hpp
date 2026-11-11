@@ -307,6 +307,10 @@ private:
   std::vector<std::vector<double>> anchor_x_;
   std::vector<std::vector<double>> anchor_y_;
   std::vector<std::vector<double>> anchor_source_;
+  /// Whether each group set has an anchor yet. Kept apart from
+  /// anchor_x_.empty(): a rank owning no patches has an empty x, and every
+  /// rank must take the same branch through the collective reductions.
+  std::vector<char> has_anchor_;
   /// Increments since the last full transport solve of each group set, and
   /// the totals of incremental and full transport solves of y0.
   std::vector<int64_t> anchor_steps_;

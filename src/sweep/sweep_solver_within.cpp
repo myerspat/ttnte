@@ -282,6 +282,7 @@ void SweepSolver::correction_solve(size_t s, bool jacobi, double tol,
     if (config_.incremental_transport) {
       anchor_x_[s] = x;
       anchor_steps_[s] = 0;
+      has_anchor_[s] = 1;
       full_solves_++;
       swap_source(s, anchor_source_[s], false);
     }
@@ -378,7 +379,7 @@ bool SweepSolver::try_incremental_transport(size_t s,
   const std::vector<double>& x, double tol_min, std::vector<double>& y,
   const linalg::krylov::Reducer& reducer)
 {
-  if (!config_.incremental_transport || anchor_x_[s].empty())
+  if (!config_.incremental_transport || !has_anchor_[s])
     return false;
   // Each increment may add tol_min = inner_factor tol of error to y0:
   // a full solve once the drift could reach the inner tolerance

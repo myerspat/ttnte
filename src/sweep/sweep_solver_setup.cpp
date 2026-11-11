@@ -241,6 +241,7 @@ void SweepSolver::reset_state(bool unit_scalar_flux)
   anchor_y_.assign(group_indices_.size(), {});
   anchor_source_.assign(group_indices_.size(), {});
   anchor_steps_.assign(group_indices_.size(), 0);
+  has_anchor_.assign(group_indices_.size(), 0);
   incremental_solves_ = full_solves_ = 0;
   for (auto& P : patches_) {
     P.moments.zero_();
