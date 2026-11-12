@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ttnte/galerkin/reduced_operator.hpp"
 #include "ttnte/sweep/sweep_driver.hpp"
 #include <cstdint>
 #include <memory>
@@ -40,7 +41,12 @@ namespace ttnte::sweep {
 ///   direction through the sweep kernel's own inflow (buffered_inflow()).
 /// The sources and lagged traces are read at extend() and reduced_system(),
 /// so a basis belongs to one transport solve (reset() between solves).
-class ProjectedTransport {
+///
+/// solve() and residuals() complete the galerkin::ReducedOperator: per
+/// direction, an LU of the r x r system (LAPACK) and the residual of
+/// X c_d through the sweep kernel (transport_residual()), both in parallel
+/// over directions.
+class ProjectedTransport : public galerkin::ReducedOperator {
 public:
   // =================================================================
   // Public types
@@ -154,13 +160,34 @@ public:
   }
 
   /// @brief Drop the basis (a new transport solve: new sources and traces).
-  void reset();
+  void reset() override final;
 
   /// @brief Append basis vectors and border every projection.
   /// @param X (p, num_groups, fiber_length) new basis vectors (unweighted, the
   /// set's groups in order).
   /// @throws std::runtime_error On a wrong shape.
-  void extend(const torch::Tensor& X);
+  void extend(const torch::Tensor& X) override final;
+
+  /// @brief Assemble and solve the reduced systems of `directions`: an LU
+  /// (LAPACK dgetrf/dgetrs, single-threaded) per direction, in parallel
+  /// over directions.
+  /// @return (D, r) coefficients c_d.
+  /// @throws std::runtime_error On a direction out of range or a singular
+  /// reduced matrix (a rank-deficient basis; with sigma_t > 0 the symmetric
+  /// part of the upwind operator is positive definite, so a basis of
+  /// independent vectors gives a nonsingular one).
+  torch::Tensor solve(const std::vector<int64_t>& directions) override final;
+
+  /// @brief Residuals b_d - A_d X c_d over every local unit, through the
+  /// sweep kernel (SweepSolver::transport_residual()), in parallel over
+  /// directions: O(r num_groups fiber_length) per direction to form X c_d,
+  /// plus one residual evaluation.
+  /// @param C (D, r) coefficients.
+  /// @return (D, num_groups, fiber_length) residuals.
+  /// @throws std::runtime_error On a wrong shape or a direction out of
+  /// range.
+  torch::Tensor residuals(const std::vector<int64_t>& directions,
+    const torch::Tensor& C) const override final;
 
   /// @brief The reduced system of direction d, X^T A_d X and X^T b_d.
   /// Directions may be assembled concurrently (each borders only its own
@@ -178,9 +205,13 @@ public:
 
   // =================================================================
   // Public getters
-  int64_t rank() const noexcept { return rank_; }
+  int64_t rank() const noexcept override final { return rank_; }
+  int64_t num_directions() const noexcept override final
+  {
+    return num_directions_;
+  }
   /// @return (r, num_groups, fiber_length) the basis.
-  torch::Tensor basis() const;
+  torch::Tensor basis() const override final;
   const std::vector<int64_t>& groups() const noexcept { return groups_; }
   /// @return Distinct unit normals of the flat faces.
   int64_t num_normals() const noexcept

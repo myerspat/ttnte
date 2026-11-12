@@ -779,6 +779,16 @@ public:
   void transport_residual(int64_t direction, const std::vector<int64_t>& groups,
     const double* x, double* r) const;
 
+  /// @brief The sampled-transport problem of group set `s`: sizes, weights,
+  /// harmonics, initial directions, patch layout, the data of every
+  /// weighting factor (mass bands, the set's lethargy widths, if the cross
+  /// sections carry group boundaries) and the sweep oracle at the set's
+  /// groups (set-local indices). What each sampler and its FiberStore are
+  /// built from.
+  /// @throws std::runtime_error If `s` is out of range or the group
+  /// boundaries do not match the groups.
+  cross::CrossProblem cross_problem(size_t s);
+
   /// @return Length of a fiber (dofs of every local unit).
   int64_t fiber_length() const noexcept { return fiber_length_; }
   /// @return Offset of each local unit's dofs in a fiber.

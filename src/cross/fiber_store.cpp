@@ -223,4 +223,69 @@ void FiberStore::apply_mass(double* rows, int64_t count, bool inverse) const
   }
 }
 
+void FiberStore::apply_dual_mass(double* rows, int64_t count) const
+{
+  const int64_t Ns = num_space_;
+  auto t = torch::from_blob(rows, {count, Ns}, torch::kFloat64);
+  for (size_t q = 0; q < mass_factors_.size(); q++) {
+    const int64_t off = problem_.patch_offsets[q];
+    const int64_t n = mass_factors_[q].size(0);
+    if (mass_dense_[q].defined()) {
+      // Rows are functionals f: R^{-T} f^T = (f R^{-1})^T, solving R on the
+      // right
+      auto part = t.narrow(1, off, n);
+      part.copy_(torch::linalg_solve_triangular(
+        mass_dense_[q], part, /*upper=*/true, /*left=*/false));
+      continue;
+    }
+    // R^{-T} = L^{-1} with the band factor M = L L^T
+    const double* factor = mass_factors_[q].data_ptr<double>();
+    for (int64_t i = 0; i < count; i++)
+      linalg::banded::cholesky_solve_lower(
+        factor, n, mass_kd_[q], rows + i * Ns + off);
+  }
+}
+
+torch::Tensor FiberStore::residual_norms(
+  const std::vector<int64_t>& directions, const torch::Tensor& residuals) const
+{
+  const int64_t D = static_cast<int64_t>(directions.size());
+  const int64_t G = num_groups_, Ns = num_space_;
+  if (residuals.dim() != 3 || residuals.size(0) != D ||
+      residuals.size(1) != G || residuals.size(2) != Ns)
+    throw utils::runtime_error(ctx("residual_norms"),
+      "residuals must be (len(directions), num_groups, num_space)");
+  for (int64_t d : directions)
+    if (d < 0 || d >= num_directions_)
+      throw utils::runtime_error(
+        ctx("residual_norms"), "Direction out of range");
+  // Weighted in a copy, row (d, g) by row, in parallel over rows
+  auto work = residuals.to(torch::kFloat64).contiguous().clone();
+  double* data = work.data_ptr<double>();
+  const int64_t rows = D * G;
+  std::vector<double> sq(static_cast<size_t>(rows), 0.0);
+  const int64_t grain = rows < SERIAL_ROWS ? rows : row_grain(rows);
+  at::parallel_for(0, rows, grain, [&](int64_t r0, int64_t r1) {
+    apply_dual_mass(data + r0 * Ns, r1 - r0);
+    for (int64_t i = r0; i < r1; i++) {
+      const double scale =
+        angle_weight_[directions[i / G]] * energy_weight_[i % G];
+      const double* f = data + i * Ns;
+      double s = 0.0;
+      for (int64_t k = 0; k < Ns; k++)
+        s += f[k] * f[k];
+      sq[i] = scale * scale * s;
+    }
+  });
+  auto norms = torch::empty({D}, torch::kFloat64);
+  double* out = norms.data_ptr<double>();
+  for (int64_t d = 0; d < D; d++) {
+    double s = 0.0;
+    for (int64_t g = 0; g < G; g++)
+      s += sq[d * G + g];
+    out[d] = std::sqrt(s);
+  }
+  return norms;
+}
+
 } // namespace ttnte::cross

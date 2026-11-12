@@ -129,6 +129,32 @@ public:
   /// happens without space weighting.
   void apply_mass(double* rows, int64_t count, bool inverse) const;
 
+  /// @brief Apply R_P^{-T} of every patch to `count` contiguous rows at
+  /// `rows`, serially: the dual of apply_mass(), for functionals (residuals
+  /// tested against the basis), since ||R_P^{-T} r|| = sqrt(r^T M_P^{-1} r).
+  /// Nothing happens without space weighting.
+  void apply_dual_mass(double* rows, int64_t count) const;
+
+  /// @brief Error-weighted dual norms of transport residuals: per residual
+  ///   sqrt(sum_g || a_d e_g R_P^{-T} r_{d,g} ||^2)
+  /// with the factors in effect (see weighting()). R_P^{-T} is the dual
+  /// (Riesz) norm in space, ||R^{-T} r||^2 = r^T M^{-1} r, since a residual
+  /// is a functional; the angle and energy factors multiply, as they weight
+  /// the error e = A^{-1} r the residual implies (A_d is block diagonal in
+  /// direction and group), so a_d e_g ||R e|| <= kappa a_d e_g ||R^{-T} r||.
+  /// This is not the dual of the whole weighted norm, which would divide by
+  /// a_d e_g (derivation in the guo-galerkin-cpp report, step 4b). With no
+  /// factor in effect it is the Euclidean norm of r (Guo & Peng's l2
+  /// residual).
+  /// @param directions (D) direction of each residual.
+  /// @param residuals (D, num_groups, num_space) residuals b_d - A_d x in the
+  /// fiber layout (integrals against the test functions, unweighted).
+  /// @return (D) norms.
+  /// @throws std::runtime_error On a wrong shape or a direction out of
+  /// range.
+  torch::Tensor residual_norms(const std::vector<int64_t>& directions,
+    const torch::Tensor& residuals) const;
+
   // =================================================================
   // Public getters
   /// @return Whether fiber `pair` is stored.

@@ -22,6 +22,10 @@ void cholesky_apply_upper(const double* ab, int64_t n, int64_t kd, double* x);
 /// @brief Solve L^T x = b in place (b is overwritten with x).
 void cholesky_solve_upper(const double* ab, int64_t n, int64_t kd, double* b);
 
+/// @brief Solve L x = b in place (b is overwritten with x): with A = L L^T,
+/// ||L^{-1} b|| = sqrt(b^T A^{-1} b), the dual norm of b.
+void cholesky_solve_lower(const double* ab, int64_t n, int64_t kd, double* b);
+
 /// @brief Lower band storage of a symmetric matrix given by a pair list.
 /// @param rows (P) row indices.
 /// @param cols (P) column indices.

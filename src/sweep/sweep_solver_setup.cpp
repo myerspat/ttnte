@@ -157,21 +157,30 @@ void SweepSolver::build_crosses()
   if (config_.cross_inner_factor <= 0.0)
     throw utils::runtime_error(
       ctx("setup"), "cross_inner_factor must be positive");
+  for (size_t s = 0; s < group_indices_.size(); s++)
+    samplers_.push_back(
+      cross::LayoutCross::create(cross_problem(s), config_.cross));
+}
+
+cross::CrossProblem SweepSolver::cross_problem(size_t s)
+{
+  if (s >= group_indices_.size())
+    throw utils::runtime_error(ctx("cross_problem"), "Group set out of range");
   const auto modes = angular_modes();
-  cross::CrossProblem base;
-  base.num_dim = ndim_;
-  base.num_polar = modes[0];
-  base.num_azimuthal = ndim_ == 1 ? 1 : modes[1];
-  base.num_space = fiber_length_;
-  base.weights = weights_;
-  base.harmonics = harmonics_;
-  base.initial_directions = initial_directions();
-  base.patch_offsets = fiber_offsets_;
+  cross::CrossProblem problem;
+  problem.num_dim = ndim_;
+  problem.num_polar = modes[0];
+  problem.num_azimuthal = ndim_ == 1 ? 1 : modes[1];
+  problem.num_space = fiber_length_;
+  problem.weights = weights_;
+  problem.harmonics = harmonics_;
+  problem.initial_directions = initial_directions();
+  problem.patch_offsets = fiber_offsets_;
   // The problem carries the data of every weighting factor; each sampler
   // applies the factors its own config enables
   for (const auto& P : patches_) {
-    base.patch_shapes.push_back(P.disc->shape());
-    base.mass_bands.push_back(
+    problem.patch_shapes.push_back(P.disc->shape());
+    problem.mass_bands.push_back(
       linalg::banded::symmetric_band_from_pairs(P.disc->pair_row(),
         P.disc->pair_col(), P.disc->mass_values(), P.disc->num_dofs())
         .first);
@@ -182,24 +191,19 @@ void SweepSolver::build_crosses()
   if (!widths.empty() && static_cast<int64_t>(widths.size()) != num_groups_)
     throw utils::runtime_error(ctx("setup"),
       "The cross-section server's group boundaries do not match the groups");
-  for (size_t s = 0; s < group_indices_.size(); s++) {
-    auto problem = base;
-    problem.num_groups = static_cast<int64_t>(group_indices_[s].size());
-    // Each set's cross sees only its own groups, and so only their widths
-    for (int64_t g :
-      widths.empty() ? std::vector<int64_t> {} : group_indices_[s])
-      problem.lethargy_widths.push_back(widths[g]);
-    problem.sweep = [this, s](const std::vector<FiberBlock>& blocks,
-                      double* out, const FiberDone& done) {
-      auto global = blocks;
-      for (auto& b : global)
-        for (auto& g : b.groups)
-          g = group_indices_[s][g];
-      sweep_fibers(global, out, done);
-    };
-    samplers_.push_back(
-      cross::LayoutCross::create(std::move(problem), config_.cross));
-  }
+  problem.num_groups = static_cast<int64_t>(group_indices_[s].size());
+  // Each set's sampler sees only its own groups, and so only their widths
+  for (int64_t g : widths.empty() ? std::vector<int64_t> {} : group_indices_[s])
+    problem.lethargy_widths.push_back(widths[g]);
+  problem.sweep = [this, s](const std::vector<FiberBlock>& blocks, double* out,
+                    const FiberDone& done) {
+    auto global = blocks;
+    for (auto& b : global)
+      for (auto& g : b.groups)
+        g = group_indices_[s][g];
+    sweep_fibers(global, out, done);
+  };
+  return problem;
 }
 
 void SweepSolver::build_range_dag()

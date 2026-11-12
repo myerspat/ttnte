@@ -1,8 +1,11 @@
 // ProjectedTransport: bordered Galerkin projections of the transport
 // operator of one group set.
 #include "ttnte/sweep/projected_transport.hpp"
+#include "ttnte/linalg/dense_lu.hpp"
 #include "ttnte/sweep/sweep_kernel.hpp"
 #include "ttnte/utils/exception.hpp"
+#include <ATen/Parallel.h>
+#include <algorithm>
 
 namespace ttnte::sweep {
 
@@ -488,6 +491,78 @@ std::pair<torch::Tensor, torch::Tensor> ProjectedTransport::reduced_system(
   }
   auto b = S.harmonics_[d].matmul(source_.view()) + buffered_rhs(d);
   return {A, b};
+}
+
+torch::Tensor ProjectedTransport::solve(const std::vector<int64_t>& directions)
+{
+  const int64_t D = static_cast<int64_t>(directions.size());
+  const int64_t r = rank_;
+  // Each direction borders only its own curved cache, so the directions of
+  // one call must be distinct to be assembled concurrently
+  std::vector<uint8_t> seen(static_cast<size_t>(num_directions_), 0);
+  for (int64_t d : directions) {
+    if (d < 0 || d >= num_directions_)
+      throw utils::runtime_error(ctx("solve"), "Direction out of range");
+    if (seen[d]++)
+      throw utils::runtime_error(ctx("solve"), "Directions must be distinct");
+  }
+  auto C = torch::zeros({D, r}, F64);
+  if (D == 0 || r == 0)
+    return C;
+  double* c = C.data_ptr<double>();
+  // Per direction: assemble (r x r, row-major), LU in place, solve
+  std::vector<uint8_t> singular(static_cast<size_t>(D), 0);
+  at::parallel_for(0, D, 1, [&](int64_t i0, int64_t i1) {
+    std::vector<int64_t> ipiv(static_cast<size_t>(r));
+    for (int64_t i = i0; i < i1; i++) {
+      auto [A, b] = reduced_system(directions[i]);
+      A = A.contiguous();
+      double* a = A.data_ptr<double>();
+      if (linalg::dense::lu_factor(a, r, ipiv.data()) != 0) {
+        singular[i] = 1;
+        continue;
+      }
+      double* x = c + i * r;
+      std::copy_n(b.contiguous().data_ptr<double>(), r, x);
+      linalg::dense::lu_solve(a, r, ipiv.data(), x);
+    }
+  });
+  for (int64_t i = 0; i < D; i++)
+    if (singular[i])
+      throw utils::runtime_error(ctx("solve"),
+        "The reduced matrix of direction " + std::to_string(directions[i]) +
+          " is singular (rank-deficient basis?)");
+  return C;
+}
+
+torch::Tensor ProjectedTransport::residuals(
+  const std::vector<int64_t>& directions, const torch::Tensor& C) const
+{
+  const int64_t D = static_cast<int64_t>(directions.size());
+  const int64_t r = rank_;
+  if (C.dim() != 2 || C.size(0) != D || C.size(1) != r)
+    throw utils::runtime_error(
+      ctx("residuals"), "C must be (len(directions), rank)");
+  for (int64_t d : directions)
+    if (d < 0 || d >= num_directions_)
+      throw utils::runtime_error(ctx("residuals"), "Direction out of range");
+  auto R = torch::empty({D, num_groups_, num_space_}, F64);
+  if (D == 0)
+    return R;
+  const auto coef = C.to(F64).contiguous();
+  const auto X = basis().reshape({r, -1}); // (r, G Ns)
+  double* out = R.data_ptr<double>();
+  const int64_t stride = num_groups_ * num_space_;
+  at::parallel_for(0, D, 1, [&](int64_t i0, int64_t i1) {
+    for (int64_t i = i0; i < i1; i++) {
+      // x = sum_j c_j x_j, then r = b_d - A_d x through the sweep kernel
+      const auto x =
+        r > 0 ? coef[i].matmul(X).contiguous() : torch::zeros({stride}, F64);
+      solver_.transport_residual(
+        directions[i], groups_, x.data_ptr<double>(), out + i * stride);
+    }
+  });
+  return R;
 }
 
 } // namespace ttnte::sweep

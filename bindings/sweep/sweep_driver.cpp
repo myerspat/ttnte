@@ -1,5 +1,6 @@
 #include "ttnte/sweep/sweep_driver.hpp"
 #include "ttnte/cad/patch.hpp"
+#include "ttnte/cross/fiber_store.hpp"
 #include "ttnte/cross/layout_cross.hpp"
 #include "ttnte/parallel/parallel_context.hpp"
 #include "ttnte/sweep/projected_transport.hpp"
@@ -156,6 +157,52 @@ static void register_SweepDriver_impl(
       "The buffered part of the reduced right-hand sides, X^T (lagged and "
       "reflected inflow of d), (D, r) (testing aid).",
       py::arg("directions"), py::arg("X"), py::arg("group_set") = 0)
+    .def(
+      "galerkin_solve",
+      [](const SweepDriver& self, const std::vector<int64_t>& directions,
+        const std::vector<torch::Tensor>& chunks, size_t group_set) {
+        using ttnte::sweep::ProjectedTransport;
+        auto pt = ProjectedTransport::create(
+          self, group_set, ProjectedTransport::Options {});
+        for (const auto& X : chunks)
+          pt->extend(X.to(torch::kFloat64).contiguous());
+        return pt->solve(directions);
+      },
+      "Reduced coefficients C (D, r) of directions on a basis given in "
+      "chunks (ProjectedTransport::solve, parallel over directions on "
+      "torch's threads; testing aid).",
+      py::arg("directions"), py::arg("chunks"), py::arg("group_set") = 0)
+    .def(
+      "galerkin_residuals",
+      [](const SweepDriver& self, const std::vector<int64_t>& directions,
+        const std::vector<torch::Tensor>& chunks, const torch::Tensor& C,
+        size_t group_set) {
+        using ttnte::sweep::ProjectedTransport;
+        auto pt = ProjectedTransport::create(
+          self, group_set, ProjectedTransport::Options {});
+        for (const auto& X : chunks)
+          pt->extend(X.to(torch::kFloat64).contiguous());
+        return pt->residuals(directions, C);
+      },
+      "Residuals b_d - A_d X c_d (D, |set|, fiber_length) of coefficients C "
+      "(D, r) on a basis given in chunks (testing aid).",
+      py::arg("directions"), py::arg("chunks"), py::arg("C"),
+      py::arg("group_set") = 0)
+    .def(
+      "residual_norms",
+      [](SweepDriver& self, const std::vector<int64_t>& directions,
+        const torch::Tensor& residuals, size_t group_set,
+        const ttnte::cross::Weighting& weighting) {
+        auto store = ttnte::cross::FiberStore::create(
+          self.cross_problem(group_set), weighting);
+        return py::make_tuple(
+          store->residual_norms(directions, residuals), store->weighting());
+      },
+      "Dual weighted norms (D) of residuals (D, |set|, fiber_length) by a "
+      "FiberStore of the set's problem, and the factors in effect (testing "
+      "aid).",
+      py::arg("directions"), py::arg("residuals"), py::arg("group_set") = 0,
+      py::arg("weighting") = ttnte::cross::Weighting {})
     .def_property_readonly("fiber_length", &SweepDriver::fiber_length)
     .def_property_readonly("fiber_offsets", &SweepDriver::fiber_offsets)
     .def_property_readonly("num_fibers", &SweepDriver::num_fibers)
