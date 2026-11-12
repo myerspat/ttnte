@@ -148,6 +148,7 @@ std::vector<int64_t> SweepSolver::initial_directions() const
 void SweepSolver::build_crosses()
 {
   samplers_.clear();
+  mass_bands_.clear(); // a new setup: new patches
   if (!sampled_transport())
     return;
   // TODO: exchange tasks and reductions for multi-rank crosses
@@ -177,14 +178,20 @@ cross::CrossProblem SweepSolver::cross_problem(size_t s)
   problem.initial_directions = initial_directions();
   problem.patch_offsets = fiber_offsets_;
   // The problem carries the data of every weighting factor; each sampler
-  // applies the factors its own config enables
-  for (const auto& P : patches_) {
-    problem.patch_shapes.push_back(P.disc->shape());
-    problem.mass_bands.push_back(
-      linalg::banded::symmetric_band_from_pairs(P.disc->pair_row(),
-        P.disc->pair_col(), P.disc->mass_values(), P.disc->num_dofs())
-        .first);
+  // applies the factors its own config enables. The mass bands are packed
+  // once per setup and shared by every set's problem (FiberStore clones
+  // them before factoring)
+  if (mass_bands_.size() != patches_.size()) {
+    mass_bands_.clear();
+    for (const auto& P : patches_)
+      mass_bands_.push_back(
+        linalg::banded::symmetric_band_from_pairs(P.disc->pair_row(),
+          P.disc->pair_col(), P.disc->mass_values(), P.disc->num_dofs())
+          .first);
   }
+  for (const auto& P : patches_)
+    problem.patch_shapes.push_back(P.disc->shape());
+  problem.mass_bands = mass_bands_;
   // Lethargy widths when the cross sections carry their group boundaries
   // (the server checked them: G + 1, decreasing, positive)
   const auto widths = xs_server_->lethargy_widths();

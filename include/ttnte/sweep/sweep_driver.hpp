@@ -209,6 +209,10 @@ private:
   int64_t num_groups_ = 0;
 
   std::vector<PatchState> patches_;
+  /// Per local patch, the lower band (n_P, kd + 1) of its mass matrix,
+  /// built on the first cross_problem() after setup and shared (read only)
+  /// by every group set's problem.
+  std::vector<torch::Tensor> mass_bands_;
   std::unordered_map<int64_t, size_t> gid_to_local_;
   SweepGraph::Ptr graph_;
   /// Directions of each angle set and groups of each group set as plain
