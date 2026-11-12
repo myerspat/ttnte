@@ -50,30 +50,39 @@ void streaming_values(
   }
 }
 
-/// @brief Inflow weights of every face for direction d (group
-/// independent): c_in[f] = (Omega_d . n)_- w on NEIGHBOR faces, and the
-/// reflected direction's outflow mask times the albedo on REFLECTIVE ones.
+/// @brief Inflow weights of face f for direction d (group independent):
+/// c = (Omega_d . n)_- w on a NEIGHBOR face, and the reflected direction's
+/// outflow mask times the albedo on a REFLECTIVE one.
+/// @param c (max face points) output.
+/// @return Whether the face has any inflow.
+bool face_inflow_weights(const UnitSweep& unit, const SweepBlock& block,
+  int64_t d, size_t f, double* c)
+{
+  const auto& v = unit.disc->view();
+  const int64_t ndim = v.ndim;
+  const auto& in = unit.inflow[f];
+  if (in.kind == FaceInflow::Kind::NEIGHBOR)
+    return upwind(v.faces[f], block.omega + d * ndim, ndim, -1.0, 1.0, c);
+  if (in.kind == FaceInflow::Kind::REFLECTIVE) {
+    // The TT operator's reflective inflow uses the reflected direction's
+    // outflow mask
+    return upwind(v.faces[f], block.omega + in.reflected[d] * ndim, ndim, 1.0,
+      in.albedo, c);
+  }
+  return false;
+}
+
+/// @brief face_inflow_weights() of every face.
 /// @param c_in (faces, max face points) output.
 /// @param active Whether each face has any inflow.
 void inflow_weights(const UnitSweep& unit, const SweepBlock& block, int64_t d,
   double* c_in, std::array<bool, MAX_FACES>& active)
 {
   const auto& v = unit.disc->view();
-  const int64_t ndim = v.ndim;
-  const double* omega = block.omega + d * ndim;
   active.fill(false);
-  for (size_t f = 0; f < v.faces.size(); f++) {
-    const auto& in = unit.inflow[f];
-    double* c = c_in + f * v.max_face_points;
-    if (in.kind == FaceInflow::Kind::NEIGHBOR) {
-      active[f] = upwind(v.faces[f], omega, ndim, -1.0, 1.0, c);
-    } else if (in.kind == FaceInflow::Kind::REFLECTIVE) {
-      // The TT operator's reflective inflow uses the reflected
-      // direction's outflow mask
-      active[f] = upwind(v.faces[f], block.omega + in.reflected[d] * ndim, ndim,
-        1.0, in.albedo, c);
-    }
-  }
+  for (size_t f = 0; f < v.faces.size(); f++)
+    active[f] =
+      face_inflow_weights(unit, block, d, f, c_in + f * v.max_face_points);
 }
 
 /// @brief b = sum_m Y_m s_{m,g}: the scattering + external source of
@@ -280,6 +289,17 @@ void sweep_unit(
       }
     }
   }
+}
+
+bool buffered_inflow(const UnitSweep& unit, const SweepBlock& block, int64_t d,
+  int64_t g, size_t f, double* c, double* b)
+{
+  if (!face_inflow_weights(unit, block, d, f, c))
+    return false;
+  const auto& in = unit.inflow[f];
+  add_inflow(unit.disc->view().faces[f], in, c,
+    inflow_trace(in, d, g, block.num_groups), b);
+  return true;
 }
 
 void unit_residual(const UnitSweep& unit, const SweepBlock& block,

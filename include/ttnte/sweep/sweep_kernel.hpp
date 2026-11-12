@@ -139,6 +139,22 @@ struct SweepWorkspace {
 void sweep_unit(
   const UnitSweep& unit, const SweepBlock& block, SweepWorkspace& workspace);
 
+/// @brief The inflow of one face for (direction d, group g) read from its
+/// FaceInflow's buffer, as sweep_unit() adds it to the right-hand side:
+///   b_v += sum_q c_q R_v(q) R^src_u(q) trace_u
+/// (lagged neighbor traces, reflected traces). Only the face's dofs of b
+/// change.
+/// @param unit The unit.
+/// @param block The block (omega, num_groups).
+/// @param d Direction.
+/// @param g Group (global).
+/// @param f Face.
+/// @param c (max face points) scratch.
+/// @param b (N) the unit's right-hand side, accumulated.
+/// @return Whether the face has inflow for d (nothing added otherwise).
+bool buffered_inflow(const UnitSweep& unit, const SweepBlock& block, int64_t d,
+  int64_t g, size_t f, double* c, double* b);
+
 /// @brief Transport residual of one unit for one direction:
 ///   r_g = sum_m Y_m(d) s_{m,g} + inflow_g - L_{d,g} x_g
 /// for every group of the block, with L, the source and the inflow

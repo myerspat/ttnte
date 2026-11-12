@@ -7,6 +7,7 @@ set(SWEEP_SRC_REL
     iterative_solver.cpp
     kronecker_solver.cpp
     patch_discretization.cpp
+    projected_transport.cpp
     sum_factorization.cpp
     sweep_graph.cpp
     sweep_kernel.cpp

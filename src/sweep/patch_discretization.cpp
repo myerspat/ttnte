@@ -272,6 +272,8 @@ PatchDiscretization::PatchDiscretization(const cad::Patch& patch)
         face.pair_a = torch::zeros({1}, torch::kInt64);
         face.pair_b = torch::zeros({1}, torch::kInt64);
         face.pair_val = torch::ones({1}, opts);
+        face.basis_values = torch::ones({1, 1}, opts);
+        face.basis_index = torch::zeros({1, 1}, torch::kInt64);
         face.area = 1.0;
       } else {
         std::vector<const DimData*> tdims;
@@ -311,6 +313,8 @@ PatchDiscretization::PatchDiscretization(const cad::Patch& patch)
         face.pair_b = fp.index.unsqueeze(1).expand({Qf, Af, Af}).reshape({-1});
         // The quadrature weight lives in upwind_weights(), not here
         face.pair_val = (fp.R.unsqueeze(2) * fp.R.unsqueeze(1)).reshape({-1});
+        face.basis_values = fp.R.contiguous();
+        face.basis_index = fp.index.contiguous();
       }
 
       locate_face_pairs(face);
@@ -529,6 +533,8 @@ void PatchDiscretization::set_face_quadrature(int64_t dim, bool is_upper,
   face.pair_a = fp.index.unsqueeze(2).expand({Qf, Af, Af}).reshape({-1});
   face.pair_b = fp.index.unsqueeze(1).expand({Qf, Af, Af}).reshape({-1});
   face.pair_val = (fp.R.unsqueeze(2) * fp.R.unsqueeze(1)).reshape({-1});
+  face.basis_values = fp.R.contiguous();
+  face.basis_index = fp.index.contiguous();
   locate_face_pairs(face);
   build_view();
 }

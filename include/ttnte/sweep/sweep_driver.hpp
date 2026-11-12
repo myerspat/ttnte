@@ -46,6 +46,8 @@
 
 namespace ttnte::sweep {
 
+class ProjectedTransport;
+
 /// @brief Discrete-ordinates transport sweep solver for discontinuous
 /// multi-patch IGA (dimension a runtime value; see SweepDriver for the typed
 /// front end the bindings use).
@@ -74,6 +76,10 @@ namespace ttnte::sweep {
 /// mapping and scattering kernel), so the PDG sweeper converges to the same
 /// discrete solution.
 class SweepSolver {
+  /// Projects the operators, sources and traces of a group set onto a basis
+  /// (reads the patch states, links and angle sets directly).
+  friend class ProjectedTransport;
+
 public:
   // =================================================================
   // Public types
@@ -109,6 +115,11 @@ private:
     torch::Tensor coupling_a;
     torch::Tensor coupling_b;
     torch::Tensor coupling_val;
+    /// INTERNAL, non-conforming: (Q, A_nb) neighbor face basis values
+    /// R^nb_b(q) at this face's (shared) quadrature points and their
+    /// neighbor-face-local indices (the second factor of coupling_val).
+    torch::Tensor coupling_basis;
+    torch::Tensor coupling_index;
     /// INTERNAL: SweepInterface index and whether this patch is its first.
     int64_t interface = -1;
     bool is_first = false;

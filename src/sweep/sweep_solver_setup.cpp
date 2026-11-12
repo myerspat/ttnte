@@ -671,7 +671,7 @@ void SweepSolver::setup(const math::QuadratureSet::Ptr& qset,
   // quadrature (union of the knot spans, the larger degree), the second
   // face with the exact negative of the first's normal, so the outflow of
   // one side is the inflow of the other
-  std::map<std::pair<size_t, int64_t>, std::array<torch::Tensor, 4>> couplings;
+  std::map<std::pair<size_t, int64_t>, std::array<torch::Tensor, 6>> couplings;
   for (size_t i = 0; i < nodes.size() && ndim_ > 1; i++) {
     auto& P = nodes[i];
     for (int64_t dim = 0; dim < ndim_; dim++) {
@@ -702,7 +702,7 @@ void SweepSolver::setup(const math::QuadratureSet::Ptr& qset,
         auto pairs = [](const FacePoints& own, const FacePoints& src) {
           const int64_t q = own.R.size(0), na = own.R.size(1),
                         nb = src.R.size(1);
-          return std::array<torch::Tensor, 4> {torch::arange(q, torch::kInt64)
+          return std::array<torch::Tensor, 6> {torch::arange(q, torch::kInt64)
                                                  .view({q, 1, 1})
                                                  .expand({q, na, nb})
                                                  .reshape({-1})
@@ -717,7 +717,8 @@ void SweepSolver::setup(const math::QuadratureSet::Ptr& qset,
               .contiguous(),
             (own.R.unsqueeze(2) * src.R.unsqueeze(1))
               .reshape({-1})
-              .contiguous()};
+              .contiguous(),
+            src.R.contiguous(), src.index.contiguous()};
         };
         couplings[{i, 2 * dim + (is_upper ? 1 : 0)}] = pairs(fa, fb);
         couplings[{j, 2 * static_cast<int64_t>(conn.dim) +
@@ -772,6 +773,8 @@ void SweepSolver::setup(const math::QuadratureSet::Ptr& qset,
             link.coupling_a = coupling->second[1];
             link.coupling_b = coupling->second[2];
             link.coupling_val = coupling->second[3];
+            link.coupling_basis = coupling->second[4];
+            link.coupling_index = coupling->second[5];
           } else {
             link.trace_map =
               build_trace_map(dim, conn, *nodes[link.neighbor].disc)

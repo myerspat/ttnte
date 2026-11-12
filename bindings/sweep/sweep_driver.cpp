@@ -2,6 +2,7 @@
 #include "ttnte/cad/patch.hpp"
 #include "ttnte/cross/layout_cross.hpp"
 #include "ttnte/parallel/parallel_context.hpp"
+#include "ttnte/sweep/projected_transport.hpp"
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -92,6 +93,69 @@ static void register_SweepDriver_impl(
       "sources and lagged traces (those sweep_fibers reads); a swept fiber's "
       "is at rounding level (testing aid).",
       py::arg("direction"), py::arg("groups"), py::arg("psi"))
+    .def(
+      "projected_system",
+      [](const SweepDriver& self, const std::vector<int64_t>& directions,
+        const std::vector<torch::Tensor>& chunks, size_t group_set,
+        bool flat_faces, bool assemble_each,
+        const std::vector<torch::Tensor>& previous, bool implicit_lagged) {
+        using ttnte::sweep::ProjectedTransport;
+        auto pt = ProjectedTransport::create(self, group_set,
+          ProjectedTransport::Options {flat_faces, implicit_lagged});
+        // An earlier basis, every direction assembled on it, then dropped:
+        // what a sampler does between transport solves
+        if (!previous.empty()) {
+          for (const auto& X : previous)
+            pt->extend(X.to(torch::kFloat64).contiguous());
+          for (int64_t d : directions)
+            pt->reduced_system(d);
+          pt->reset();
+        }
+        for (const auto& X : chunks) {
+          pt->extend(X.to(torch::kFloat64).contiguous());
+          // Assembled between extensions: the curved-face caches are then
+          // bordered lazily, chunk by chunk
+          for (int64_t d : directions)
+            if (assemble_each)
+              pt->reduced_system(d);
+        }
+        std::vector<torch::Tensor> A, b;
+        for (int64_t d : directions) {
+          auto [Ad, bd] = pt->reduced_system(d);
+          A.push_back(Ad);
+          b.push_back(bd);
+        }
+        return py::make_tuple(torch::stack(A), torch::stack(b),
+          pt->num_normals(), pt->num_curved_faces());
+      },
+      "Reduced systems X^T A_d X, X^T b_d of directions on a basis given in "
+      "chunks (each (p, |set|, fiber_length), bordered in turn), with the "
+      "current sources and lagged traces: (A (D, r, r), b (D, r), distinct "
+      "flat normals, curved faces). flat_faces=False projects every face by "
+      "quadrature; assemble_each=True assembles the directions after every "
+      "chunk; previous: a basis projected (every direction assembled) and "
+      "reset() before the chunks; implicit_lagged: lagged edges in A, not b "
+      "(testing aid).",
+      py::arg("directions"), py::arg("chunks"), py::arg("group_set") = 0,
+      py::arg("flat_faces") = true, py::arg("assemble_each") = false,
+      py::arg("previous") = std::vector<torch::Tensor> {},
+      py::arg("implicit_lagged") = false)
+    .def(
+      "buffered_projection",
+      [](const SweepDriver& self, const std::vector<int64_t>& directions,
+        const torch::Tensor& X, size_t group_set) {
+        using ttnte::sweep::ProjectedTransport;
+        auto pt = ProjectedTransport::create(
+          self, group_set, ProjectedTransport::Options {});
+        pt->extend(X.to(torch::kFloat64).contiguous());
+        std::vector<torch::Tensor> b;
+        for (int64_t d : directions)
+          b.push_back(pt->buffered_rhs(d));
+        return torch::stack(b);
+      },
+      "The buffered part of the reduced right-hand sides, X^T (lagged and "
+      "reflected inflow of d), (D, r) (testing aid).",
+      py::arg("directions"), py::arg("X"), py::arg("group_set") = 0)
     .def_property_readonly("fiber_length", &SweepDriver::fiber_length)
     .def_property_readonly("fiber_offsets", &SweepDriver::fiber_offsets)
     .def_property_readonly("num_fibers", &SweepDriver::num_fibers)
