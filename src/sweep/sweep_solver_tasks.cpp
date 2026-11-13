@@ -270,8 +270,11 @@ void SweepSolver::sampled_group_set(size_t s)
 
   // Tolerance: cross_tol_ when the within-set solver set one for this
   // transport solve (relaxed inexact-Krylov products with cross_relax, the
-  // correction form's tol_min), else the fixed CrossConfig::tol
-  sampler.set_tolerance(cross_tol_ > 0 ? cross_tol_ : config_.cross.tol);
+  // correction form's tol_min), else the sampler's fixed config tol
+  const double fixed = config_.transport == TransportSolve::GALERKIN
+                         ? config_.galerkin.tol
+                         : config_.cross.tol;
+  sampler.set_tolerance(cross_tol_ > 0 ? cross_tol_ : fixed);
   // The sampler's linear algebra runs on at most cross_threads threads (its
   // matrices are small; more threads cost more in synchronization). The
   // fiber sweeps it requests still use the solver's task pool

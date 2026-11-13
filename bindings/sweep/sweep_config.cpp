@@ -49,6 +49,9 @@ void register_SweepConfig(py::module_& m)
     .value("EXACT", TransportSolve::EXACT, "Sweep every (direction, group)")
     .value("CROSS", TransportSolve::CROSS,
       "Sweep the pairs chosen by a TT-cross (low-rank angular flux)")
+    .value("GALERKIN", TransportSolve::GALERKIN,
+      "Sweep directions chosen by residual-greedy Galerkin sampling (Guo & "
+      "Peng) and fill the rest by reduced Galerkin solves")
     .export_values();
 
   py::class_<SweepConfig>(m, "SweepConfig")
@@ -97,5 +100,6 @@ void register_SweepConfig(py::module_& m)
     .def_readwrite("local_tol", &SweepConfig::local_tol)
     .def_readwrite("local_restart", &SweepConfig::local_restart)
     .def_readwrite("local_max_iter", &SweepConfig::local_max_iter)
-    .def_readwrite("cross", &SweepConfig::cross);
+    .def_readwrite("cross", &SweepConfig::cross)
+    .def_readwrite("galerkin", &SweepConfig::galerkin);
 }

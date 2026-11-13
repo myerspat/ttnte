@@ -177,6 +177,7 @@ add_subdirectory(bindings/solvers)
 add_subdirectory(bindings/sweep)
 add_subdirectory(bindings/tensor)
 add_subdirectory(bindings/cross)
+add_subdirectory(bindings/galerkin)
 add_subdirectory(bindings/python)
 add_subdirectory(bindings/math)
 
@@ -196,6 +197,7 @@ add_library(
   ${SWEEP_SRC}
   ${TENSOR_SRC}
   ${CROSS_SRC}
+  ${GALERKIN_SRC}
   ${PY_SRC}
   ${PHYSICS_SRC}
   ${MATH_SRC})
@@ -314,6 +316,7 @@ add_library(
   ${SWEEP_BINDINGS}
   ${TENSOR_BINDINGS}
   ${CROSS_BINDINGS}
+  ${GALERKIN_BINDINGS}
   ${PY_BINDINGS}
   ${MATH_BINDINGS})
 

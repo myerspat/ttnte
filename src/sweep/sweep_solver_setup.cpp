@@ -1,4 +1,5 @@
 // SweepSolver: Construction, setup, partitioning and the sweep task graphs.
+#include "ttnte/sweep/projected_transport.hpp"
 #include "ttnte/sweep/sweep_driver.hpp"
 
 namespace ttnte::sweep {
@@ -151,16 +152,30 @@ void SweepSolver::build_crosses()
   mass_bands_.clear(); // a new setup: new patches
   if (!sampled_transport())
     return;
-  // TODO: exchange tasks and reductions for multi-rank crosses
+  // TODO: exchange tasks and reductions for multi-rank samplers
   if (comm_.size() > 1)
-    throw utils::runtime_error(
-      ctx("setup"), "CROSS transport solves are serial in space for now");
+    throw utils::runtime_error(ctx("setup"),
+      "Sampled (CROSS, GALERKIN) transport solves are serial in space for now");
   if (config_.cross_inner_factor <= 0.0)
     throw utils::runtime_error(
       ctx("setup"), "cross_inner_factor must be positive");
-  for (size_t s = 0; s < group_indices_.size(); s++)
-    samplers_.push_back(
-      cross::LayoutCross::create(cross_problem(s), config_.cross));
+  // (3.9)'s reference: under source iteration the previous transport solve
+  // is this one's input (Guo & Peng); under GMRES each solve's input is a
+  // Krylov vector, so a run compares only its own full solves (Han et al.)
+  auto galerkin_config = config_.galerkin;
+  if (galerkin_config.phi_old == galerkin::GalerkinPhiOld::AUTO)
+    galerkin_config.phi_old = config_.inner_solver == InnerSolver::RICHARDSON
+                                ? galerkin::GalerkinPhiOld::PREVIOUS_RUN
+                                : galerkin::GalerkinPhiOld::WITHIN_RUN;
+  for (size_t s = 0; s < group_indices_.size(); s++) {
+    if (config_.transport == TransportSolve::GALERKIN)
+      samplers_.push_back(galerkin::GreedyGalerkin::create(cross_problem(s),
+        ProjectedTransport::create(*this, s, ProjectedTransport::Options {}),
+        galerkin_config));
+    else
+      samplers_.push_back(
+        cross::LayoutCross::create(cross_problem(s), config_.cross));
+  }
 }
 
 cross::CrossProblem SweepSolver::cross_problem(size_t s)

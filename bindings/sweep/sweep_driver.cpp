@@ -217,6 +217,9 @@ static void register_SweepDriver_impl(
       &SweepDriver::iterative_statistics,
       "(local solves, local GMRES applications, LU fallbacks) of the "
       "ITERATIVE solver")
+    .def("get_galerkin", &SweepDriver::get_galerkin, py::arg("group_set") = 0,
+      "The greedy Galerkin sampler of a group set (transport = GALERKIN): "
+      "its last run's flux, history and records.")
     .def("get_cross", &SweepDriver::get_cross, py::arg("group_set") = 0,
       "The LayoutCross of a group set (transport = CROSS)")
     .def("get_patch_angular_flux_tt", &SweepDriver::get_patch_angular_flux_tt,

@@ -555,9 +555,13 @@ torch::Tensor ProjectedTransport::residuals(
   const int64_t stride = num_groups_ * num_space_;
   at::parallel_for(0, D, 1, [&](int64_t i0, int64_t i1) {
     for (int64_t i = i0; i < i1; i++) {
-      // x = sum_j c_j x_j, then r = b_d - A_d x through the sweep kernel
+      // x = sum_j c_j x_j, then r = b_d - A_d x through the sweep kernel. A
+      // zero row (the right-hand side b_d = r(0)) skips the O(r G Ns) product
+      const double* ci = coef.data_ptr<double>() + i * r;
+      const bool zero =
+        std::all_of(ci, ci + r, [](double v) { return v == 0.0; });
       const auto x =
-        r > 0 ? coef[i].matmul(X).contiguous() : torch::zeros({stride}, F64);
+        zero ? torch::zeros({stride}, F64) : coef[i].matmul(X).contiguous();
       solver_.transport_residual(
         directions[i], groups_, x.data_ptr<double>(), out + i * stride);
     }

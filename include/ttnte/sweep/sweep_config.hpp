@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ttnte/cross/cross_config.hpp"
+#include "ttnte/galerkin/galerkin_config.hpp"
 
 #include <cstdint>
 
@@ -69,6 +70,9 @@ enum class TransportSolve : uint8_t {
   /// Sweep a few pairs chosen by a TT-cross and contract the moments and
   /// lagged traces from the resulting low-rank angular flux.
   CROSS,
+  /// Sweep a few directions chosen by residual-greedy Galerkin sampling
+  /// (Guo & Peng) and fill the others by reduced Galerkin solves.
+  GALERKIN,
 };
 
 /// @brief Configuration of the transport sweep solver.
@@ -191,11 +195,13 @@ struct SweepConfig {
   TransportSolve transport = TransportSolve::EXACT;
   /// Options of the TT-cross (TransportSolve::CROSS).
   cross::CrossConfig cross;
-  /// How the solver drives each CROSS transport solve. Its accuracy is
-  /// tol_min = cross_inner_factor times the within-group-set tolerance; with
-  /// cross_relax, GMRES relaxes each product's accuracy as the residual
-  /// drops, tol_k = min(cross_max_tol, tol_min / max(r_k, tol_min)), r_k the
-  /// relative residual (Simoncini and Szyld, SISC 25, 2003).
+  /// Options of the greedy Galerkin sampler (TransportSolve::GALERKIN).
+  galerkin::GalerkinConfig galerkin;
+  /// How the solver drives each sampled (CROSS or GALERKIN) transport solve.
+  /// Its accuracy is tol_min = cross_inner_factor times the within-group-set
+  /// tolerance; with cross_relax, GMRES relaxes each product's accuracy as the
+  /// residual drops, tol_k = min(cross_max_tol, tol_min / max(r_k, tol_min)),
+  /// r_k the relative residual (Simoncini and Szyld, SISC 25, 2003).
   double cross_inner_factor = 0.1;
   bool cross_relax = true;
   double cross_max_tol = 1e-2;

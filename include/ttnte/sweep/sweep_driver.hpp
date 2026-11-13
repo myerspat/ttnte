@@ -5,6 +5,7 @@
 #include "ttnte/cross/layout_cross.hpp"
 #include "ttnte/cross/sampled_transport.hpp"
 #include "ttnte/driver/transport_solution.hpp"
+#include "ttnte/galerkin/greedy_galerkin.hpp"
 #include "ttnte/linalg/banded_cholesky.hpp"
 #include "ttnte/linalg/krylov.hpp"
 #include "ttnte/math/quadrature_set.hpp"
@@ -506,11 +507,13 @@ private:
   /// group set) rather than exact sweeps.
   bool sampled_transport() const noexcept
   {
-    return config_.transport == TransportSolve::CROSS;
+    return config_.transport == TransportSolve::CROSS ||
+           config_.transport == TransportSolve::GALERKIN;
   }
 
   /// @brief One sampler per group set for a sampled transport solve (a
-  /// LayoutCross for TransportSolve::CROSS).
+  /// LayoutCross for TransportSolve::CROSS, a GreedyGalerkin on the set's
+  /// ProjectedTransport for TransportSolve::GALERKIN).
   void build_crosses();
 
   /// @brief Transport solve of group set `s` by its sampler: moments into
@@ -807,6 +810,10 @@ public:
   /// the TT of the last transport solve.
   /// @throws std::runtime_error If group set `s` has no cross.
   cross::LayoutCross::Ptr get_cross(size_t s = 0) const;
+  /// @return The greedy Galerkin sampler of group set `s`
+  /// (TransportSolve::GALERKIN).
+  /// @throws std::runtime_error If there is none.
+  galerkin::GreedyGalerkin::Ptr get_galerkin(size_t s = 0) const;
   /// @return Cores of patch `gid`'s angular flux TT for group set `s` (last
   /// transport solve), in the configured layout.
   std::vector<torch::Tensor> get_patch_angular_flux_tt(

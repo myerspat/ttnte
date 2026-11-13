@@ -240,6 +240,17 @@ cross::LayoutCross::Ptr SweepSolver::get_cross(size_t s) const
   return cr;
 }
 
+galerkin::GreedyGalerkin::Ptr SweepSolver::get_galerkin(size_t s) const
+{
+  auto g = s < samplers_.size()
+             ? std::dynamic_pointer_cast<galerkin::GreedyGalerkin>(samplers_[s])
+             : nullptr;
+  if (!g)
+    throw utils::runtime_error(ctx("get_galerkin"),
+      "No Galerkin sampler for this group set (transport = GALERKIN?)");
+  return g;
+}
+
 std::map<std::string, double> SweepSolver::get_cross_timings() const
 {
   auto out = cross_timings_;
