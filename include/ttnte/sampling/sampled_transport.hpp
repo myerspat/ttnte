@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ttnte/sampling/fiber_store.hpp"
+#include "ttnte/sampling/run_record.hpp"
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -75,6 +76,23 @@ public:
   virtual std::map<std::string, double> timings() const = 0;
   /// @return Every oracle request of every run.
   virtual const std::vector<FiberStore::SweepCall>& sweep_calls() const = 0;
+  /// @return The last run's record (a sampler's own RunRecord subclass).
+  virtual RunRecord::Ptr record() const = 0;
+
+protected:
+  // =================================================================
+  // Protected methods
+  /// @brief Fill the fields every sampler reports from the getters above.
+  void fill_record(RunRecord& record) const
+  {
+    record.tolerance = tolerance();
+    record.fibers = num_fibers();
+    record.ranks = ranks();
+    record.error = error();
+    record.converged = converged();
+    record.seconds = seconds();
+    record.sweep_seconds = sweep_seconds();
+  }
 };
 
 } // namespace ttnte::sampling

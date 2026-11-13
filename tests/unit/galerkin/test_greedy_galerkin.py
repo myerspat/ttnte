@@ -308,4 +308,4 @@ def test_fixed_source_matches_exact(num_dim, set_size):
     phi, sw = _phi(num_dim, TransportSolve.GALERKIN, group_set_size=set_size)
     assert sw.converged
     assert _rel(phi, exact) < 1e-4
-    assert len(sw.cross_fibers) > 0
+    assert len(sw.sampling_records) > 0

@@ -156,9 +156,9 @@ void SweepSolver::build_samplers()
   if (comm_.size() > 1)
     throw utils::runtime_error(ctx("setup"),
       "Sampled (CROSS, GALERKIN) transport solves are serial in space for now");
-  if (config_.cross_inner_factor <= 0.0)
+  if (config_.sampling_inner_factor <= 0.0)
     throw utils::runtime_error(
-      ctx("setup"), "cross_inner_factor must be positive");
+      ctx("setup"), "sampling_inner_factor must be positive");
   // (3.9)'s reference: under source iteration the previous transport solve
   // is this one's input (Guo & Peng); under GMRES each solve's input is a
   // Krylov vector, so a run compares only its own full solves (Han et al.)
@@ -252,15 +252,10 @@ void SweepSolver::build_range_dag()
 
 void SweepSolver::reset_state(bool unit_scalar_flux)
 {
-  cross_tolerances_.clear();
-  cross_fibers_.clear();
-  cross_max_ranks_.clear();
-  cross_errors_.clear();
-  cross_ranks_.clear();
-  cross_histories_.clear();
-  cross_seconds_ = 0.0;
-  cross_sweep_seconds_ = 0.0;
-  cross_timings_.clear();
+  sampling_records_.clear();
+  sampling_seconds_ = 0.0;
+  sampling_sweep_seconds_ = 0.0;
+  sampling_timings_.clear();
   solve_timings_.clear();
   rhs_ratio_.assign(group_indices_.size(), 0.0);
   anchor_x_.assign(group_indices_.size(), {});

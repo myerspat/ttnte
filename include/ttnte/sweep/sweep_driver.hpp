@@ -313,7 +313,7 @@ private:
   /// group set, the tolerance of the next transport solve, and per-solve
   /// records (tolerance, fibers, largest rank, error).
   std::vector<sampling::SampledTransport::Ptr> samplers_;
-  double cross_tol_ = 0.0;
+  double sampling_tol_ = 0.0;
   /// SweepConfig::correction_form: ||b|| / ||x|| of each group set from its
   /// last standard within-group-set solve (b the transport solve of the fixed
   /// sources, x the solution), which turns tolerances relative to ||b|| into
@@ -333,20 +333,15 @@ private:
   std::vector<int64_t> anchor_steps_;
   int64_t incremental_solves_ = 0;
   int64_t full_solves_ = 0;
-  std::vector<double> cross_tolerances_;
-  std::vector<int64_t> cross_fibers_;
-  std::vector<int64_t> cross_max_ranks_;
-  std::vector<double> cross_errors_;
-  /// Per transport solve: the ranks of the approximation and, for a cross,
-  /// its per-sweep history.
-  std::vector<std::vector<int64_t>> cross_ranks_;
-  std::vector<std::vector<cross::LayoutCross::SweepRecord>> cross_histories_;
+  /// Per sampled transport solve, its record (a sampler's RunRecord
+  /// subclass: a cross's half-sweeps, a Galerkin run's iterations).
+  std::vector<sampling::RunRecord::Ptr> sampling_records_;
   /// Wall time of the samplers and of their fiber sweeps.
-  double cross_seconds_ = 0.0;
-  double cross_sweep_seconds_ = 0.0;
+  double sampling_seconds_ = 0.0;
+  double sampling_sweep_seconds_ = 0.0;
   /// Seconds per phase of the sampled transport solves outside the
   /// samplers' runs (moments, traces, angular flux).
-  std::map<std::string, double> cross_timings_;
+  std::map<std::string, double> sampling_timings_;
   /// Seconds per step of the within-group-set solves (see solve_timings()).
   std::map<std::string, double> solve_timings_;
 
@@ -821,46 +816,30 @@ public:
   {
     return get_cross(s)->patch_tt(gid_to_local_.at(gid));
   }
-  const std::vector<double>& get_cross_tolerances() const noexcept
+  /// @return Per sampled transport solve, its record: the common fields
+  /// and the sampler's own (cross::LayoutCross::RunRecord,
+  /// galerkin::GreedyGalerkin::RunRecord).
+  const std::vector<sampling::RunRecord::Ptr>& get_sampling_records()
+    const noexcept
   {
-    return cross_tolerances_;
+    return sampling_records_;
   }
-  const std::vector<int64_t>& get_cross_fibers() const noexcept
+  /// @return Wall seconds of every sampler run, and of their fiber sweeps.
+  double get_sampling_seconds() const noexcept { return sampling_seconds_; }
+  double get_sampling_sweep_seconds() const noexcept
   {
-    return cross_fibers_;
+    return sampling_sweep_seconds_;
   }
-  const std::vector<int64_t>& get_cross_max_ranks() const noexcept
-  {
-    return cross_max_ranks_;
-  }
-  double get_cross_seconds() const noexcept { return cross_seconds_; }
   /// @return Seconds per phase of the sampled transport solves: the phases
   /// of the samplers' runs summed over the group sets (see
   /// SampledTransport::timings()), and moments, traces and angular_flux.
-  std::map<std::string, double> get_cross_timings() const;
+  std::map<std::string, double> get_sampling_timings() const;
   /// @return Seconds per step of the within-group-set solves, accumulated:
   /// inner (whole within-group-set solves), gmres (the Krylov solves within
   /// them), and unpack, source, transport and pack per transport solve.
   const std::map<std::string, double>& get_solve_timings() const noexcept
   {
     return solve_timings_;
-  }
-  double get_cross_sweep_seconds() const noexcept
-  {
-    return cross_sweep_seconds_;
-  }
-  const std::vector<std::vector<int64_t>>& get_cross_ranks() const noexcept
-  {
-    return cross_ranks_;
-  }
-  const std::vector<std::vector<cross::LayoutCross::SweepRecord>>&
-  get_cross_histories() const noexcept
-  {
-    return cross_histories_;
-  }
-  const std::vector<double>& get_cross_errors() const noexcept
-  {
-    return cross_errors_;
   }
   /// @return GID of every local unit, in local (fiber) order.
   std::vector<int64_t> local_gids() const;

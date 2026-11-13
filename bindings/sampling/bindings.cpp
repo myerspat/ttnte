@@ -4,6 +4,7 @@ namespace py = pybind11;
 
 // Forward declarations
 void register_Weighting(py::module_& m);
+void register_RunRecord(py::module_& m);
 
 // Initialize the sampling module
 void init_sampling(py::module_& m)
@@ -12,4 +13,5 @@ void init_sampling(py::module_& m)
 
   // Register classes
   register_Weighting(m);
+  register_RunRecord(m);
 }

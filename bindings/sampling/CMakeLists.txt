@@ -1,5 +1,5 @@
 # Define the relative filenames
-set(SAMPLING_BINDINGS_REL bindings.cpp weighting.cpp)
+set(SAMPLING_BINDINGS_REL bindings.cpp weighting.cpp run_record.cpp)
 set(SAMPLING_SRC_REL fiber_store.cpp)
 
 # Define the directory paths (Use local variables here, then push if needed)

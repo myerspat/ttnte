@@ -251,9 +251,9 @@ galerkin::GreedyGalerkin::Ptr SweepSolver::get_galerkin(size_t s) const
   return g;
 }
 
-std::map<std::string, double> SweepSolver::get_cross_timings() const
+std::map<std::string, double> SweepSolver::get_sampling_timings() const
 {
-  auto out = cross_timings_;
+  auto out = sampling_timings_;
   for (const auto& sampler : samplers_)
     for (const auto& [phase, sec] : sampler->timings())
       out[phase] += sec;
@@ -321,8 +321,9 @@ torch::Tensor SweepSolver::get_angular_flux(int64_t gid) const
     if (!held) {
       throw utils::runtime_error(ctx("get_angular_flux"),
         "The angular flux is only kept with store_angular_flux = true, or "
-        "from the TT with transport = CROSS and cross.keep_angular_flux = "
-        "true");
+        "from the low-rank flux with transport = CROSS and "
+        "cross.keep_angular_flux = true (GALERKIN: "
+        "galerkin.keep_angular_flux)");
     }
     psi = torch::empty(
       {omega_.size(0), num_groups_, P.disc->num_dofs()}, torch::kFloat64);

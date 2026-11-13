@@ -162,7 +162,7 @@ struct SweepConfig {
   /// keeps low ranks as the outer iteration converges. A full transport
   /// solve is done when the change of the Krylov input or of the source
   /// moments exceeds incremental_switch times its size, and after
-  /// 1 / cross_inner_factor increments in a row (each adds up to
+  /// 1 / sampling_inner_factor increments in a row (each adds up to
   /// inner_factor of the inner tolerance to y0, so the drift stays within
   /// it).
   bool incremental_transport = false;
@@ -198,18 +198,20 @@ struct SweepConfig {
   /// Options of the greedy Galerkin sampler (TransportSolve::GALERKIN).
   galerkin::GalerkinConfig galerkin;
   /// How the solver drives each sampled (CROSS or GALERKIN) transport solve.
-  /// Its accuracy is tol_min = cross_inner_factor times the within-group-set
-  /// tolerance; with cross_relax, GMRES relaxes each product's accuracy as the
-  /// residual drops, tol_k = min(cross_max_tol, tol_min / max(r_k, tol_min)),
-  /// r_k the relative residual (Simoncini and Szyld, SISC 25, 2003).
-  double cross_inner_factor = 0.1;
-  bool cross_relax = true;
-  double cross_max_tol = 1e-2;
-  /// Intra-op threads of the cross's linear algebra, capped by num_threads
+  /// Its accuracy is tol_min = sampling_inner_factor times the within-group-set
+  /// tolerance; with sampling_relax, GMRES relaxes each product's accuracy as
+  /// the residual drops, tol_k = min(sampling_max_tol, tol_min / max(r_k,
+  /// tol_min)), r_k the relative residual (Simoncini and Szyld, SISC 25, 2003).
+  double sampling_inner_factor = 0.1;
+  bool sampling_relax = true;
+  double sampling_max_tol = 1e-2;
+  /// Intra-op threads of a sampler's linear algebra, capped by num_threads
   /// (<= 0: num_threads). Its matrices are small (ranks times the fiber
   /// length), so many threads cost more in synchronization than they save:
   /// 64 threads made a Big Ten cross about 40 times slower than 16.
-  int64_t cross_threads = 16;
+  /// (The sampling_* knobs were cross_* before GALERKIN; Python keeps the
+  /// old names as deprecated aliases.)
+  int64_t sampling_threads = 16;
   /// TransportSolve::CROSS: after the outer iteration, one exact transport
   /// solve of every group set at the converged sources (one full sweep). Its
   /// moments and traces replace the cross's, and the scalar-flux change (and

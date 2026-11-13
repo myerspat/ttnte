@@ -635,4 +635,12 @@ std::vector<int64_t> LayoutCross::forced_block_keys(
   return forced_keys(core_mask(first, last));
 }
 
+sampling::RunRecord::Ptr LayoutCross::record() const
+{
+  auto out = std::make_shared<RunRecord>();
+  fill_record(*out);
+  out->history = history_;
+  return out;
+}
+
 } // namespace ttnte::cross

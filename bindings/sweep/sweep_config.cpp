@@ -1,8 +1,40 @@
 #include "ttnte/sweep/sweep_config.hpp"
 #include "../utils/kwargs_init.hpp"
 #include <pybind11/pybind11.h>
+#include <string>
 
 namespace py = pybind11;
+
+namespace {
+
+/// Deprecated alias `old_name` of the SweepConfig attribute `new_name` (also
+/// accepted as a keyword argument): reads and writes forward, with a
+/// FutureWarning.
+template<typename T>
+void deprecated_alias(py::class_<ttnte::sweep::SweepConfig>& cls,
+  const char* old_name, const char* new_name,
+  T ttnte::sweep::SweepConfig::* member)
+{
+  using ttnte::sweep::SweepConfig;
+  const std::string message = std::string("SweepConfig.") + old_name +
+                              " is deprecated; use " + new_name +
+                              " (shared by CROSS and GALERKIN)";
+  cls.def_property(
+    old_name,
+    [member, message](const SweepConfig& c) {
+      if (PyErr_WarnEx(PyExc_FutureWarning, message.c_str(), 1) < 0)
+        throw py::error_already_set();
+      return c.*member;
+    },
+    [member, message](SweepConfig& c, T value) {
+      if (PyErr_WarnEx(PyExc_FutureWarning, message.c_str(), 1) < 0)
+        throw py::error_already_set();
+      c.*member = value;
+    },
+    ("Deprecated alias of " + std::string(new_name) + ".").c_str());
+}
+
+} // namespace
 
 void register_SweepConfig(py::module_& m)
 {
@@ -54,7 +86,8 @@ void register_SweepConfig(py::module_& m)
       "Peng) and fill the rest by reduced Galerkin solves")
     .export_values();
 
-  py::class_<SweepConfig>(m, "SweepConfig")
+  auto config = py::class_<SweepConfig>(m, "SweepConfig");
+  config
     // Keyword arguments only, each an attribute below; defaults from C++
     .def(ttnte::bindings::kwargs_init<SweepConfig>())
     .def_readwrite("local_solver", &SweepConfig::local_solver)
@@ -81,14 +114,16 @@ void register_SweepConfig(py::module_& m)
     .def_readwrite("verbose", &SweepConfig::verbose)
     .def_readwrite("progress_seconds", &SweepConfig::progress_seconds)
     .def_readwrite("transport", &SweepConfig::transport)
-    .def_readwrite("cross_inner_factor", &SweepConfig::cross_inner_factor,
-      "CROSS transport solves to this fraction of the within-set tolerance.")
-    .def_readwrite("cross_relax", &SweepConfig::cross_relax,
-      "Relax each GMRES product's cross accuracy as the residual drops.")
-    .def_readwrite("cross_max_tol", &SweepConfig::cross_max_tol,
-      "Loosest relaxed cross tolerance.")
-    .def_readwrite("cross_threads", &SweepConfig::cross_threads,
-      "Intra-op threads of the cross's linear algebra (capped by "
+    .def_readwrite("sampling_inner_factor", &SweepConfig::sampling_inner_factor,
+      "Sampled (CROSS, GALERKIN) transport solves to this fraction of the "
+      "within-set tolerance.")
+    .def_readwrite("sampling_relax", &SweepConfig::sampling_relax,
+      "Relax each GMRES product's sampled-solve accuracy as the residual "
+      "drops.")
+    .def_readwrite("sampling_max_tol", &SweepConfig::sampling_max_tol,
+      "Loosest relaxed sampled-solve tolerance.")
+    .def_readwrite("sampling_threads", &SweepConfig::sampling_threads,
+      "Intra-op threads of a sampler's linear algebra (capped by "
       "num_threads; <= 0: num_threads).")
     .def_readwrite("global_inner_tolerance",
       &SweepConfig::global_inner_tolerance,
@@ -102,4 +137,15 @@ void register_SweepConfig(py::module_& m)
     .def_readwrite("local_max_iter", &SweepConfig::local_max_iter)
     .def_readwrite("cross", &SweepConfig::cross)
     .def_readwrite("galerkin", &SweepConfig::galerkin);
+
+  // TODO: remove the cross_* aliases once the scripts (ttnte-vnv, studies)
+  // use the sampling_* names
+  deprecated_alias(config, "cross_inner_factor", "sampling_inner_factor",
+    &SweepConfig::sampling_inner_factor);
+  deprecated_alias(
+    config, "cross_relax", "sampling_relax", &SweepConfig::sampling_relax);
+  deprecated_alias(config, "cross_max_tol", "sampling_max_tol",
+    &SweepConfig::sampling_max_tol);
+  deprecated_alias(config, "cross_threads", "sampling_threads",
+    &SweepConfig::sampling_threads);
 }

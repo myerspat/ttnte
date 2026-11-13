@@ -106,11 +106,11 @@ std::vector<double> GreedyGalerkin::orthonormalize(torch::Tensor snapshot)
   std::copy_n(result.coefficients.data_ptr<double>(), rank_, out.begin());
   if (!result.appended) {
     if (result.norm > 0.0)
-      dropped_++;
+      dropped_++, run_dropped_++;
     return out;
   }
   if (!result.orthogonal)
-    orthogonality_failures_++;
+    orthogonality_failures_++, run_failures_++;
 
   // Append the unit remainder as row rank_ (capacity doubles)
   const int64_t cap = basis_rows_.defined() ? basis_rows_.size(0) : 0;
@@ -211,6 +211,8 @@ void GreedyGalerkin::run()
   coefficients_ = torch::Tensor();
   basis_ = torch::Tensor();
   history_.clear();
+  run_dropped_ = 0;
+  run_failures_ = 0;
   // (3.9)'s reference: the previous run's flux (carried) or none yet
   if (config_.phi_old == GalerkinPhiOld::WITHIN_RUN)
     phi_old_ = torch::Tensor();
@@ -360,6 +362,16 @@ std::map<std::string, double> GreedyGalerkin::timings() const
   auto out = timings_;
   for (const auto& [k, v] : store_->timings())
     out[k] += v;
+  return out;
+}
+
+sampling::RunRecord::Ptr GreedyGalerkin::record() const
+{
+  auto out = std::make_shared<RunRecord>();
+  fill_record(*out);
+  out->history = history_;
+  out->dropped_snapshots = run_dropped_;
+  out->orthogonality_failures = run_failures_;
   return out;
 }
 

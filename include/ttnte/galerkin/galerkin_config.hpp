@@ -46,8 +46,8 @@ struct GalerkinConfig {
   ///   max_j ||r_j||* <= tol * RMS_j ||b_j||*
   /// over the q candidates (b_j their right-hand sides), and the change test
   /// (3.9) ||phi - phi_old||_w <= tol ||phi||_w. Inside the sweep solver it
-  /// is set per transport solve instead (SweepConfig::cross_inner_factor and
-  /// cross_relax, as for the cross).
+  /// is set per transport solve instead (SweepConfig::sampling_inner_factor and
+  /// sampling_relax, as for the cross).
   double tol = 1e-4;
   /// The reference of the change test (3.9).
   GalerkinPhiOld phi_old = GalerkinPhiOld::AUTO;

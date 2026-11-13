@@ -1,7 +1,7 @@
 """SweepConfig.incremental_transport: y0 = y_prev + T(change of the input).
 
 T is linear, so with EXACT transport the result must match the plain correction
-form; increments in a row are capped at 1 / cross_inner_factor (each may add
+form; increments in a row are capped at 1 / sampling_inner_factor (each may add
 inner_factor of the inner tolerance to y0).
 """
 
@@ -26,7 +26,7 @@ def _solve(incremental, inner_factor=0.1, num_dim=1):
         transport=TransportSolve.EXACT,
         correction_form=True,
         incremental_transport=incremental,
-        cross_inner_factor=inner_factor,
+        sampling_inner_factor=inner_factor,
     )
     sw.setup(quadrature(num_dim), cfg)
     sw.solve_eigenvalue(1e-8)

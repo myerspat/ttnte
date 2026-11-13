@@ -268,20 +268,21 @@ void SweepSolver::sampled_group_set(size_t s)
   const int64_t ng = static_cast<int64_t>(groups.size());
   const int64_t G = num_groups_;
 
-  // Tolerance: cross_tol_ when the within-set solver set one for this
-  // transport solve (relaxed inexact-Krylov products with cross_relax, the
+  // Tolerance: sampling_tol_ when the within-set solver set one for this
+  // transport solve (relaxed inexact-Krylov products with sampling_relax, the
   // correction form's tol_min), else the sampler's fixed config tol
   const double fixed = config_.transport == TransportSolve::GALERKIN
                          ? config_.galerkin.tol
                          : config_.cross.tol;
-  sampler.set_tolerance(cross_tol_ > 0 ? cross_tol_ : fixed);
-  // The sampler's linear algebra runs on at most cross_threads threads (its
+  sampler.set_tolerance(sampling_tol_ > 0 ? sampling_tol_ : fixed);
+  // The sampler's linear algebra runs on at most sampling_threads threads (its
   // matrices are small; more threads cost more in synchronization). The
   // fiber sweeps it requests still use the solver's task pool
   const int64_t solver_threads = std::max<int64_t>(1, config_.num_threads);
-  std::optional<ThreadCountGuard> threads(std::in_place,
-    config_.cross_threads > 0 ? std::min(config_.cross_threads, solver_threads)
-                              : solver_threads);
+  std::optional<ThreadCountGuard> threads(
+    std::in_place, config_.sampling_threads > 0
+                     ? std::min(config_.sampling_threads, solver_threads)
+                     : solver_threads);
   // Run until its stopping test accepts; every fiber it needs is swept
   // through the sweep callback (sweep_fibers)
   sampler.run();
@@ -289,7 +290,7 @@ void SweepSolver::sampled_group_set(size_t s)
   auto t0 = std::chrono::steady_clock::now();
   auto lap = [&](const char* phase) {
     const auto now = std::chrono::steady_clock::now();
-    cross_timings_[phase] += std::chrono::duration<double>(now - t0).count();
+    sampling_timings_[phase] += std::chrono::duration<double>(now - t0).count();
     t0 = now;
   };
   // 1. Moments: (M, ng, fiber_length) from the low-rank flux. Scatter each
@@ -352,19 +353,12 @@ void SweepSolver::sampled_group_set(size_t s)
   // Restore torch's thread count before the bookkeeping
   threads.reset();
 
-  // Per-transport-solve records (rank, fibers, error; a cross's history).
-  // A full sweep of this set would be Nd * ng fibers, so the solve counts
+  // Per-transport-solve record (the sampler's own record type). A full
+  // sweep of this set would be Nd * ng fibers, so the solve counts
   // fibers / (Nd * G) sweep equivalents of the whole problem
-  const auto ranks = sampler.ranks();
-  cross_tolerances_.push_back(sampler.tolerance());
-  cross_fibers_.push_back(sampler.num_fibers());
-  cross_max_ranks_.push_back(*std::max_element(ranks.begin(), ranks.end()));
-  cross_errors_.push_back(sampler.error());
-  cross_ranks_.push_back(ranks);
-  if (const auto* cr = dynamic_cast<const cross::LayoutCross*>(&sampler))
-    cross_histories_.push_back(cr->history());
-  cross_seconds_ += sampler.seconds();
-  cross_sweep_seconds_ += sampler.sweep_seconds();
+  sampling_records_.push_back(sampler.record());
+  sampling_seconds_ += sampler.seconds();
+  sampling_sweep_seconds_ += sampler.sweep_seconds();
   group_set_sweeps_++;
   equivalent_sweeps_ += static_cast<double>(sampler.num_fibers()) /
                         static_cast<double>(omega_.size(0) * G);

@@ -59,6 +59,11 @@ public:
     int64_t forced = 0;
   };
 
+  /// @brief One run: the common record and its half-sweeps.
+  struct RunRecord : sampling::RunRecord {
+    std::vector<SweepRecord> history;
+  };
+
   /// @brief One request to the sweep oracle; its phase is the phase of run()
   /// that made it (init, superblock, check).
   using SweepCall = sampling::FiberStore::SweepCall;
@@ -436,6 +441,7 @@ public:
   double global_error() const noexcept { return global_error_; }
   /// @return One record per half-sweep of the last run.
   const std::vector<SweepRecord>& history() const noexcept { return history_; }
+  sampling::RunRecord::Ptr record() const override final;
   bool converged() const noexcept override final { return converged_; }
   /// @return Whether the last run stopped on stalled passes (see
   /// CrossConfig::stall_passes).

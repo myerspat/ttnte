@@ -1,15 +1,56 @@
 #include "ttnte/sweep/sweep_driver.hpp"
+#include "../cross/history.hpp"
 #include "ttnte/cad/patch.hpp"
 #include "ttnte/cross/layout_cross.hpp"
 #include "ttnte/parallel/parallel_context.hpp"
 #include "ttnte/sampling/fiber_store.hpp"
 #include "ttnte/sweep/projected_transport.hpp"
+#include <algorithm>
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <string>
 #include <torch/extension.h>
+#include <type_traits>
+#include <vector>
 
 namespace py = pybind11;
+
+namespace {
+
+using ttnte::sweep::SweepSolver;
+
+/// Deprecated read-only alias `old_name` of a record (warns, then returns
+/// get(solver)): the cross_* records are the samplers' since GALERKIN.
+template<typename Get>
+void deprecated_record(py::class_<SweepSolver, SweepSolver::Ptr>& cls,
+  const char* old_name, const char* use, Get get)
+{
+  const std::string message = std::string("SweepDriver.") + old_name +
+                              " is deprecated; use " + use +
+                              " (shared by CROSS and GALERKIN)";
+  cls.def_property_readonly(
+    old_name,
+    [get, message](const SweepSolver& self) {
+      if (PyErr_WarnEx(PyExc_FutureWarning, message.c_str(), 1) < 0)
+        throw py::error_already_set();
+      return get(self);
+    },
+    ("Deprecated: use " + std::string(use) + ".").c_str());
+}
+
+/// One field of every sampled transport solve's record.
+template<typename F>
+auto per_record(const SweepSolver& self, F field)
+{
+  using T = std::decay_t<decltype(field(*self.get_sampling_records()[0]))>;
+  std::vector<T> out;
+  for (const auto& r : self.get_sampling_records())
+    out.push_back(field(*r));
+  return out;
+}
+
+} // namespace
 
 template<typename BlockType, int64_t NumDim>
 static void register_SweepDriver_impl(
@@ -227,46 +268,30 @@ static void register_SweepDriver_impl(
       "Cores of a patch's angular flux TT (cross.keep_angular_flux) in the "
       "configured "
       "layout")
-    .def_property_readonly(
-      "cross_tolerances", &SweepDriver::get_cross_tolerances)
-    .def_property_readonly("cross_fibers", &SweepDriver::get_cross_fibers)
-    .def_property_readonly("cross_max_ranks", &SweepDriver::get_cross_max_ranks)
-    .def_property_readonly("cross_errors", &SweepDriver::get_cross_errors,
-      "Per transport solve, the error the cross's last check was accepted or "
-      "rejected on (LayoutCross.holdout_error)")
-    .def_property_readonly("cross_ranks", &SweepDriver::get_cross_ranks,
-      "TT ranks of every transport solve")
-    .def_property_readonly(
-      "cross_histories",
-      [](const SweepDriver& self) {
-        py::list out;
-        for (const auto& run : self.get_cross_histories()) {
-          py::list sweeps;
-          for (const auto& h : run)
-            sweeps.append(
-              py::dict(py::arg("phase") = h.forward ? "forward" : "backward",
-                py::arg("ranks") = h.ranks, py::arg("fibers") = h.fibers,
-                py::arg("holdout_error") = h.holdout_error,
-                py::arg("holdout_rms") = h.holdout_rms,
-                py::arg("swept_rms") = h.swept_rms,
-                py::arg("global_error") = h.global_error));
-          out.append(sweeps);
-        }
-        return out;
-      },
-      "Per transport solve, per half-sweep of its cross: phase, ranks, fibers "
-      "swept so far, hold-out error (backward only)")
+    .def_property_readonly("sampling_records",
+      &SweepDriver::get_sampling_records,
+      "Per sampled transport solve (CROSS, GALERKIN), its record: a RunRecord "
+      "(tolerance, fibers, ranks, max_rank, error, converged, seconds, "
+      "sweep_seconds) of the sampler's own subclass (CrossRun: history of "
+      "half-sweeps; GalerkinRun: history of greedy iterations, "
+      "dropped_snapshots, orthogonality_failures)")
     .def("angular_solution", &SweepDriver::angular_solution,
       "The solution with angular dependence: the stored angular flux, or with "
       "transport = CROSS and cross.keep_angular_flux the TT of the last "
       "transport solve")
-    .def_property_readonly("cross_seconds", &SweepDriver::get_cross_seconds)
-    .def_property_readonly("cross_timings", &SweepDriver::get_cross_timings)
+    .def_property_readonly("sampling_seconds",
+      &SweepDriver::get_sampling_seconds, "Wall seconds of every sampler run")
+    .def_property_readonly("sampling_timings",
+      &SweepDriver::get_sampling_timings,
+      "Seconds per phase of the sampled transport solves (the samplers' "
+      "phases summed over the group sets, and moments, traces, "
+      "angular_flux)")
     .def_property_readonly("solve_timings", &SweepDriver::get_solve_timings,
       "Seconds per step of the within-group-set solves: gmres (whole Krylov "
       "solves), unpack, source, transport, pack.")
-    .def_property_readonly(
-      "cross_sweep_seconds", &SweepDriver::get_cross_sweep_seconds)
+    .def_property_readonly("sampling_sweep_seconds",
+      &SweepDriver::get_sampling_sweep_seconds,
+      "Wall seconds of the samplers' fiber sweeps")
     .def("solve_fixed_source", &SweepDriver::solve_fixed_source,
       "Solve a fixed-source problem with the configured within-group-set "
       "solver (GMRES by default) and group-set iteration. "
@@ -377,8 +402,53 @@ void register_SweepDriver(py::module_& m)
 {
   // The dimension-independent core: the base of every IGASweepDriver*D, so
   // its methods bind once for all of them (not constructible from Python)
-  py::class_<ttnte::sweep::SweepSolver, ttnte::sweep::SweepSolver::Ptr>(
-    m, "SweepSolver");
+  auto solver = py::class_<SweepSolver, SweepSolver::Ptr>(m, "SweepSolver");
+
+  // TODO: remove the cross_* records once the scripts (ttnte-vnv, studies)
+  // read sampling_records, sampling_seconds, sampling_timings and
+  // sampling_sweep_seconds
+  using ttnte::sampling::RunRecord;
+  deprecated_record(solver, "cross_tolerances",
+    "[r.tolerance for r in sampling_records]", [](const SweepSolver& self) {
+      return per_record(self, [](const RunRecord& r) { return r.tolerance; });
+    });
+  deprecated_record(solver, "cross_fibers",
+    "[r.fibers for r in sampling_records]", [](const SweepSolver& self) {
+      return per_record(self, [](const RunRecord& r) { return r.fibers; });
+    });
+  deprecated_record(solver, "cross_errors",
+    "[r.error for r in sampling_records]", [](const SweepSolver& self) {
+      return per_record(self, [](const RunRecord& r) { return r.error; });
+    });
+  deprecated_record(solver, "cross_ranks",
+    "[r.ranks for r in sampling_records]", [](const SweepSolver& self) {
+      return per_record(self, [](const RunRecord& r) { return r.ranks; });
+    });
+  deprecated_record(solver, "cross_max_ranks",
+    "[r.max_rank for r in sampling_records]", [](const SweepSolver& self) {
+      return per_record(self, [](const RunRecord& r) {
+        int64_t out = 0;
+        for (int64_t v : r.ranks)
+          out = std::max(out, v);
+        return out;
+      });
+    });
+  deprecated_record(solver, "cross_histories",
+    "[r.history for r in sampling_records]", [](const SweepSolver& self) {
+      py::list out;
+      for (const auto& r : self.get_sampling_records())
+        if (const auto* c =
+              dynamic_cast<const ttnte::cross::LayoutCross::RunRecord*>(
+                r.get()))
+          out.append(ttnte::bindings::sweep_history(c->history));
+      return out;
+    });
+  deprecated_record(solver, "cross_seconds", "sampling_seconds",
+    [](const SweepSolver& self) { return self.get_sampling_seconds(); });
+  deprecated_record(solver, "cross_sweep_seconds", "sampling_sweep_seconds",
+    [](const SweepSolver& self) { return self.get_sampling_sweep_seconds(); });
+  deprecated_record(solver, "cross_timings", "sampling_timings",
+    [](const SweepSolver& self) { return self.get_sampling_timings(); });
 
   register_SweepDriver_impl<ttnte::cad::Patch, 1>(m, "IGA");
   register_SweepDriver_impl<ttnte::cad::Patch, 2>(m, "IGA");

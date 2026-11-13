@@ -17,7 +17,7 @@ struct CrossConfig {
   tensor::Layout layout;
   /// Relative accuracy of the approximation (in the norm set by `weighting`).
   /// Inside the sweep solver it is set per transport solve instead (see
-  /// SweepConfig::cross_inner_factor and cross_relax).
+  /// SweepConfig::sampling_inner_factor and sampling_relax).
   double tol = 1e-4;
   /// Approximate the weighted angular flux sqrt(w_d) (R psi)/sqrt(du_g),
   /// M = R^T R the patch mass matrices and du the lethargy widths, each

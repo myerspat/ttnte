@@ -54,6 +54,15 @@ public:
     double phi_change = 0.0;
   };
 
+  /// @brief One run (transport solve): the common record, its greedy
+  /// iterations, and the snapshots it did not append (basis_rtol, a full
+  /// basis) or appended with an orthogonality failure (Alg. 3.2, line 18).
+  struct RunRecord : sampling::RunRecord {
+    std::vector<IterationRecord> history;
+    int64_t dropped_snapshots = 0;
+    int64_t orthogonality_failures = 0;
+  };
+
 protected:
   // =================================================================
   // Protected data
@@ -88,8 +97,11 @@ protected:
 
   double error_ = 0.0;
   bool converged_ = false;
+  /// Over every run, and in the last run.
   int64_t orthogonality_failures_ = 0;
   int64_t dropped_ = 0;
+  int64_t run_failures_ = 0;
+  int64_t run_dropped_ = 0;
   double seconds_ = 0.0;
   std::map<std::string, double> timings_;
   std::vector<IterationRecord> history_;
@@ -184,6 +196,7 @@ public:
   {
     return history_;
   }
+  sampling::RunRecord::Ptr record() const override final;
   /// @return Nonzero snapshots not appended (in the span to basis_rtol, or
   /// the basis full), over every run.
   int64_t dropped_snapshots() const noexcept { return dropped_; }

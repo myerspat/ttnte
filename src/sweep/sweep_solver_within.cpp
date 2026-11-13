@@ -238,14 +238,15 @@ void SweepSolver::within_gmres(size_t s, bool jacobi,
     // Relaxed inexact Krylov: the next product may be as inaccurate as
     // tol_min / (current residual), since its error is damped by the
     // residual. Products start at tol_min and loosen as GMRES converges,
-    // capped at cross_max_tol. `scale` puts the residual on the norm the
+    // capped at sampling_max_tol. `scale` puts the residual on the norm the
     // tolerances are relative to (1, or ||r0|| / ||y0|| in correction
-    // form). Only CROSS transport reads cross_tol_; an exact sweep ignores
-    // it
+    // form). Only sampled (CROSS, GALERKIN) transport reads sampling_tol_; an
+    // exact sweep ignores it
     const double relative = residual * scale;
-    cross_tol_ = config_.cross_relax ? std::min(config_.cross_max_tol,
-                                         tol_min / std::max(relative, tol_min))
-                                     : tol_min;
+    sampling_tol_ = config_.sampling_relax
+                      ? std::min(config_.sampling_max_tol,
+                          tol_min / std::max(relative, tol_min))
+                      : tol_min;
   };
 
   // Restarted GMRES to tol (relative to the scaled norm), x warm-started by
@@ -256,7 +257,7 @@ void SweepSolver::within_gmres(size_t s, bool jacobi,
       tol / scale, config_.inner_max_iter, reducer, progress);
   });
   // Later transport solves (e.g. the caller's final one) at full accuracy
-  cross_tol_ = tol_min;
+  sampling_tol_ = tol_min;
   if (!result.converged && config_.verbose && comm_.rank() == 0) {
     std::cout << "-- warning: within-group-set GMRES (set " << s
               << ") stopped at relative residual "
@@ -275,7 +276,7 @@ void SweepSolver::correction_solve(size_t s, bool jacobi, double tol,
 
   // y0 = T(q + S x0) with the lagged traces of x0, at full accuracy
   std::vector<double> y(n), r0(n);
-  cross_tol_ = tol_min;
+  sampling_tol_ = tol_min;
   timed("unpack", [&] { unpack(s, x.data(), true); });
   timed("source", [&] { compute_source(s, Within::KRYLOV, true, jacobi); });
   if (!try_incremental_transport(s, x, tol_min, y, reducer)) {
@@ -300,7 +301,7 @@ void SweepSolver::correction_solve(size_t s, bool jacobi, double tol,
   std::vector<double> e(n, 0.0);
   if (rnorm > tol * ynorm)
     within_gmres(s, jacobi, r0, e, tol, tol_min, rnorm / ynorm, reducer);
-  cross_tol_ = tol_min;
+  sampling_tol_ = tol_min;
   if (rnorm > tol * ynorm) {
     for (int64_t i = 0; i < n; i++)
       x[i] += e[i];
@@ -383,7 +384,8 @@ bool SweepSolver::try_incremental_transport(size_t s,
     return false;
   // Each increment may add tol_min = inner_factor tol of error to y0:
   // a full solve once the drift could reach the inner tolerance
-  if (static_cast<double>(anchor_steps_[s] + 1) * config_.cross_inner_factor >
+  if (static_cast<double>(anchor_steps_[s] + 1) *
+        config_.sampling_inner_factor >
       1.0)
     return false;
   const int64_t n = static_cast<int64_t>(x.size());
@@ -411,12 +413,12 @@ bool SweepSolver::try_incremental_transport(size_t s,
   // The change, solved to the absolute accuracy tol_min ||y||
   timed("source", [&] { swap_source(s, anchor_source_[s], true); });
   timed("unpack", [&] { unpack(s, dx.data(), true); });
-  cross_tol_ = dnorm > 0.0 ? std::min(config_.cross_max_tol,
-                               tol_min * std::sqrt(sums[2]) / dnorm)
-                           : config_.cross_max_tol;
+  sampling_tol_ = dnorm > 0.0 ? std::min(config_.sampling_max_tol,
+                                  tol_min * std::sqrt(sums[2]) / dnorm)
+                              : config_.sampling_max_tol;
   timed("transport", [&] { transport_group_set(s); });
   timed("pack", [&] { pack(s, true, true, y.data()); });
-  cross_tol_ = tol_min;
+  sampling_tol_ = tol_min;
   for (int64_t i = 0; i < n; i++)
     y[i] += ay[i];
   anchor_x_[s] = x;
@@ -492,8 +494,8 @@ int64_t SweepSolver::inner_solve(size_t s, bool jacobi)
   if (config_.global_inner_tolerance)
     tol = std::min(GLOBAL_TOLERANCE_CAP, tol * global_tolerance_scale(s));
   // Cross accuracy: a fraction of the inner tolerance, relaxed in GMRES
-  const double tol_min = config_.cross_inner_factor * tol;
-  cross_tol_ = tol_min;
+  const double tol_min = config_.sampling_inner_factor * tol;
+  sampling_tol_ = tol_min;
 
   // Richardson (source iteration): sweep with the latest moments, commit,
   // stop when the set's moments change by less than tol (relative)

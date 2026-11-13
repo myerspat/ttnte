@@ -17,6 +17,17 @@ void register_GreedyGalerkin(py::module_& m)
     .def_readonly("residual", &GreedyGalerkin::IterationRecord::residual)
     .def_readonly("phi_change", &GreedyGalerkin::IterationRecord::phi_change);
 
+  py::class_<GreedyGalerkin::RunRecord, ttnte::sampling::RunRecord,
+    std::shared_ptr<GreedyGalerkin::RunRecord>>(m, "GalerkinRun",
+    "One Galerkin run (transport solve): the common record (a RunRecord), "
+    "its greedy iterations, and its snapshots not appended (basis_rtol, a "
+    "full basis) or appended with an orthogonality failure.")
+    .def_readonly("history", &GreedyGalerkin::RunRecord::history)
+    .def_readonly(
+      "dropped_snapshots", &GreedyGalerkin::RunRecord::dropped_snapshots)
+    .def_readonly("orthogonality_failures",
+      &GreedyGalerkin::RunRecord::orthogonality_failures);
+
   // Built by the sweep solver (TransportSolve.GALERKIN): it needs the
   // solver's projected transport operator
   py::class_<GreedyGalerkin, GreedyGalerkin::Ptr>(m, "GreedyGalerkin")
@@ -44,5 +55,20 @@ void register_GreedyGalerkin(py::module_& m)
       "orthogonality_failures", &GreedyGalerkin::orthogonality_failures)
     .def_property_readonly(
       "dropped_snapshots", &GreedyGalerkin::dropped_snapshots)
-    .def_property_readonly("swept", &GreedyGalerkin::swept);
+    .def_property_readonly("swept", &GreedyGalerkin::swept)
+    .def_property_readonly("record", &GreedyGalerkin::record,
+      "The last run's record (a GalerkinRun)")
+    .def_property_readonly(
+      "sweep_calls",
+      [](const GreedyGalerkin& self) {
+        py::list out;
+        for (const auto& c : self.sweep_calls())
+          out.append(py::dict(py::arg("phase") = c.phase,
+            py::arg("fibers") = c.fibers, py::arg("blocks") = c.blocks,
+            py::arg("directions") = c.directions,
+            py::arg("seconds") = c.seconds));
+        return out;
+      },
+      "Every sweep request of every run: phase (init, greedy), new fibers, "
+      "sweep blocks, distinct directions, seconds");
 }

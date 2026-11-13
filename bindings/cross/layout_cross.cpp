@@ -1,4 +1,5 @@
 #include "ttnte/cross/layout_cross.hpp"
+#include "history.hpp"
 #include "ttnte/utils/exception.hpp"
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
@@ -7,8 +8,32 @@
 
 namespace py = pybind11;
 
+pybind11::list ttnte::bindings::sweep_history(
+  const std::vector<ttnte::cross::LayoutCross::SweepRecord>& history)
+{
+  py::list out;
+  for (const auto& h : history)
+    out.append(py::dict(py::arg("phase") = h.forward ? "forward" : "backward",
+      py::arg("ranks") = h.ranks, py::arg("fibers") = h.fibers,
+      py::arg("holdout_error") = h.holdout_error,
+      py::arg("holdout_rms") = h.holdout_rms,
+      py::arg("swept_rms") = h.swept_rms,
+      py::arg("global_error") = h.global_error, py::arg("forced") = h.forced));
+  return out;
+}
+
 void register_LayoutCross(py::module_& m)
 {
+  using namespace ttnte::cross;
+
+  py::class_<LayoutCross::RunRecord, ttnte::sampling::RunRecord,
+    std::shared_ptr<LayoutCross::RunRecord>>(m, "CrossRun",
+    "One cross run (transport solve): the common record (a RunRecord) and "
+    "its half-sweeps.")
+    .def_property_readonly("history", [](const LayoutCross::RunRecord& r) {
+      return ttnte::bindings::sweep_history(r.history);
+    });
+
   using namespace ttnte::cross;
 
   py::class_<LayoutCross, LayoutCross::Ptr>(m, "LayoutCross",
@@ -135,21 +160,13 @@ void register_LayoutCross(py::module_& m)
     .def_property_readonly(
       "history",
       [](const LayoutCross& c) {
-        py::list out;
-        for (const auto& h : c.history())
-          out.append(
-            py::dict(py::arg("phase") = h.forward ? "forward" : "backward",
-              py::arg("ranks") = h.ranks, py::arg("fibers") = h.fibers,
-              py::arg("holdout_error") = h.holdout_error,
-              py::arg("holdout_rms") = h.holdout_rms,
-              py::arg("swept_rms") = h.swept_rms,
-              py::arg("global_error") = h.global_error,
-              py::arg("forced") = h.forced));
-        return out;
+        return ttnte::bindings::sweep_history(c.history());
       },
       "Per half-sweep of the last run: phase, ranks, fibers swept so far, "
       "and (backward only) hold-out error and the RMS norms of the hold-out "
       "pool and of all swept fibers (weighted)")
+    .def_property_readonly(
+      "record", &LayoutCross::record, "The last run's record (a CrossRun)")
     .def_property_readonly("num_fibers", &LayoutCross::num_fibers)
     .def_property_readonly("total_fibers", &LayoutCross::total_fibers)
     .def_property_readonly("holdout_error", &LayoutCross::holdout_error,
