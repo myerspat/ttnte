@@ -146,7 +146,7 @@ std::vector<int64_t> SweepSolver::initial_directions() const
   return out;
 }
 
-void SweepSolver::build_crosses()
+void SweepSolver::build_samplers()
 {
   samplers_.clear();
   mass_bands_.clear(); // a new setup: new patches
@@ -169,21 +169,22 @@ void SweepSolver::build_crosses()
                                 : galerkin::GalerkinPhiOld::WITHIN_RUN;
   for (size_t s = 0; s < group_indices_.size(); s++) {
     if (config_.transport == TransportSolve::GALERKIN)
-      samplers_.push_back(galerkin::GreedyGalerkin::create(cross_problem(s),
+      samplers_.push_back(galerkin::GreedyGalerkin::create(sampling_problem(s),
         ProjectedTransport::create(*this, s, ProjectedTransport::Options {}),
         galerkin_config));
     else
       samplers_.push_back(
-        cross::LayoutCross::create(cross_problem(s), config_.cross));
+        cross::LayoutCross::create(sampling_problem(s), config_.cross));
   }
 }
 
-cross::CrossProblem SweepSolver::cross_problem(size_t s)
+sampling::SamplingProblem SweepSolver::sampling_problem(size_t s)
 {
   if (s >= group_indices_.size())
-    throw utils::runtime_error(ctx("cross_problem"), "Group set out of range");
+    throw utils::runtime_error(
+      ctx("sampling_problem"), "Group set out of range");
   const auto modes = angular_modes();
-  cross::CrossProblem problem;
+  sampling::SamplingProblem problem;
   problem.num_dim = ndim_;
   problem.num_polar = modes[0];
   problem.num_azimuthal = ndim_ == 1 ? 1 : modes[1];
@@ -1026,7 +1027,7 @@ void SweepSolver::setup(const math::QuadratureSet::Ptr& qset,
     std::max<int64_t>(1, config_.num_threads));
   build_dag();
   build_range_dag();
-  build_crosses();
+  build_samplers();
   is_setup_ = true;
 
   if (config_.verbose && config_.progress_seconds >= 0 && comm_.rank() == 0) {

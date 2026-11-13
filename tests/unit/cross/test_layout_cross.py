@@ -6,7 +6,8 @@ import torch
 
 import itertools
 
-from ttnte.cross import CrossConfig, LayoutCross, Weighting
+from ttnte.cross import CrossConfig, LayoutCross
+from ttnte.sampling import Weighting
 
 torch.set_default_dtype(torch.float64)
 

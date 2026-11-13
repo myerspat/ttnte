@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ttnte/cross/fiber_store.hpp"
+#include "ttnte/sampling/fiber_store.hpp"
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -8,11 +8,12 @@
 #include <torch/extension.h>
 #include <vector>
 
-namespace ttnte::cross {
+namespace ttnte::sampling {
 
 /// @brief A transport solve of one group set approximated from sampled
 /// sweeps: the sweeper's stand-in for an exact sweep when the transport
-/// solve is sampled (TransportSolve::CROSS).
+/// solve is sampled (TransportSolve::CROSS: cross::LayoutCross;
+/// TransportSolve::GALERKIN: galerkin::GreedyGalerkin).
 ///
 /// A run builds a low-rank angular flux of the set's groups from fibers
 /// swept through the problem's oracle (see FiberStore), to a relative
@@ -76,4 +77,4 @@ public:
   virtual const std::vector<FiberStore::SweepCall>& sweep_calls() const = 0;
 };
 
-} // namespace ttnte::cross
+} // namespace ttnte::sampling

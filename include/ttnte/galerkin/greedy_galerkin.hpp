@@ -1,10 +1,10 @@
 #pragma once
 
-#include "ttnte/cross/cross_problem.hpp"
-#include "ttnte/cross/fiber_store.hpp"
-#include "ttnte/cross/sampled_transport.hpp"
 #include "ttnte/galerkin/galerkin_config.hpp"
 #include "ttnte/galerkin/reduced_operator.hpp"
+#include "ttnte/sampling/fiber_store.hpp"
+#include "ttnte/sampling/sampled_transport.hpp"
+#include "ttnte/sampling/sampling_problem.hpp"
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -35,7 +35,7 @@ namespace ttnte::galerkin {
 ///  5. sweep the p candidates with the largest residuals.
 /// Swept directions keep their exact fibers (their MGS coordinates); the
 /// rest are the reduced solutions X c_d.
-class GreedyGalerkin : public cross::SampledTransport {
+class GreedyGalerkin : public sampling::SampledTransport {
 public:
   // =================================================================
   // Public types
@@ -58,7 +58,7 @@ protected:
   // =================================================================
   // Protected data
   GalerkinConfig config_;
-  cross::FiberStore::Ptr store_;
+  sampling::FiberStore::Ptr store_;
   ReducedOperator::Ptr op_;
   int64_t num_directions_ = 0;
   int64_t num_groups_ = 0;
@@ -101,7 +101,7 @@ protected:
   /// @param op The set's transport operator, projected per direction.
   /// @param config Options; phi_old must be resolved (not AUTO).
   /// @throws std::runtime_error On inconsistent sizes or options.
-  GreedyGalerkin(cross::CrossProblem problem, ReducedOperator::Ptr op,
+  GreedyGalerkin(sampling::SamplingProblem problem, ReducedOperator::Ptr op,
     GalerkinConfig config);
 
   [[nodiscard]] static std::string ctx(const std::string& f)
@@ -112,9 +112,11 @@ protected:
   /// @brief Sweep `directions` (every group), orthonormalize their
   /// snapshots into X~ and border the reduced operator.
   void sample(const std::vector<int64_t>& directions, const char* phase);
-  /// @brief MGS2-A of one weighted snapshot (G Ns) against X~: append the
-  /// new unit vector (unless the snapshot is zero) and return the
-  /// snapshot's coordinates.
+  /// @brief MGS2-A (linalg::mgs2a()) of one weighted snapshot (G Ns)
+  /// against X~: append the new unit vector (unless the snapshot is zero,
+  /// in the span to basis_rtol, or the basis full), count drops and
+  /// orthogonality failures, and return the snapshot's coordinates (a
+  /// column of R in (3.3)).
   std::vector<double> orthonormalize(torch::Tensor snapshot);
   /// @brief Every direction's coefficients: swept ones from their
   /// coordinates, the others solved (coefficients_), and the weighted
@@ -166,7 +168,7 @@ public:
     return store_->sweep_seconds();
   }
   std::map<std::string, double> timings() const override final;
-  const std::vector<cross::FiberStore::SweepCall>& sweep_calls()
+  const std::vector<sampling::FiberStore::SweepCall>& sweep_calls()
     const noexcept override final
   {
     return store_->sweep_calls();
@@ -174,7 +176,7 @@ public:
   /// @return The options in effect (phi_old resolved, tol the last set).
   const GalerkinConfig& config() const noexcept { return config_; }
   /// @return The factors in effect (asked for, with the data to apply them).
-  const cross::Weighting& weighting() const noexcept
+  const sampling::Weighting& weighting() const noexcept
   {
     return store_->weighting();
   }

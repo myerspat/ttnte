@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ttnte/cross/weighting.hpp"
+#include "ttnte/sampling/weighting.hpp"
 #include <cstdint>
 
 namespace ttnte::galerkin {
@@ -10,7 +10,7 @@ enum class GalerkinStart : uint8_t {
   /// per_iter random directions (Guo & Peng: "an initial set of p angular
   /// directions is selected at random").
   RANDOM,
-  /// The cross's initial directions (CrossProblem::initial_directions), so
+  /// The cross's initial directions (SamplingProblem::initial_directions), so
   /// both samplers start from the same fibers.
   INITIAL_DIRECTIONS,
 };
@@ -51,14 +51,14 @@ struct GalerkinConfig {
   double tol = 1e-4;
   /// The reference of the change test (3.9).
   GalerkinPhiOld phi_old = GalerkinPhiOld::AUTO;
-  /// Factors of the norms (cross::Weighting): energy and space shape the
+  /// Factors of the norms (sampling::Weighting): energy and space shape the
   /// basis inner product, the residual norms and the scalar-flux norm;
   /// angle scales only the residual norms (the greedy ranking and the
   /// residual test).
   /// NOTE: all factors default to true, like the cross. Guo & Peng weight
   /// every direction equally: set weighting.angle = false for runs that are
   /// to be consistent with the paper.
-  cross::Weighting weighting;
+  sampling::Weighting weighting;
   /// MGS2-A (Alg. 3.2): orthogonality tolerance |X(:, 1)^T psi| <= mgs_eps,
   /// and the most projections per snapshot (at least two; the paper uses
   /// at most 6 and 1e-10).

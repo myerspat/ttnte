@@ -25,7 +25,7 @@ void register_LayoutCross(py::module_& m)
                     std::vector<std::vector<int64_t>> patch_shapes,
                     std::vector<torch::Tensor> mass_bands,
                     std::vector<double> lethargy_widths) {
-      CrossProblem p;
+      ttnte::sampling::SamplingProblem p;
       p.num_dim = num_dim;
       p.num_polar = num_polar;
       p.num_azimuthal = num_azimuthal;

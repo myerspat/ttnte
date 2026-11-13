@@ -17,7 +17,7 @@ namespace ttnte::galerkin {
 /// basis, the reduced solution of direction d is c_d solving
 ///   X^T A_d X c_d = X^T b_d,
 /// psi_d ~ X c_d, and its residual b_d - A_d X c_d is what the greedy step
-/// scores. Norms are the sampler's (cross::FiberStore::residual_norms()),
+/// scores. Norms are the sampler's (sampling::FiberStore::residual_norms()),
 /// so that the weighting has a single owner.
 class ReducedOperator {
 public:

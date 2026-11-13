@@ -18,7 +18,7 @@ TOL = 1e-6
 
 
 def _solve(num_dim, reflective, transport, fissile=False, n=3, **kw):
-    # CROSS is serial in space (SweepSolver::build_crosses throws on more than
+    # CROSS is serial in space (SweepSolver::build_samplers throws on more than
     # one rank). Skip on every rank alike, before any collective: a throw
     # partway through setup leaves the ranks out of step and hangs later tests.
     # (pytest-mpi has no max_size for the mpi marker.)

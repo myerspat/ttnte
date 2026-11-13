@@ -1,13 +1,23 @@
 // FiberStore: sweeping, weighting and storing the fibers of one sampled
 // transport solve.
-#include "ttnte/cross/fiber_store.hpp"
-#include "cross/layout_cross_detail.hpp"
+#include "ttnte/sampling/fiber_store.hpp"
+#include "sampling/sampling_detail.hpp"
+#include "ttnte/linalg/banded_cholesky.hpp"
+#include "ttnte/linalg/matrix_ops.hpp"
+#include "ttnte/utils/exception.hpp"
+#include <ATen/Parallel.h>
+#include <algorithm>
+#include <c10/core/CPUAllocator.h>
+#include <chrono>
+#include <cmath>
+#include <cstring>
+#include <numeric>
 
-namespace ttnte::cross {
+namespace ttnte::sampling {
 
 using namespace detail;
 
-FiberStore::FiberStore(CrossProblem problem, Weighting weighting)
+FiberStore::FiberStore(SamplingProblem problem, Weighting weighting)
   : problem_(std::move(problem))
 {
   const auto& P = problem_;
@@ -288,4 +298,4 @@ torch::Tensor FiberStore::residual_norms(
   return norms;
 }
 
-} // namespace ttnte::cross
+} // namespace ttnte::sampling

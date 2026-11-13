@@ -1,6 +1,6 @@
 #pragma once
 
-namespace ttnte::cross {
+namespace ttnte::sampling {
 
 /// @brief Which factors of the L2 weighting a sampler applies to the fibers
 /// it stores and measures. A fiber of direction d and group g is stored as
@@ -24,4 +24,4 @@ struct Weighting {
   bool any() const noexcept { return angle || energy || space; }
 };
 
-} // namespace ttnte::cross
+} // namespace ttnte::sampling

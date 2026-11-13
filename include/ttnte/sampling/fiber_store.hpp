@@ -1,7 +1,7 @@
 #pragma once
 
-#include "ttnte/cross/cross_problem.hpp"
-#include "ttnte/cross/weighting.hpp"
+#include "ttnte/sampling/sampling_problem.hpp"
+#include "ttnte/sampling/weighting.hpp"
 #include <c10/core/Allocator.h>
 #include <cstdint>
 #include <map>
@@ -10,7 +10,7 @@
 #include <torch/extension.h>
 #include <vector>
 
-namespace ttnte::cross {
+namespace ttnte::sampling {
 
 /// @brief The swept fibers of one sampled transport solve, weighted as they
 /// finish.
@@ -46,7 +46,7 @@ protected:
   // =================================================================
   // Protected data
   /// The problem (sizes, oracle, weights, patch layout); not owned elsewhere.
-  CrossProblem problem_;
+  SamplingProblem problem_;
   int64_t num_directions_ = 0;
   int64_t num_groups_ = 0;
   int64_t num_space_ = 0;
@@ -91,11 +91,11 @@ protected:
   /// @throws std::runtime_error If the problem's patch layout is
   /// inconsistent with its sizes or, for an enabled factor, its mass bands
   /// or lethargy widths are, or a mass matrix is not positive definite.
-  FiberStore(CrossProblem problem, Weighting weighting);
+  FiberStore(SamplingProblem problem, Weighting weighting);
 
   [[nodiscard]] static std::string ctx(const std::string& f)
   {
-    return "ttnte::cross::FiberStore::" + f;
+    return "ttnte::sampling::FiberStore::" + f;
   }
 
 public:
@@ -178,7 +178,7 @@ public:
   {
     return sweep_calls_;
   }
-  const CrossProblem& problem() const noexcept { return problem_; }
+  const SamplingProblem& problem() const noexcept { return problem_; }
   /// @return sqrt(w_d) per direction (1 without angle weighting).
   const std::vector<double>& angle_weights() const noexcept
   {
@@ -195,4 +195,4 @@ public:
   bool has_space_weights() const noexcept { return weighting_.space; }
 };
 
-} // namespace ttnte::cross
+} // namespace ttnte::sampling

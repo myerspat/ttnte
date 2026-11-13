@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ttnte/cross/weighting.hpp"
+#include "ttnte/sampling/weighting.hpp"
 #include "ttnte/tensor/layout.hpp"
 #include <cstdint>
 #include <vector>
@@ -23,10 +23,10 @@ struct CrossConfig {
   /// M = R^T R the patch mass matrices and du the lethargy widths, each
   /// factor only where enabled, so that pivots, truncation and the hold-out
   /// error are L2 quantities in the enabled indices (all by default). The
-  /// mass bands and lethargy widths are the problem's (CrossProblem); in the
+  /// mass bands and lethargy widths are the problem's (SamplingProblem); in the
   /// sweep solver they come from the patch discretizations and the
   /// cross-section server's group boundaries.
-  Weighting weighting;
+  sampling::Weighting weighting;
   /// Keep the TT of the angular flux after each transport solve.
   bool keep_angular_flux = false;
   /// Index selection adds blocks until the chosen rows have sigma_min /

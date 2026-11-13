@@ -1,4 +1,5 @@
 #include "ttnte/galerkin/greedy_galerkin.hpp"
+#include "ttnte/linalg/gram_schmidt.hpp"
 #include "ttnte/utils/exception.hpp"
 #include <algorithm>
 #include <chrono>
@@ -25,8 +26,8 @@ torch::Tensor index_tensor(const std::vector<int64_t>& v)
 
 } // namespace
 
-GreedyGalerkin::GreedyGalerkin(
-  cross::CrossProblem problem, ReducedOperator::Ptr op, GalerkinConfig config)
+GreedyGalerkin::GreedyGalerkin(sampling::SamplingProblem problem,
+  ReducedOperator::Ptr op, GalerkinConfig config)
   : config_(config), op_(std::move(op)), rng_(config.seed)
 {
   if (!op_)
@@ -56,7 +57,7 @@ GreedyGalerkin::GreedyGalerkin(
   weights_ = problem.weights.to(torch::kFloat64).contiguous();
   harmonics_ = problem.harmonics.to(torch::kFloat64).contiguous();
   initial_directions_ = problem.initial_directions;
-  store_ = cross::FiberStore::create(std::move(problem), config_.weighting);
+  store_ = sampling::FiberStore::create(std::move(problem), config_.weighting);
   num_directions_ = op_->num_directions();
   num_groups_ = store_->problem().num_groups;
   num_space_ = store_->problem().num_space;
@@ -85,62 +86,33 @@ std::vector<int64_t> GreedyGalerkin::draw(int64_t n)
   return pool;
 }
 
-std::vector<double> GreedyGalerkin::orthonormalize(torch::Tensor psi)
+std::vector<double> GreedyGalerkin::orthonormalize(torch::Tensor snapshot)
 {
-  // MGS2-A (Alg. 3.2) of one snapshot against the rank_ rows of X~:
-  // two projections, then up to mgs_max_projections - 2 cleanups while
-  // |X(:, 1)^T psi| > mgs_eps. Invariant: snapshot = X c + alpha psi.
+  // MGS2-A (Alg. 3.2) of one snapshot against the rank_ rows of X~, with
+  // our basis_rtol addition: a snapshot already in the span to basis_rtol
+  // of its norm (or any once the basis spans the whole space) keeps its
+  // coordinates but appends no vector, since its remainder would be
+  // rounding noise (past the space's dimension, a dependent vector and a
+  // singular reduced matrix)
   const int64_t L = num_groups_ * num_space_;
-  const double norm0 = psi.norm().item<double>();
-  auto c = torch::zeros({rank_}, F64);
   const auto X = basis_rows_.defined() ? basis_rows_.narrow(0, 0, rank_)
                                        : torch::empty({0, L}, F64);
-  auto project = [&] {
-    const auto dc = X.mv(psi);
-    psi.addmv_(X.t(), dc, 1.0, -1.0);
-    c += dc;
-  };
-  if (rank_ > 0) {
-    project();
-    project();
-  }
-  double alpha = psi.norm().item<double>();
+  linalg::MGS2Options options;
+  options.eps = config_.mgs_eps;
+  options.max_projections = config_.mgs_max_projections;
+  options.rtol = config_.basis_rtol;
+  const auto result = linalg::mgs2a(X, snapshot, options);
   std::vector<double> out(static_cast<size_t>(rank_));
-  // Not appended (an addition to Alg. 3.2, which always appends): a
-  // snapshot already in the span to basis_rtol of its norm, a zero one, or
-  // any once the basis spans the whole space. Its remainder would be
-  // rounding noise, normalized into a spurious vector (and past the
-  // space's dimension, a dependent one: a singular reduced matrix). Its
-  // coordinates c reproduce it to that tolerance.
-  auto in_span = [&] {
-    return alpha <= config_.basis_rtol * norm0 || rank_ >= L;
-  };
-  if (alpha == 0.0 || in_span()) {
-    if (norm0 > 0.0)
+  std::copy_n(result.coefficients.data_ptr<double>(), rank_, out.begin());
+  if (!result.appended) {
+    if (result.norm > 0.0)
       dropped_++;
-    std::copy_n(c.data_ptr<double>(), rank_, out.begin());
     return out;
   }
-  psi /= alpha;
-  if (rank_ > 0) {
-    auto first = [&] { return std::abs(X[0].dot(psi).item<double>()); };
-    for (int64_t m = 0; m < config_.mgs_max_projections - 2; m++) {
-      if (first() <= config_.mgs_eps)
-        break;
-      psi *= alpha;
-      project();
-      alpha = psi.norm().item<double>();
-      if (alpha == 0.0 || in_span()) {
-        dropped_++;
-        std::copy_n(c.data_ptr<double>(), rank_, out.begin());
-        return out;
-      }
-      psi /= alpha;
-    }
-    if (first() > config_.mgs_eps)
-      orthogonality_failures_++;
-  }
-  // Append psi as row rank_ (capacity doubles)
+  if (!result.orthogonal)
+    orthogonality_failures_++;
+
+  // Append the unit remainder as row rank_ (capacity doubles)
   const int64_t cap = basis_rows_.defined() ? basis_rows_.size(0) : 0;
   if (rank_ == cap) {
     auto grown = torch::zeros({std::max<int64_t>(4, 2 * cap), L}, F64);
@@ -148,9 +120,8 @@ std::vector<double> GreedyGalerkin::orthonormalize(torch::Tensor psi)
       grown.narrow(0, 0, rank_).copy_(basis_rows_.narrow(0, 0, rank_));
     basis_rows_ = grown;
   }
-  basis_rows_[rank_].copy_(psi);
-  std::copy_n(c.data_ptr<double>(), rank_, out.begin());
-  out.push_back(alpha);
+  basis_rows_[rank_].copy_(snapshot);
+  out.push_back(result.alpha);
   rank_++;
   return out;
 }

@@ -1,4 +1,4 @@
-#include "ttnte/cross/weighting.hpp"
+#include "ttnte/sampling/weighting.hpp"
 #include "../utils/kwargs_init.hpp"
 #include <pybind11/pybind11.h>
 #include <string>
@@ -7,7 +7,7 @@ namespace py = pybind11;
 
 void register_Weighting(py::module_& m)
 {
-  using namespace ttnte::cross;
+  using namespace ttnte::sampling;
 
   py::class_<Weighting>(m, "Weighting",
     "Factors of the L2 weighting of stored fibers, a_d e_g R_P psi_{d,g}: "

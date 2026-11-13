@@ -6,12 +6,12 @@
 #include <torch/extension.h>
 #include <vector>
 
-namespace ttnte::cross {
+namespace ttnte::sampling {
 
 /// @brief The discrete transport problem as seen by a sampler: index sizes,
 /// angular data, the spatial blocks (patches) of a fiber and the oracle that
 /// sweeps fibers.
-struct CrossProblem {
+struct SamplingProblem {
   /// Sweeps a request of fibers into a (num_fibers, num_space) buffer, block
   /// by block, direction-major then group (see SweepDriver::sweep_fibers()),
   /// calling `done` exactly once for every output row (in ranges, possibly
@@ -31,8 +31,9 @@ struct CrossProblem {
   torch::Tensor weights;
   /// (N_Omega, num_moments) harmonics; moments are sum_d w_d Y_m(d) psi_d.
   torch::Tensor harmonics;
-  /// Directions swept over all groups to start the cross (one per
-  /// quadrant/octant); at least one, all in range.
+  /// Directions swept over all groups to start a sampler (one per
+  /// quadrant/octant): the cross always, the Galerkin sampler with
+  /// GalerkinStart::INITIAL_DIRECTIONS; at least one, all in range.
   std::vector<int64_t> initial_directions;
   /// Offset of each patch in a fiber, and its control-point grid shape.
   std::vector<int64_t> patch_offsets;
@@ -46,4 +47,4 @@ struct CrossProblem {
   SweepFn sweep;
 };
 
-} // namespace ttnte::cross
+} // namespace ttnte::sampling

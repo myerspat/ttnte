@@ -26,7 +26,7 @@ int64_t LayoutCross::max_rank() const noexcept
                               : std::numeric_limits<int64_t>::max();
 }
 
-LayoutCross::LayoutCross(CrossProblem problem, CrossConfig config)
+LayoutCross::LayoutCross(sampling::SamplingProblem problem, CrossConfig config)
   : problem_(std::move(problem)), config_(std::move(config)),
     rng_(config_.seed), sample_rng_(config_.seed ^ SAMPLE_SEED_MIX)
 {
@@ -110,7 +110,7 @@ LayoutCross::LayoutCross(CrossProblem problem, CrossConfig config)
 
   // The fiber store, weighted in the factors asked for (it checks the patch
   // layout, mass bands and lethargy widths)
-  store_ = FiberStore::create(problem_, config_.weighting);
+  store_ = sampling::FiberStore::create(problem_, config_.weighting);
 
   // Separable quadrature weights, for unweighting split angle cores
   auto w = P.weights.to(torch::kFloat64).contiguous();

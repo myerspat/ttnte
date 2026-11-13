@@ -221,7 +221,7 @@ void SweepSolver::outer_iterations(double k_tol)
   }
 }
 
-cross::SampledTransport::Ptr SweepSolver::get_sampler(size_t s) const
+sampling::SampledTransport::Ptr SweepSolver::get_sampler(size_t s) const
 {
   if (s >= samplers_.size())
     throw utils::runtime_error(

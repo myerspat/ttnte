@@ -12,7 +12,7 @@ import math
 import pytest
 import torch
 
-from ttnte.cross import Weighting
+from ttnte.sampling import Weighting
 from ttnte.sweep import LocalSolverType, SweepConfig
 
 from .problems import BUILDERS, boxes, driver, quadrature, quarter_circle

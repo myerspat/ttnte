@@ -10,7 +10,7 @@ match EXACT transport.
 import pytest
 import torch
 
-from ttnte.cross import Weighting
+from ttnte.sampling import Weighting
 from ttnte.galerkin import GalerkinConfig, GalerkinPhiOld, GalerkinStart
 from ttnte.sweep import InnerSolver, SweepConfig, TransportSolve
 

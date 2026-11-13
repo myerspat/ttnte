@@ -3,7 +3,6 @@
 #include "ttnte/cad/interface_quadrature.hpp"
 #include "ttnte/cad/patch.hpp"
 #include "ttnte/cross/layout_cross.hpp"
-#include "ttnte/cross/sampled_transport.hpp"
 #include "ttnte/driver/transport_solution.hpp"
 #include "ttnte/galerkin/greedy_galerkin.hpp"
 #include "ttnte/linalg/banded_cholesky.hpp"
@@ -15,6 +14,7 @@
 #include "ttnte/parallel/load_balancer.hpp"
 #include "ttnte/parallel/parallel_context.hpp"
 #include "ttnte/physics/boundary_types.hpp"
+#include "ttnte/sampling/sampled_transport.hpp"
 #include "ttnte/sweep/angular_moments.hpp"
 #include "ttnte/sweep/fiber_block.hpp"
 #include "ttnte/sweep/patch_discretization.hpp"
@@ -211,7 +211,7 @@ private:
 
   std::vector<PatchState> patches_;
   /// Per local patch, the lower band (n_P, kd + 1) of its mass matrix,
-  /// built on the first cross_problem() after setup and shared (read only)
+  /// built on the first sampling_problem() after setup and shared (read only)
   /// by every group set's problem.
   std::vector<torch::Tensor> mass_bands_;
   std::unordered_map<int64_t, size_t> gid_to_local_;
@@ -312,7 +312,7 @@ private:
   /// Sampled transport solves (TransportSolve::CROSS): one sampler per
   /// group set, the tolerance of the next transport solve, and per-solve
   /// records (tolerance, fibers, largest rank, error).
-  std::vector<cross::SampledTransport::Ptr> samplers_;
+  std::vector<sampling::SampledTransport::Ptr> samplers_;
   double cross_tol_ = 0.0;
   /// SweepConfig::correction_form: ||b|| / ||x|| of each group set from its
   /// last standard within-group-set solve (b the transport solve of the fixed
@@ -514,7 +514,7 @@ private:
   /// @brief One sampler per group set for a sampled transport solve (a
   /// LayoutCross for TransportSolve::CROSS, a GreedyGalerkin on the set's
   /// ProjectedTransport for TransportSolve::GALERKIN).
-  void build_crosses();
+  void build_samplers();
 
   /// @brief Transport solve of group set `s` by its sampler: moments into
   /// moments_next, and the lagged and reflective traces (the delayed
@@ -794,7 +794,7 @@ public:
   /// built from.
   /// @throws std::runtime_error If `s` is out of range or the group
   /// boundaries do not match the groups.
-  cross::CrossProblem cross_problem(size_t s);
+  sampling::SamplingProblem sampling_problem(size_t s);
 
   /// @return Length of a fiber (dofs of every local unit).
   int64_t fiber_length() const noexcept { return fiber_length_; }
@@ -805,7 +805,7 @@ public:
   }
   /// @return The sampler of group set `s` (sampled transport solves),
   /// holding the low-rank flux of the last transport solve.
-  cross::SampledTransport::Ptr get_sampler(size_t s = 0) const;
+  sampling::SampledTransport::Ptr get_sampler(size_t s = 0) const;
   /// @return The cross of group set `s` (TransportSolve::CROSS), holding
   /// the TT of the last transport solve.
   /// @throws std::runtime_error If group set `s` has no cross.

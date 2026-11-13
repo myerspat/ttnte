@@ -177,6 +177,7 @@ add_subdirectory(bindings/solvers)
 add_subdirectory(bindings/sweep)
 add_subdirectory(bindings/tensor)
 add_subdirectory(bindings/cross)
+add_subdirectory(bindings/sampling)
 add_subdirectory(bindings/galerkin)
 add_subdirectory(bindings/python)
 add_subdirectory(bindings/math)
@@ -196,6 +197,7 @@ add_library(
   ${SOLVERS_SRC}
   ${SWEEP_SRC}
   ${TENSOR_SRC}
+  ${SAMPLING_SRC}
   ${CROSS_SRC}
   ${GALERKIN_SRC}
   ${PY_SRC}
@@ -223,7 +225,7 @@ endif()
 # so one runtime serves torch and ttnte and torch.set_num_threads /
 # at::set_num_threads govern both. The library is recorded by its soname, so at
 # run time it binds to whichever copy torch (imported first) has loaded.
-# Performance settings of the cross (src/cross/layout_cross_detail.hpp): they
+# Performance settings of the samplers (src/sampling/sampling_detail.hpp): they
 # change speed or memory, never the results beyond round-off, and depend on the
 # machine (cores, memory, BLAS)
 set(TTNTE_DENSE_MASS_MAX
@@ -315,6 +317,7 @@ add_library(
   ${SOLVERS_BINDINGS}
   ${SWEEP_BINDINGS}
   ${TENSOR_BINDINGS}
+  ${SAMPLING_BINDINGS}
   ${CROSS_BINDINGS}
   ${GALERKIN_BINDINGS}
   ${PY_BINDINGS}

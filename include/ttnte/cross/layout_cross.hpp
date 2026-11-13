@@ -1,9 +1,9 @@
 #pragma once
 
 #include "ttnte/cross/cross_config.hpp"
-#include "ttnte/cross/cross_problem.hpp"
-#include "ttnte/cross/fiber_store.hpp"
-#include "ttnte/cross/sampled_transport.hpp"
+#include "ttnte/sampling/fiber_store.hpp"
+#include "ttnte/sampling/sampled_transport.hpp"
+#include "ttnte/sampling/sampling_problem.hpp"
 #include "ttnte/tensor/layout.hpp"
 #include <array>
 #include <cstdint>
@@ -29,7 +29,7 @@ namespace ttnte::cross {
 /// hold-out set of out-of-sample fibers fits within holdout_factor * tol.
 /// The moments, traces and TTs are contracted from the (unweighted) cores;
 /// the angular flux is never formed.
-class LayoutCross : public SampledTransport {
+class LayoutCross : public sampling::SampledTransport {
 public:
   // =================================================================
   // Public types
@@ -61,7 +61,7 @@ public:
 
   /// @brief One request to the sweep oracle; its phase is the phase of run()
   /// that made it (init, superblock, check).
-  using SweepCall = FiberStore::SweepCall;
+  using SweepCall = sampling::FiberStore::SweepCall;
 
   /// Modes of the sampled tensor.
   enum Mode : int { MU = 0, GA = 1, S = 2, E = 3 };
@@ -124,7 +124,7 @@ private:
 
   // =================================================================
   // Private data
-  CrossProblem problem_;
+  sampling::SamplingProblem problem_;
   CrossConfig config_;
   /// The layout as configured (x, y, z separate if asked), and the solver's
   /// view of it with the spatial indices merged into one mode S
@@ -166,7 +166,7 @@ private:
 
   /// Swept fibers, weighted by sqrt(w_d), 1 / sqrt(du_g) and R_P as
   /// CrossConfig::weighting enables (see FiberStore).
-  FiberStore::Ptr store_;
+  sampling::FiberStore::Ptr store_;
   /// Pairs the fit has used (superblocks, init): never out of sample.
   std::vector<uint8_t> fitted_;
   /// RMS norm of the hold-out pool at the last check.
@@ -207,7 +207,7 @@ private:
 
   // =================================================================
   // Protected constructors
-  LayoutCross(CrossProblem problem, CrossConfig config);
+  LayoutCross(sampling::SamplingProblem problem, CrossConfig config);
 
   // =================================================================
   // Private methods
@@ -420,7 +420,10 @@ public:
   }
   /// @return The weighting factors in effect: those CrossConfig::weighting
   /// enables that the problem has the data for.
-  const Weighting& weighting() const noexcept { return store_->weighting(); }
+  const sampling::Weighting& weighting() const noexcept
+  {
+    return store_->weighting();
+  }
   int64_t total_fibers() const noexcept { return total_fibers_; }
   /// @return The error the last run's final check was accepted or rejected
   /// on: the pool's, or the global estimate when the pool failed and

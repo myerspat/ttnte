@@ -1,8 +1,8 @@
 #include "ttnte/sweep/sweep_driver.hpp"
 #include "ttnte/cad/patch.hpp"
-#include "ttnte/cross/fiber_store.hpp"
 #include "ttnte/cross/layout_cross.hpp"
 #include "ttnte/parallel/parallel_context.hpp"
+#include "ttnte/sampling/fiber_store.hpp"
 #include "ttnte/sweep/projected_transport.hpp"
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
@@ -192,9 +192,9 @@ static void register_SweepDriver_impl(
       "residual_norms",
       [](SweepDriver& self, const std::vector<int64_t>& directions,
         const torch::Tensor& residuals, size_t group_set,
-        const ttnte::cross::Weighting& weighting) {
-        auto store = ttnte::cross::FiberStore::create(
-          self.cross_problem(group_set), weighting);
+        const ttnte::sampling::Weighting& weighting) {
+        auto store = ttnte::sampling::FiberStore::create(
+          self.sampling_problem(group_set), weighting);
         return py::make_tuple(
           store->residual_norms(directions, residuals), store->weighting());
       },
@@ -202,7 +202,7 @@ static void register_SweepDriver_impl(
       "FiberStore of the set's problem, and the factors in effect (testing "
       "aid).",
       py::arg("directions"), py::arg("residuals"), py::arg("group_set") = 0,
-      py::arg("weighting") = ttnte::cross::Weighting {})
+      py::arg("weighting") = ttnte::sampling::Weighting {})
     .def_property_readonly("fiber_length", &SweepDriver::fiber_length)
     .def_property_readonly("fiber_offsets", &SweepDriver::fiber_offsets)
     .def_property_readonly("num_fibers", &SweepDriver::num_fibers)

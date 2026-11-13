@@ -8,6 +8,7 @@ set(LINALG_SRC_REL
     matrix_ops.cpp
     banded_lu.cpp
     banded_cholesky.cpp
+    gram_schmidt.cpp
     schur.cpp
     dense_lu.cpp
     krylov.cpp
@@ -39,6 +40,7 @@ set(LINALG_BINDINGS_REL
     matrix_ops.cpp
     banded_lu.cpp
     banded_cholesky.cpp
+    gram_schmidt.cpp
     dense_lu.cpp
     schur.cpp
     krylov.cpp
