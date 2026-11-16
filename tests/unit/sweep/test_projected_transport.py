@@ -56,7 +56,9 @@ def _rel(a, b):
 def _check_exact(sw, groups, group_set=0, **kw):
     X = _basis(sw, groups)
     nd = sw.ordinates.shape[0]
-    A, b, normals, curved = sw.projected_system(list(range(nd)), [X], group_set, **kw)
+    A, b, normals, curved, _ = sw.projected_system(
+        list(range(nd)), [X], group_set, **kw
+    )
     worst = 0.0
     for d in range(nd):
         A_ref, b_ref = _reference(sw, d, groups, X)
@@ -129,8 +131,8 @@ def test_bordering_matches_projection_at_once(num_dim):
     groups = list(range(G))
     X = _basis(sw, groups, rank=6)
     dirs = list(range(sw.ordinates.shape[0]))
-    A1, b1, _, curved = sw.projected_system(dirs, [X])
-    A2, b2, _, _ = sw.projected_system(
+    A1, b1, _, curved, _ = sw.projected_system(dirs, [X])
+    A2, b2, _, _, _ = sw.projected_system(
         dirs, [X[:1], X[1:3], X[3:4], X[4:]], assemble_each=True
     )
     assert curved > 0
@@ -151,8 +153,8 @@ def test_reset_leaves_nothing_behind(flat_faces):
     X = _basis(sw, groups, rank=4, seed=4)
     dirs = list(range(sw.ordinates.shape[0]))
     kw = dict(flat_faces=flat_faces)
-    A1, b1, _, curved = sw.projected_system(dirs, [X[:1], X[1:]], **kw)
-    A2, b2, _, _ = sw.projected_system(dirs, [X[:1], X[1:]], previous=[old], **kw)
+    A1, b1, _, curved, _ = sw.projected_system(dirs, [X[:1], X[1:]], **kw)
+    A2, b2, _, _, _ = sw.projected_system(dirs, [X[:1], X[1:]], previous=[old], **kw)
     assert curved > 0 and A1.shape == (len(dirs), 4, 4)
     assert torch.equal(A1, A2) and torch.equal(b1, b2)
 
@@ -175,9 +177,63 @@ def test_flat_path_matches_quadrature(build, num_dim):
     groups = list(range(G))
     X = _basis(sw, groups)
     dirs = list(range(sw.ordinates.shape[0]))
-    A1, b1, normals, _ = sw.projected_system(dirs, [X])
-    A2, b2, none, curved = sw.projected_system(dirs, [X], flat_faces=False)
+    A1, b1, normals, _, _ = sw.projected_system(dirs, [X])
+    A2, b2, none, curved, _ = sw.projected_system(dirs, [X], flat_faces=False)
     assert normals > 0 and none == 0 and curved > 0
+    assert _rel(A1, A2) < 1e-13 and _rel(b1, b2) < 1e-13
+
+
+@pytest.mark.parametrize(
+    "build, num_dim, n",
+    [
+        (lambda: quarter_circle(G, True, factor=2), 2, 8),
+        (lambda: quarter_circle(G, False, factor=2), 2, 8),
+        (lambda: BUILDERS[3](G, True), 3, 4),
+    ],
+    ids=["quarter-circle-reflective", "quarter-circle-vacuum", "octant-sphere"],
+)
+@pytest.mark.parametrize(
+    "max_face_classes, max_class_ratio",
+    [(64, float("inf")), (3, float("inf")), (1, float("inf")), (64, 0.0)],
+)
+def test_sign_classes_match_per_direction(
+    build, num_dim, n, max_face_classes, max_class_ratio
+):
+    """Curved faces projected once per sign class of Omega .
+
+    n_q (exact: the clipped weights are linear in Omega within a class) equal
+    the per-direction projection, bordered chunk by chunk with every direction
+    assembled in between; also with few classes allowed, so that some faces (max
+    3), or all but single-class ones (max 1), keep the per-direction path; and
+    with max_class_ratio 0 (the class matrices outnumber what the directions
+    allow) every curved face falls back.
+    """
+    mesh, xs = build()
+    sw = _setup(mesh, xs, num_dim, n=n)
+    groups = list(range(G))
+    X = _basis(sw, groups, rank=6)
+    dirs = list(range(sw.ordinates.shape[0]))
+    chunks = [X[:1], X[1:3], X[3:4], X[4:]]
+    kw = dict(assemble_each=True)
+    A1, b1, _, curved, classes = sw.projected_system(
+        dirs,
+        chunks,
+        max_face_classes=max_face_classes,
+        max_class_ratio=max_class_ratio,
+        **kw,
+    )
+    A2, b2, _, _, none = sw.projected_system(dirs, chunks, sign_split=False, **kw)
+    assert curved > 0 and len(classes) == curved and set(none) == {-1}
+    if max_class_ratio == 0.0:
+        assert set(classes) == {-1}
+    elif max_face_classes == 64 and num_dim == 2:
+        # In 2-D every curved face is split, and some directions are mixed
+        # (Omega . n_q changes sign along the face): more than two classes
+        assert min(classes) > 0 and max(classes) > 2
+    if max_face_classes == 1:
+        # Only faces whose points keep one sign pattern in every direction stay
+        # split; the others fall back to the per-direction projection
+        assert -1 in classes and set(classes) <= {-1, 1}
     assert _rel(A1, A2) < 1e-13 and _rel(b1, b2) < 1e-13
 
 
@@ -190,7 +246,7 @@ def test_spanned_flux_is_reproduced():
     d = 3
     fiber = sw.sweep_fibers([([d], groups)]).reshape(1, G, -1)
     X = torch.cat([fiber, _basis(sw, groups, rank=4, seed=2)])
-    A, b, _, _ = sw.projected_system([d], [X])
+    A, b, _, _, _ = sw.projected_system([d], [X])
     c = torch.linalg.solve(A[0], b[0])
     psi = torch.einsum("j,jgn->gn", c, X)
     assert _rel(psi, fiber[0]) < 1e-10
@@ -275,8 +331,8 @@ def test_lagged_inflow_matches_projected_traces(split, reflective, n):
     lhs, rhs = [], []
     for d in range(sw.ordinates.shape[0]):
         X = torch.cat([psi[d : d + 1], _basis(sw, groups, rank=3, seed=d)])
-        A0, b0, _, _ = sw.projected_system([d], [X])
-        A1, b1, _, _ = sw.projected_system([d], [X], implicit_lagged=True)
+        A0, b0, _, _, _ = sw.projected_system([d], [X])
+        A1, b1, _, _, _ = sw.projected_system([d], [X], implicit_lagged=True)
         lhs.append(b0[0] - b1[0])
         rhs.append((A0[0] - A1[0])[:, 0])
     lhs, rhs = torch.stack(lhs), torch.stack(rhs)

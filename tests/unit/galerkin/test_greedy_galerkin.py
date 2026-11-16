@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from ttnte.sampling import Weighting
-from ttnte.galerkin import GalerkinConfig, GalerkinPhiOld, GalerkinStart
+from ttnte.galerkin import GalerkinConfig, GalerkinPhiOld, GalerkinStart, SvdNorm
 from ttnte.sweep import InnerSolver, SweepConfig, TransportSolve
 
 from ..sweep.problems import BUILDERS, driver, quadrature, quarter_circle
@@ -254,6 +254,80 @@ def test_phi_old_reference(phi_old):
         assert first == first  # compared with the first run's flux
 
 
+@pytest.mark.parametrize("norm", [SvdNorm.FROBENIUS, SvdNorm.NUCLEAR])
+def test_svd_truncation(norm):
+    """Guo & Peng's truncated SVD after a run (svd_tol): every run records the truncated
+    rank; with keep_angular_flux, compress() (which the solver calls after reading the
+    moments and traces) makes the held flux the rank-r' one, to rounding at a tiny
+    svd_tol and to about svd_tol otherwise (1e-3, 1e-2), the moments staying the
+    untruncated fill's; without it compress() changes nothing.
+
+    The truncation never reaches the iteration, so runs of one seed on one state
+    are identical and the truncations are of the same coefficients.
+    """
+    tol = 1e-4
+
+    def run(**kw):
+        kw.setdefault("keep_angular_flux", True)
+        kw.setdefault("svd_norm", norm)
+        sw, g, _, _ = _sampler(lambda: quarter_circle(G, True, factor=2), 2, 8, **kw)
+        g.set_tolerance(tol)
+        g.run()
+        g.compress()
+        return sw, g
+
+    sw, full = run()
+    psi = full.evaluate(*_all(sw))
+    assert full.truncated_rank == -1 and full.record.truncated_rank == -1
+    r = full.ranks[0]
+
+    _, exact = run(svd_tol=1e-15)
+    assert exact.ranks == [r] and exact.truncated_rank <= r
+    assert _rel(exact.evaluate(*_all(sw)), psi) < 1e-12
+    assert _rel(exact.moments(), full.moments()) < 1e-13
+
+    ranks = []
+    for svd_tol in (1e-3, 1e-2):
+        _, cut = run(svd_tol=svd_tol)
+        k = cut.truncated_rank
+        assert cut.record.truncated_rank == k and cut.ranks == [r]
+        assert 0 < k < r
+        # The held flux is rank k; the moments are the untruncated ones
+        assert _rel(cut.evaluate(*_all(sw)), psi) < 10 * svd_tol * r**0.5
+        assert _rel(cut.moments(), full.moments()) < 1e-13
+        ranks.append(k)
+    assert ranks[1] < ranks[0]
+
+    # Without keep_angular_flux: the rank only, the held flux untruncated
+    _, rank_only = run(svd_tol=1e-3, keep_angular_flux=False)
+    assert rank_only.truncated_rank == ranks[0]
+    assert _rel(rank_only.evaluate(*_all(sw)), psi) < 1e-13
+
+
+def test_svd_truncation_leaves_the_solve_unchanged():
+    """Inside the sweep solver (reflective: lagged traces are read from the held
+    flux) a truncation with keep_angular_flux changes only the flux kept, not the
+    iteration: the same scalar flux as without, while the records report the
+    truncated ranks."""
+    solves = []
+    for svd_tol in (0.0, 1e-3):
+        sw, g, _, _ = _sampler(
+            lambda: quarter_circle(G, True, factor=2),
+            2,
+            8,
+            keep_angular_flux=True,
+            svd_tol=svd_tol,
+        )
+        phi = torch.cat([sw.get_scalar_flux(i).reshape(-1) for i in sw.local_gids])
+        solves.append((phi, [r.truncated_rank for r in sw.sampling_records], sw))
+    (phi0, ranks0, _), (phi1, ranks1, sw1) = solves
+    assert _rel(phi1, phi0) < 1e-13
+    assert set(ranks0) == {-1} and all(0 < k for k in ranks1)
+    assert all(k <= max(r.ranks) for k, r in zip(ranks1, sw1.sampling_records)) and any(
+        k < max(r.ranks) for k, r in zip(ranks1, sw1.sampling_records)
+    )
+
+
 @pytest.mark.parametrize(
     "kw, match",
     [
@@ -263,6 +337,8 @@ def test_phi_old_reference(phi_old):
         (dict(mgs_eps=0.0), "mgs_eps"),
         (dict(basis_rtol=-1.0), "basis_rtol"),
         (dict(max_iter=-1), "max_iter"),
+        (dict(svd_tol=-1.0), "svd_tol"),
+        (dict(svd_tol=1.0), "svd_tol"),
     ],
 )
 def test_rejects_bad_config(kw, match):
@@ -309,3 +385,75 @@ def test_fixed_source_matches_exact(num_dim, set_size):
     assert sw.converged
     assert _rel(phi, exact) < 1e-4
     assert len(sw.sampling_records) > 0
+
+
+@pytest.mark.parametrize("inner", [InnerSolver.GMRES, InnerSolver.RICHARDSON])
+@pytest.mark.parametrize("num_dim", [2, 3])
+def test_carry_basis_matches_exact(num_dim, inner):
+    """carry_basis (our ablation, not the paper): every run after the first starts from
+    the previous run's basis, rotated and cut at its own tolerance.
+
+    The solve still converges to the EXACT solution, the records report the
+    carried ranks (none for the first run, never more than the previous run's
+    rank), and the runs sweep no more fibers in total than without carrying.
+    """
+    kw = dict(inner_solver=inner)
+    exact, _ = _phi(num_dim, TransportSolve.EXACT, **kw)
+    plain, sw0 = _phi(num_dim, TransportSolve.GALERKIN, **kw)
+    phi, sw = _phi(
+        num_dim,
+        TransportSolve.GALERKIN,
+        galerkin=GalerkinConfig(carry_basis=True),
+        **kw,
+    )
+    assert sw.converged
+    assert _rel(phi, exact) < 1e-4
+    records = sw.sampling_records
+    carried = [r.carried_rank for r in records]
+    assert carried[0] == 0 and all(k > 0 for k in carried[1:])
+    assert all(k <= max(prev.ranks) for k, prev in zip(carried[1:], records[:-1]))
+    assert all(r.carried_rank == 0 for r in sw0.sampling_records)
+    fibers = lambda s: sum(r.fibers for r in s.sampling_records)  # noqa: E731
+    assert fibers(sw) <= fibers(sw0)
+
+
+@pytest.mark.parametrize("relax", [True, False])
+def test_richardson_relaxes_sampled_tolerance(relax):
+    """Source iteration relaxes the sampled solves like GMRES does (sampling_relax):
+
+    each sweep asks for sampling_inner_factor times the last change of the
+    moments, sampling_max_tol at the first and never below tol_min =
+    sampling_inner_factor times the inner tolerance; without relaxation every
+    solve gets tol_min. Either way the solve converges to the EXACT solution.
+    """
+    kw = dict(inner_solver=InnerSolver.RICHARDSON, sampling_relax=relax)
+    exact, _ = _phi(2, TransportSolve.EXACT, **kw)
+    phi, sw = _phi(2, TransportSolve.GALERKIN, **kw)
+    assert sw.converged and _rel(phi, exact) < 1e-4
+    tols = [r.tolerance for r in sw.sampling_records]
+    tol_min = sw.config.sampling_inner_factor * 0.1 * sw.config.tol
+    if relax:
+        assert tols[0] == pytest.approx(sw.config.sampling_max_tol)
+        assert min(tols) >= tol_min * (1 - 1e-12) and min(tols) < tols[0]
+    else:
+        assert all(t == pytest.approx(tol_min) for t in tols)
+
+
+def test_svd_norms():
+    """At the same svd_tol the nuclear-norm cut (Guo & Peng's sum of singular values)
+    keeps at least as many vectors as the Frobenius one (the cross's rule, the default),
+    on the same coefficients.
+
+    Only the sampler is kept: it must keep its
+    driver alive (keep_alive in get_galerkin).
+    """
+    assert GalerkinConfig().svd_norm == SvdNorm.FROBENIUS
+    ranks = {}
+    for norm in (SvdNorm.FROBENIUS, SvdNorm.NUCLEAR):
+        _, g, _, _ = _sampler(
+            lambda: quarter_circle(G, True, factor=2), 2, 8, svd_tol=1e-3, svd_norm=norm
+        )
+        g.set_tolerance(1e-4)
+        g.run()
+        ranks[norm] = g.truncated_rank
+    assert 0 < ranks[SvdNorm.FROBENIUS] <= ranks[SvdNorm.NUCLEAR]

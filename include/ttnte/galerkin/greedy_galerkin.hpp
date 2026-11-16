@@ -61,6 +61,11 @@ public:
     std::vector<IterationRecord> history;
     int64_t dropped_snapshots = 0;
     int64_t orthogonality_failures = 0;
+    /// Rank after the truncated SVD (GalerkinConfig::svd_tol; -1: off).
+    int64_t truncated_rank = -1;
+    /// Basis vectors the run started from (GalerkinConfig::carry_basis;
+    /// 0: an empty start).
+    int64_t carried_rank = 0;
   };
 
 protected:
@@ -90,10 +95,26 @@ protected:
   /// unweighted basis (r, G, Ns) of the reduced operator.
   torch::Tensor coefficients_;
   torch::Tensor basis_;
+  /// The untruncated fill's moments, when the held flux was truncated
+  /// (moments() returns them).
+  torch::Tensor moments_;
+  /// The last run's rank after the truncated SVD (-1: svd_tol off).
+  int64_t truncated_rank_ = -1;
+  /// carry_basis: what the last run leaves for the next, uncut: its
+  /// angle-weighted coefficients a_d C (N_Omega, r) and its basis, weighted
+  /// (rows of X~) and unweighted (the reduced operator's), (r, G Ns) each;
+  /// and the rank the last run started from.
+  torch::Tensor carry_coefficients_;
+  torch::Tensor carry_rows_;
+  torch::Tensor carry_unweighted_;
+  int64_t carried_rank_ = 0;
   /// The last full solve's weighted scalar flux (G Ns), phi_old of (3.9);
   /// carried across runs under PREVIOUS_RUN (phi^(n-1) of the paper's
   /// first comparison), reset at each run under WITHIN_RUN.
   torch::Tensor phi_old_;
+  /// Per direction its right-hand side's norm ||b_d||* in the current run
+  /// (NaN: not computed yet), the residual test's pooled scale.
+  std::vector<double> rhs_norm_;
 
   double error_ = 0.0;
   bool converged_ = false;
@@ -134,6 +155,18 @@ protected:
   /// coordinates, the others solved (coefficients_), and the weighted
   /// scalar flux they give.
   torch::Tensor fill();
+  /// @brief The truncated SVD of the held coefficients (svd_tol): record
+  /// the rank, and with `replace` the held flux becomes the truncated one
+  /// (the moments kept from before).
+  void truncate(bool replace);
+  /// @brief carry_basis: keep this run's a_d C and basis (weighted and
+  /// unweighted) for the next run. Called at the end of run(), before the
+  /// flux is released.
+  void keep_basis();
+  /// @brief carry_basis: start from the kept basis, rotated by the right
+  /// singular vectors of a_d C and cut at this run's tolerance (rows of X~,
+  /// and one extend() of the reduced operator).
+  void start_from_kept_basis();
   /// @return Up to n distinct unswept directions, uniformly at random.
   std::vector<int64_t> draw(int64_t n);
 
@@ -153,6 +186,9 @@ public:
     const std::vector<int64_t>& groups,
     const std::vector<int64_t>& space) const override final;
   void release() override final;
+  /// @brief With keep_angular_flux and svd_tol: the held flux becomes the
+  /// truncated one (after the solver read the moments and traces).
+  void compress() override final;
 
   // =================================================================
   // Public getters
@@ -208,6 +244,10 @@ public:
   }
   /// @return Whether each direction was swept in the last run.
   const std::vector<uint8_t>& swept() const noexcept { return swept_; }
+  /// @return The last run's rank after the truncated SVD (-1: svd_tol off).
+  int64_t truncated_rank() const noexcept { return truncated_rank_; }
+  /// @return Basis vectors the last run started from (carry_basis).
+  int64_t carried_rank() const noexcept { return carried_rank_; }
 };
 
 } // namespace ttnte::galerkin

@@ -43,8 +43,8 @@ public:
   /// @throws std::runtime_error If a reduced matrix is singular.
   virtual torch::Tensor solve(const std::vector<int64_t>& directions) = 0;
 
-  /// @brief Residuals b_d - A_d X c_d over the whole domain, in parallel
-  /// over directions.
+  /// @brief Residuals b_d - A_d X c_d over the whole domain, of a batch of
+  /// directions.
   /// @param C (D, r) coefficients, row per direction.
   /// @return (D, num_groups, num_space) residuals (integrals against the
   /// test functions, unweighted).

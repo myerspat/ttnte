@@ -48,6 +48,10 @@ public:
     const std::vector<int64_t>& space) const = 0;
   /// @brief Drop the low-rank flux of the last run.
   virtual void release() = 0;
+  /// @brief Compress the held flux once the caller has read what the
+  /// iteration needs from it (moments, lagged traces), before it is stored
+  /// or kept as the angular flux. Default: nothing.
+  virtual void compress() {}
 
   // =================================================================
   // Public getters

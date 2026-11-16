@@ -201,7 +201,10 @@ struct SweepConfig {
   /// Its accuracy is tol_min = sampling_inner_factor times the within-group-set
   /// tolerance; with sampling_relax, GMRES relaxes each product's accuracy as
   /// the residual drops, tol_k = min(sampling_max_tol, tol_min / max(r_k,
-  /// tol_min)), r_k the relative residual (Simoncini and Szyld, SISC 25, 2003).
+  /// tol_min)), r_k the relative residual (Simoncini and Szyld, SISC 25, 2003),
+  /// and Richardson asks each sweep for tol_k = min(sampling_max_tol,
+  /// max(tol_min, sampling_inner_factor delta_{k-1})), delta_{k-1} the last
+  /// relative change of the set's moments (sampling_max_tol at the first).
   double sampling_inner_factor = 0.1;
   bool sampling_relax = true;
   double sampling_max_tol = 1e-2;

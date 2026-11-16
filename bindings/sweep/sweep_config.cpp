@@ -118,8 +118,10 @@ void register_SweepConfig(py::module_& m)
       "Sampled (CROSS, GALERKIN) transport solves to this fraction of the "
       "within-set tolerance.")
     .def_readwrite("sampling_relax", &SweepConfig::sampling_relax,
-      "Relax each GMRES product's sampled-solve accuracy as the residual "
-      "drops.")
+      "Relax the sampled-solve accuracy as the solve converges: each GMRES "
+      "product by the residual, each Richardson sweep by the last change of "
+      "the moments (down to sampling_inner_factor times the within-set "
+      "tolerance at convergence).")
     .def_readwrite("sampling_max_tol", &SweepConfig::sampling_max_tol,
       "Loosest relaxed sampled-solve tolerance.")
     .def_readwrite("sampling_threads", &SweepConfig::sampling_threads,

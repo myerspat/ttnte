@@ -32,6 +32,19 @@ enum class GalerkinPhiOld : uint8_t {
   WITHIN_RUN,
 };
 
+/// @brief The norm of the discarded singular values in the svd_tol cut,
+/// relative to the same norm of all of them.
+enum class SvdNorm : uint8_t {
+  /// sqrt(sum_{i > r'} s_i^2) <= svd_tol sqrt(sum_i s_i^2): the truncated
+  /// flux's weighted L2 error is at most svd_tol (linalg::truncated_svd(),
+  /// the cross's rule).
+  FROBENIUS,
+  /// sum_{i > r'} s_i <= svd_tol sum_i s_i (the nuclear norm): Guo & Peng's
+  /// printed rule (with the head sum read as the tail), stricter, for their
+  /// reported ranks.
+  NUCLEAR,
+};
+
 /// @brief Options of the residual-greedy Galerkin transport solve (Guo &
 /// Peng, 2026, Alg. 3.1-3.2, multigroup by angular augmentation over a group
 /// set's groups).
@@ -77,6 +90,30 @@ struct GalerkinConfig {
   /// Keep the low-rank flux after each transport solve (the solver's
   /// angular flux).
   bool keep_angular_flux = false;
+  /// Truncated SVD after a run (Guo & Peng, "Construction of V(n) and S(n)
+  /// after convergence", eps_SVD = 1e-8 in their tests; 0: off). The
+  /// coefficients a_d C (a_d = sqrt(w_d) under weighting.angle, else 1) on
+  /// the weighted orthonormal basis are cut at the smallest rank r' whose
+  /// discarded singular values are at most svd_tol relative, in svd_norm.
+  /// Each run records r' (truncated_rank). With keep_angular_flux the held flux
+  /// becomes the rank-r' one (coefficients and basis) at compress(), which the
+  /// sweep solver calls after it read the moments and the lagged traces: the
+  /// moments stay those of the untruncated fill (the paper's phi^(n,*)) and
+  /// the iteration does not change, only the angular flux it keeps.
+  double svd_tol = 0.0;
+  SvdNorm svd_norm = SvdNorm::FROBENIUS;
+  /// Carry the basis from one run (transport solve) to the next: NOT part
+  /// of Guo & Peng (each of their inner loops starts from p random
+  /// directions), so a labelled ablation. A run keeps its angle-weighted
+  /// coefficients a_d C and its basis; the next run factors them, a_d C =
+  /// U S V^T (linalg::truncated_svd), cut at its own tolerance in the
+  /// Frobenius norm (||tail||_F <= tol ||a_d C||_F: the carried flux's
+  /// weighted L2 error is at most tol, so the carried rank follows the
+  /// accuracy each solve asks for), and starts from the rotated basis V^T
+  /// X~ (bordered in one extend(), its sources projected anew) instead of
+  /// an empty basis. No direction counts as swept at the start (its fiber
+  /// belonged to the previous sources).
+  bool carry_basis = false;
 };
 
 } // namespace ttnte::galerkin

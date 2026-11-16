@@ -1,6 +1,8 @@
 // SweepSolver: Within-group-set solvers: Richardson, GMRES, correction form,
 // incremental transport.
 #include "ttnte/sweep/sweep_driver.hpp"
+#include <algorithm>
+#include <limits>
 
 namespace ttnte::sweep {
 
@@ -493,7 +495,8 @@ int64_t SweepSolver::inner_solve(size_t s, bool jacobi)
   double tol = inner_tolerance();
   if (config_.global_inner_tolerance)
     tol = std::min(GLOBAL_TOLERANCE_CAP, tol * global_tolerance_scale(s));
-  // Cross accuracy: a fraction of the inner tolerance, relaxed in GMRES
+  // Sampled (CROSS, GALERKIN) accuracy: a fraction of the inner tolerance,
+  // relaxed (sampling_relax) in GMRES and in Richardson alike
   const double tol_min = config_.sampling_inner_factor * tol;
   sampling_tol_ = tol_min;
 
@@ -501,8 +504,21 @@ int64_t SweepSolver::inner_solve(size_t s, bool jacobi)
   // stop when the set's moments change by less than tol (relative)
   if (config_.inner_solver == InnerSolver::RICHARDSON) {
     const auto& groups = group_indices_[s];
+    // Relaxed inexact source iteration: an inexact transport solve's error
+    // is not damped as a GMRES product's is, but it only has to stay below
+    // what the iteration still changes. Each sweep asks for
+    // sampling_inner_factor times the last relative change, at least tol_min
+    // (reached as the change falls to tol: the converged accuracy is the
+    // unrelaxed one) and at most sampling_max_tol (the first sweep, no change
+    // yet). Only sampled transport reads sampling_tol_
+    double change = std::numeric_limits<double>::infinity();
     for (int64_t it = 0; it < config_.inner_max_iter; it++) {
       double num = 0.0, den = 0.0;
+      sampling_tol_ =
+        config_.sampling_relax
+          ? std::min(config_.sampling_max_tol,
+              std::max(tol_min, config_.sampling_inner_factor * change))
+          : tol_min;
       compute_source(s, Within::MOMENTS, true, jacobi);
       transport_group_set(s);
       for (const auto& P : patches_) {
@@ -518,11 +534,12 @@ int64_t SweepSolver::inner_solve(size_t s, bool jacobi)
       commit_group_set(s);
       num = global_sum(num);
       den = global_sum(den);
-      report_progress(
-        s, it + 1, den == 0.0 ? 0.0 : std::sqrt(num / den), "Richardson");
-      if (den == 0.0 || std::sqrt(num / den) < tol)
+      change = den == 0.0 ? 0.0 : std::sqrt(num / den);
+      report_progress(s, it + 1, change, "Richardson");
+      if (den == 0.0 || change < tol)
         break;
     }
+    sampling_tol_ = tol_min;
     return group_set_sweeps_ - start;
   }
 

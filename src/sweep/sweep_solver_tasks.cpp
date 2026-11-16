@@ -341,6 +341,9 @@ void SweepSolver::sampled_group_set(size_t s)
       }
     });
   lap("traces");
+  // The iteration has what it needs (moments, traces): the sampler may now
+  // compress the flux it keeps or stores (GALERKIN: svd_tol)
+  sampler.compress();
 
   // 3. Angular flux, if stored: each patch's psi at the set's groups,
   // evaluated from the low-rank flux at every direction and dof

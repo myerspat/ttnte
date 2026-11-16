@@ -26,7 +26,11 @@ void register_GreedyGalerkin(py::module_& m)
     .def_readonly(
       "dropped_snapshots", &GreedyGalerkin::RunRecord::dropped_snapshots)
     .def_readonly("orthogonality_failures",
-      &GreedyGalerkin::RunRecord::orthogonality_failures);
+      &GreedyGalerkin::RunRecord::orthogonality_failures)
+    .def_readonly("carried_rank", &GreedyGalerkin::RunRecord::carried_rank,
+      "Basis vectors the run started from (GalerkinConfig.carry_basis).")
+    .def_readonly("truncated_rank", &GreedyGalerkin::RunRecord::truncated_rank,
+      "Rank after the truncated SVD (GalerkinConfig.svd_tol; -1: off).");
 
   // Built by the sweep solver (TransportSolve.GALERKIN): it needs the
   // solver's projected transport operator
@@ -38,6 +42,10 @@ void register_GreedyGalerkin(py::module_& m)
     .def("evaluate", &GreedyGalerkin::evaluate, py::arg("directions"),
       py::arg("groups"), py::arg("space"))
     .def("release", &GreedyGalerkin::release)
+    .def("compress", &GreedyGalerkin::compress,
+      "With keep_angular_flux and svd_tol: replace the held flux by the "
+      "truncated one (the sweep solver calls it after reading the moments "
+      "and traces; the moments stay the untruncated ones).")
     .def_property_readonly("tolerance", &GreedyGalerkin::tolerance)
     .def_property_readonly("holds_flux", &GreedyGalerkin::holds_flux)
     .def_property_readonly("num_fibers", &GreedyGalerkin::num_fibers)
@@ -56,6 +64,8 @@ void register_GreedyGalerkin(py::module_& m)
     .def_property_readonly(
       "dropped_snapshots", &GreedyGalerkin::dropped_snapshots)
     .def_property_readonly("swept", &GreedyGalerkin::swept)
+    .def_property_readonly("truncated_rank", &GreedyGalerkin::truncated_rank)
+    .def_property_readonly("carried_rank", &GreedyGalerkin::carried_rank)
     .def_property_readonly("record", &GreedyGalerkin::record,
       "The last run's record (a GalerkinRun)")
     .def_property_readonly(

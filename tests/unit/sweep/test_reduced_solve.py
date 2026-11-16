@@ -1,6 +1,6 @@
 """ProjectedTransport as a galerkin::ReducedOperator: the reduced solves (an LU per
-direction, in parallel over directions), the residuals b_d - A_d X c_d through the sweep
-kernel, and their error-weighted dual norms (FiberStore: R_P^{-T} in space, times the
+direction, in parallel over directions), the residuals b_d - A_d X c_d (batched, matrix-free; equal to the sweep
+kernel's), and their error-weighted dual norms (FiberStore: R_P^{-T} in space, times the
 angle and energy weights). Checked
 against dense solves of the projected systems, Galerkin orthogonality, the step-3
 residual of the reconstructed flux, single- against multi-threaded runs, and dense
@@ -15,6 +15,7 @@ import torch
 from ttnte.sampling import Weighting
 from ttnte.sweep import LocalSolverType, SweepConfig
 
+from . import test_nonconforming as nc
 from .problems import BUILDERS, boxes, driver, quadrature, quarter_circle
 
 G = 3
@@ -69,7 +70,7 @@ def test_solve_matches_dense_solve(case):
     """C_d = (X^T A_d X)^{-1} X^T b_d, against torch's solve of the projected
     systems."""
     sw, _, X, dirs = case
-    A, b, _, _ = sw.projected_system(dirs, [X])
+    A, b, _, _, _ = sw.projected_system(dirs, [X])
     C = sw.galerkin_solve(dirs, [X])
     ref = torch.linalg.solve(A, b)
     assert C.shape == (len(dirs), X.shape[0])
@@ -81,7 +82,7 @@ def test_galerkin_orthogonality(case):
     - X^T A_d X c_d = 0. Ties solve() and residuals() to each other through two different
     assemblies (projection and sweep kernel)."""
     sw, _, X, dirs = case
-    _, b, _, _ = sw.projected_system(dirs, [X])
+    _, b, _, _, _ = sw.projected_system(dirs, [X])
     C = sw.galerkin_solve(dirs, [X])
     R = sw.galerkin_residuals(dirs, [X], C)
     XtR = torch.einsum("jgn,dgn->dj", X, R)
@@ -99,6 +100,26 @@ def test_residuals_match_transport_residual(case):
         psi = torch.einsum("j,jgn->gn", C[i], X)
         ref = sw.transport_residual(d, groups, psi)
         assert _rel(R[i], ref) < 1e-13
+
+
+@pytest.mark.parametrize(
+    "surfaces",
+    [lambda: nc.squares(False), lambda: nc.rings(False), lambda: nc.rings(False, True)],
+    ids=["squares", "rings", "rings-flipped"],
+)
+def test_residuals_match_transport_residual_nonconforming(surfaces):
+    """Across non-conforming interfaces the upwind traces come from the coupling
+    bases: residuals() still equals the kernel's residual."""
+    fills, xs = nc.absorber()
+    sw = _setup(nc.build(surfaces(), fills), xs, 2)
+    groups = list(range(nc.G))
+    X = _basis(sw, groups)
+    dirs = list(range(sw.ordinates.shape[0]))
+    C = torch.randn(len(dirs), X.shape[0], generator=torch.Generator().manual_seed(3))
+    R = sw.galerkin_residuals(dirs, [X], C)
+    for i, d in enumerate(dirs):
+        psi = torch.einsum("j,jgn->gn", C[i], X)
+        assert _rel(R[i], sw.transport_residual(d, groups, psi)) < 1e-13
 
 
 def test_parallel_matches_serial(case):

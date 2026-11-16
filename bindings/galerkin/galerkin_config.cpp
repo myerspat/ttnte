@@ -14,6 +14,14 @@ void register_GalerkinConfig(py::module_& m)
     .value("INITIAL_DIRECTIONS", GalerkinStart::INITIAL_DIRECTIONS,
       "The cross's initial directions");
 
+  py::enum_<SvdNorm>(m, "SvdNorm")
+    .value("FROBENIUS", SvdNorm::FROBENIUS,
+      "||discarded||_F <= svd_tol ||all||_F: the truncated flux's weighted L2 "
+      "error (the cross's rule)")
+    .value("NUCLEAR", SvdNorm::NUCLEAR,
+      "sum of discarded <= svd_tol sum of all singular values (Guo & Peng's "
+      "printed rule)");
+
   py::enum_<GalerkinPhiOld>(m, "GalerkinPhiOld")
     .value("AUTO", GalerkinPhiOld::AUTO,
       "PREVIOUS_RUN under RICHARDSON, WITHIN_RUN under GMRES")
@@ -46,5 +54,15 @@ void register_GalerkinConfig(py::module_& m)
     .def_readwrite("max_iter", &GalerkinConfig::max_iter,
       "Greedy iterations per run (0: until every direction is swept).")
     .def_readwrite("seed", &GalerkinConfig::seed)
-    .def_readwrite("keep_angular_flux", &GalerkinConfig::keep_angular_flux);
+    .def_readwrite("keep_angular_flux", &GalerkinConfig::keep_angular_flux)
+    .def_readwrite("carry_basis", &GalerkinConfig::carry_basis,
+      "Start each run from the previous run's basis, rotated and cut at the "
+      "run's own tolerance (not part of Guo & Peng: a labelled ablation).")
+    .def_readwrite("svd_tol", &GalerkinConfig::svd_tol,
+      "Truncated SVD after a run (Guo & Peng's eps_SVD; 0: off): the "
+      "smallest rank whose discarded singular values are at most svd_tol "
+      "relative, in svd_norm. Reported as the record's truncated_rank; with "
+      "keep_angular_flux the held flux is truncated (the moments are not).")
+    .def_readwrite("svd_norm", &GalerkinConfig::svd_norm,
+      "Norm of the svd_tol cut (SvdNorm; FROBENIUS by default).");
 }

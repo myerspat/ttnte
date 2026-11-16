@@ -34,18 +34,27 @@ namespace ttnte::sweep {
 ///   (R^nb X^nb)_q of the faces with normal n that angle set a sweeps
 ///   upwind first (DEPENDENCY), so a direction costs one r x r term per
 ///   distinct normal;
-/// - curved faces: D_d, their outflow and dependency inflow integrals at
-///   direction d's clipped normals, cached per direction and bordered
-///   lazily when the direction is next assembled;
+/// - curved faces: their outflow and dependency inflow integrals at
+///   direction d's clipped normals. The clipped weights (Omega . n_q)_+ and
+///   (-Omega . n_q)_+ are linear in Omega among the directions that give
+///   every quadrature point of the face the same sign of Omega . n_q, so
+///   each face keeps one bordered matrix per such sign class and dimension
+///   (sign_split, a direction then costs ndim r x r terms per face); a face
+///   with more than max_face_classes classes, or every face when the class
+///   matrices outnumber the directions (max_class_ratio), keeps the
+///   direction's own
+///   projection D_d, cached per direction and bordered lazily when the
+///   direction is next assembled;
 /// - X^T s_m per moment, and the lagged and reflected inflow projected per
 ///   direction through the sweep kernel's own inflow (buffered_inflow()).
 /// The sources and lagged traces are read at extend() and reduced_system(),
 /// so a basis belongs to one transport solve (reset() between solves).
 ///
 /// solve() and residuals() complete the galerkin::ReducedOperator: per
-/// direction, an LU of the r x r system (LAPACK) and the residual of
-/// X c_d through the sweep kernel (transport_residual()), both in parallel
-/// over directions.
+/// direction an LU of the r x r system (LAPACK, in parallel over
+/// directions), and the residuals of X c_d for a batch of directions,
+/// matrix-free with the same volume pairs and face traces (equal to the
+/// sweep kernel's transport_residual()).
 class ProjectedTransport : public galerkin::ReducedOperator {
 public:
   // =================================================================
@@ -62,6 +71,23 @@ public:
     /// solve can; off by default so that A_d matches the oracle (testing
     /// aid, and a possible labelled ablation).
     bool implicit_lagged = false;
+    /// Project each curved face once per sign class of Omega . n_q (exact:
+    /// within a class the clipped weights are linear in Omega) instead of
+    /// once per direction. False: every curved face per direction.
+    bool sign_split = true;
+    /// Curved faces with more sign classes than this keep the per-direction
+    /// projection (classes cost memory ndim r^2 each; in 2-D a face has
+    /// about one per quadrature point, in 3-D possibly one per direction).
+    int64_t max_face_classes = 64;
+    /// Split only while the class matrices (classes x ndim per curved face,
+    /// twice on internal faces) number at most this times the directions;
+    /// otherwise every curved face keeps the per-direction projection (one
+    /// cached matrix per direction). Past that, the class matrices cost more
+    /// memory and bordering than the per-direction caches, and a direction's
+    /// assembly sums more terms than one cached matrix (vnv reflected
+    /// cylinder: 28 faces x 34 classes against 1024 directions, 10x the
+    /// bordering).
+    double max_class_ratio = 1.0;
   };
 
 protected:
@@ -94,10 +120,40 @@ protected:
     int64_t normal = -1;
     /// Flat: (num_groups Qf) |n_q| w_q, repeated per group.
     torch::Tensor measure;
-    /// (num_groups Qf, r) the basis at the face's quadrature points, (R
-    /// X)_{g,q}, row g * Qf + q; INTERNAL: the neighbor's, (R^nb X^nb)_{g,q}.
-    Growing own;
-    Growing upwind;
+    /// Its rows [row0, row0 + rows) of the global traces (rows = num_groups
+    /// Qf): the basis at the face's quadrature points, (R X)_{g,q}, row
+    /// row0 + g * Qf + q (traces_own_); INTERNAL: the neighbor's, (R^nb
+    /// X^nb)_{g,q} (traces_upwind_, zero rows otherwise).
+    int64_t row0 = 0;
+    int64_t rows = 0;
+  };
+
+  /// @brief A curved face projected per sign class (Options::sign_split):
+  /// the directions that give each quadrature point q the same sign of
+  /// Omega . n_q. Within a class, (Omega . n_q)_+ w_q = sum_i Omega_i
+  /// n_{q,i} w_q on the positive points and (-Omega . n_q)_+ w_q = -sum_i
+  /// Omega_i n_{q,i} w_q on the negative ones, so the face's terms of D_d
+  /// are sum_i Omega_i (O_{c,i} + I_{c,i}), with
+  ///   O_{c,i} = (T X)^T diag(n_i w [q positive in c]) (T X)      outflow
+  ///   I_{c,i} = (T X)^T diag(n_i w [q negative in c]) (T^nb X)   inflow
+  /// (n_q unnormalized, the kernel's upwind weights; I only for INTERNAL
+  /// faces, and added only for the angle sets that sweep the neighbor
+  /// first).
+  struct FaceClasses {
+    /// Index into faces_.
+    size_t face = 0;
+    int64_t num_classes = 0;
+    /// Per direction its class.
+    std::vector<int64_t> class_of;
+    /// (classes, Qf) 1 on the positive (negative) points of each class.
+    torch::Tensor positive;
+    torch::Tensor negative;
+    /// (ndim, Qf) n_{q,i} w_q.
+    torch::Tensor moments;
+    /// (classes, ndim, capacity, capacity) O and, for INTERNAL faces, I;
+    /// the leading (rank, rank) block in use.
+    torch::Tensor outflow;
+    torch::Tensor inflow;
   };
 
   // =================================================================
@@ -122,14 +178,57 @@ protected:
   /// (num_moments, r) X^T s_m.
   Growing source_;
   std::vector<FaceProjection> faces_;
+  /// Volume operators of the whole fiber, applied in one pass: the units'
+  /// pair lists offset into the fiber (P), their mass and streaming values
+  /// ((P) and (ndim, P)), and (num_groups, num_space) sigma_t per group of
+  /// the set and dof.
+  torch::Tensor volume_row_;
+  torch::Tensor volume_col_;
+  torch::Tensor volume_mass_;
+  torch::Tensor volume_grad_;
+  torch::Tensor sigma_;
+  /// The sources at the set's groups, (num_moments, num_groups,
+  /// num_space), gathered at the first extend() after reset().
+  mutable torch::Tensor source_all_;
+  /// (rows, r) every face's traces (FaceProjection::row0), and how to form
+  /// them from the flattened (num_groups num_space) basis vectors: per row
+  /// the (rows, A) indices and values (zero-padded to the widest face).
+  /// Flat faces come first, grouped by normal, then curved ones.
+  Growing traces_own_;
+  Growing traces_upwind_;
+  torch::Tensor own_index_;
+  torch::Tensor own_value_;
+  torch::Tensor upwind_index_;
+  torch::Tensor upwind_value_;
+  int64_t num_trace_rows_ = 0;
+  bool any_internal_ = false;
+  /// Per trace row its point's unnormalized normal n_q (rows, ndim) and
+  /// quadrature weight w_q (rows), and per angle set 1 on the rows of the
+  /// faces the set sweeps upwind first (num_sets, rows): the per-point
+  /// upwind weights (Omega . n_q)_+- w_q of residuals().
+  torch::Tensor row_normal_;
+  torch::Tensor row_weight_;
+  torch::Tensor row_dependency_;
+  /// Per flat normal its rows [start, start + count) of the traces, the
+  /// weights |n_q| w_q of those rows, and per angle set the same weights on
+  /// the faces the set sweeps upwind first (DEPENDENCY), zero elsewhere
+  /// (undefined if none).
+  std::vector<std::pair<int64_t, int64_t>> normal_rows_;
+  std::vector<torch::Tensor> normal_measure_;
+  std::vector<std::vector<torch::Tensor>> dependency_measure_;
   /// Distinct unit normals of the flat faces, (ndim) each, their outflow
   /// projections F_n, and per angle set their dependency inflow K_{a,n}.
   std::vector<torch::Tensor> normals_;
   std::vector<Growing> outflow_;
   std::vector<std::vector<Growing>> inflow_;
-  /// Curved faces (indices into faces_), and per direction their cached
-  /// projection D_d (bordered up to its own size).
+  /// Curved faces (indices into faces_); those projected per sign class,
+  /// with the capacity of their matrices; the others (indices into faces_),
+  /// and per direction their cached projection D_d (bordered up to its own
+  /// size).
   std::vector<size_t> curved_;
+  std::vector<FaceClasses> classes_;
+  int64_t classes_capacity_ = 0;
+  std::vector<size_t> per_direction_;
   std::vector<Growing> curved_cache_;
   /// Per angle set, the (unit, face) pairs whose inflow comes from a buffer
   /// (lagged edges, reflective faces).
@@ -147,8 +246,34 @@ protected:
     return "ttnte::sweep::ProjectedTransport::" + f;
   }
 
-  /// @brief Border D_d up to the current rank.
+  /// @brief The volume pair lists of the whole fiber and sigma_t per dof.
+  void build_volume();
+  /// @brief Gather the sources at the set's groups (source_all_) if not
+  /// yet done in this transport solve.
+  void gather_sources() const;
+  /// @brief Add direction d's buffered inflow (lagged edges, reflective
+  /// faces: data, not unknown) to out (num_groups, num_space), assembled by
+  /// the sweep kernel's buffered_inflow() as a sweep adds it.
+  void add_buffered_inflow(int64_t d, double* out) const;
+  /// @brief The trace rows of every face (FaceProjection::row0), their
+  /// gather indices and values, and the per-normal row blocks and weights.
+  void build_traces();
+  /// @brief Border D_d (the per-direction curved faces) up to the current
+  /// rank.
   void update_curved(int64_t d);
+  /// @brief Border the sign-class matrices of the curved faces with the
+  /// new columns J = [r0, r1) (traces already extended).
+  void extend_classes(int64_t r0, int64_t r1);
+  /// @return (num_groups Qf, r) a face's own traces (rows g * Qf + q).
+  torch::Tensor face_own(const FaceProjection& fp) const
+  {
+    return traces_own_.view().narrow(0, fp.row0, fp.rows);
+  }
+  /// @return (num_groups Qf, r) an INTERNAL face's upwind traces.
+  torch::Tensor face_upwind(const FaceProjection& fp) const
+  {
+    return traces_upwind_.view().narrow(0, fp.row0, fp.rows);
+  }
 
 public:
   // =================================================================
@@ -178,10 +303,12 @@ public:
   /// independent vectors gives a nonsingular one).
   torch::Tensor solve(const std::vector<int64_t>& directions) override final;
 
-  /// @brief Residuals b_d - A_d X c_d over every local unit, through the
-  /// sweep kernel (SweepSolver::transport_residual()), in parallel over
-  /// directions: O(r num_groups fiber_length) per direction to form X c_d,
-  /// plus one residual evaluation.
+  /// @brief Residuals b_d - A_d X c_d over every local unit, all directions
+  /// at once and matrix-free on the whole fiber: Y = C X (one GEMM), the
+  /// volume terms through the fiber's pair lists, the face terms through
+  /// the global traces with per-point upwind weights, b_d the sources plus
+  /// the buffered inflow (the kernel's buffered_inflow()). Equal to
+  /// SweepSolver::transport_residual() of X c_d (unless implicit_lagged).
   /// @param C (D, r) coefficients.
   /// @return (D, num_groups, fiber_length) residuals.
   /// @throws std::runtime_error On a wrong shape or a direction out of
@@ -218,11 +345,15 @@ public:
   {
     return static_cast<int64_t>(normals_.size());
   }
-  /// @return Faces projected by quadrature per direction.
+  /// @return Faces projected by quadrature (curved), per sign class or per
+  /// direction.
   int64_t num_curved_faces() const noexcept
   {
     return static_cast<int64_t>(curved_.size());
   }
+  /// @return Per curved face (in curved_ order) its number of sign classes,
+  /// or -1 if it is projected per direction.
+  std::vector<int64_t> face_classes() const;
 };
 
 } // namespace ttnte::sweep

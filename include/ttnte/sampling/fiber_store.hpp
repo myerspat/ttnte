@@ -64,6 +64,17 @@ protected:
   /// The same factors as dense upper triangular R_P for patches small enough
   /// to apply them to batches of fibers with BLAS-3 (undefined otherwise).
   std::vector<torch::Tensor> mass_dense_;
+  /// The dense factors grouped by size, applied as one batched product or
+  /// triangular solve per group (many small patches, e.g. FDG elements,
+  /// would otherwise cost one call each): (B, n, n) factors and the (B n)
+  /// fiber columns of their patches, patch by patch. Patches without a
+  /// dense factor (banded_patches_) are applied one by one.
+  struct DenseGroup {
+    torch::Tensor factors;
+    torch::Tensor columns;
+  };
+  std::vector<DenseGroup> dense_groups_;
+  std::vector<size_t> banded_patches_;
 
   /// Swept fibers (weighted): one block per sweep request, never moved, and
   /// each pair's fiber within it (null: not swept). Blocks come from

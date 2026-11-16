@@ -140,10 +140,12 @@ static void register_SweepDriver_impl(
       [](const SweepDriver& self, const std::vector<int64_t>& directions,
         const std::vector<torch::Tensor>& chunks, size_t group_set,
         bool flat_faces, bool assemble_each,
-        const std::vector<torch::Tensor>& previous, bool implicit_lagged) {
+        const std::vector<torch::Tensor>& previous, bool implicit_lagged,
+        bool sign_split, int64_t max_face_classes, double max_class_ratio) {
         using ttnte::sweep::ProjectedTransport;
         auto pt = ProjectedTransport::create(self, group_set,
-          ProjectedTransport::Options {flat_faces, implicit_lagged});
+          ProjectedTransport::Options {flat_faces, implicit_lagged, sign_split,
+            max_face_classes, max_class_ratio});
         // An earlier basis, every direction assembled on it, then dropped:
         // what a sampler does between transport solves
         if (!previous.empty()) {
@@ -168,20 +170,24 @@ static void register_SweepDriver_impl(
           b.push_back(bd);
         }
         return py::make_tuple(torch::stack(A), torch::stack(b),
-          pt->num_normals(), pt->num_curved_faces());
+          pt->num_normals(), pt->num_curved_faces(), pt->face_classes());
       },
       "Reduced systems X^T A_d X, X^T b_d of directions on a basis given in "
       "chunks (each (p, |set|, fiber_length), bordered in turn), with the "
       "current sources and lagged traces: (A (D, r, r), b (D, r), distinct "
-      "flat normals, curved faces). flat_faces=False projects every face by "
+      "flat normals, curved faces, classes per curved face). flat_faces=False "
+      "projects every face by "
       "quadrature; assemble_each=True assembles the directions after every "
       "chunk; previous: a basis projected (every direction assembled) and "
-      "reset() before the chunks; implicit_lagged: lagged edges in A, not b "
-      "(testing aid).",
+      "reset() before the chunks; implicit_lagged: lagged edges in A, not b; "
+      "sign_split / max_face_classes / max_class_ratio: curved faces per "
+      "sign class (the last returned value: classes per curved face, -1 per "
+      "direction) (testing aid).",
       py::arg("directions"), py::arg("chunks"), py::arg("group_set") = 0,
       py::arg("flat_faces") = true, py::arg("assemble_each") = false,
       py::arg("previous") = std::vector<torch::Tensor> {},
-      py::arg("implicit_lagged") = false)
+      py::arg("implicit_lagged") = false, py::arg("sign_split") = true,
+      py::arg("max_face_classes") = 64, py::arg("max_class_ratio") = 1.0)
     .def(
       "buffered_projection",
       [](const SweepDriver& self, const std::vector<int64_t>& directions,
@@ -258,10 +264,14 @@ static void register_SweepDriver_impl(
       &SweepDriver::iterative_statistics,
       "(local solves, local GMRES applications, LU fallbacks) of the "
       "ITERATIVE solver")
+    // The samplers reference the solver (sweep oracle, projected
+    // transport): a sampler handed to Python keeps its driver alive
     .def("get_galerkin", &SweepDriver::get_galerkin, py::arg("group_set") = 0,
+      py::keep_alive<0, 1>(),
       "The greedy Galerkin sampler of a group set (transport = GALERKIN): "
       "its last run's flux, history and records.")
     .def("get_cross", &SweepDriver::get_cross, py::arg("group_set") = 0,
+      py::keep_alive<0, 1>(),
       "The LayoutCross of a group set (transport = CROSS)")
     .def("get_patch_angular_flux_tt", &SweepDriver::get_patch_angular_flux_tt,
       py::arg("gid"), py::arg("group_set") = 0,

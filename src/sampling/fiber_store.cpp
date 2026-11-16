@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <numeric>
 
 namespace ttnte::sampling {
@@ -105,6 +106,23 @@ FiberStore::FiberStore(SamplingProblem problem, Weighting weighting)
         ctx("FiberStore"), "One mass band per patch is required");
     }
     weighting_.space = !mass_factors_.empty();
+    // Group the dense factors by size
+    std::map<int64_t, std::vector<size_t>> by_size;
+    for (size_t q = 0; q < mass_dense_.size(); q++) {
+      if (mass_dense_[q].defined())
+        by_size[mass_dense_[q].size(0)].push_back(q);
+      else
+        banded_patches_.push_back(q);
+    }
+    for (const auto& [n, patches] : by_size) {
+      std::vector<torch::Tensor> factors, columns;
+      for (size_t q : patches) {
+        factors.push_back(mass_dense_[q]);
+        columns.push_back(torch::arange(n, torch::kInt64) + P.patch_offsets[q]);
+      }
+      dense_groups_.push_back(
+        {torch::stack(factors).contiguous(), torch::cat(columns)});
+    }
   }
   slot_.assign(num_directions_ * num_groups_, nullptr);
 }
@@ -209,19 +227,23 @@ void FiberStore::apply_mass(double* rows, int64_t count, bool inverse) const
 {
   const int64_t Ns = num_space_;
   auto t = torch::from_blob(rows, {count, Ns}, torch::kFloat64);
-  for (size_t q = 0; q < mass_factors_.size(); q++) {
+  // Dense factors, a group of equal-size patches at once: rows are fibers,
+  // so f R^T applies R, and solving R^T on the right (R from the left on
+  // the transposed rows) applies R^{-1}
+  for (const auto& grp : dense_groups_) {
+    const int64_t B = grp.factors.size(0), n = grp.factors.size(1);
+    const auto part = t.index_select(1, grp.columns)
+                        .view({count, B, n})
+                        .transpose(0, 1); // (B, count, n)
+    const auto out = inverse ? torch::linalg_solve_triangular(grp.factors,
+                                 part.transpose(1, 2), /*upper=*/true)
+                                 .transpose(1, 2)
+                             : torch::matmul(part, grp.factors.transpose(1, 2));
+    t.index_copy_(1, grp.columns, out.transpose(0, 1).reshape({count, B * n}));
+  }
+  for (size_t q : banded_patches_) {
     const int64_t off = problem_.patch_offsets[q];
     const int64_t n = mass_factors_[q].size(0);
-    if (mass_dense_[q].defined()) {
-      // Rows are fibers: f R^T applies R, and solving R^T on the right
-      // (R from the left on the transposed rows) applies R^{-1}
-      auto part = t.narrow(1, off, n);
-      part.copy_(inverse ? torch::linalg_solve_triangular(
-                             mass_dense_[q], part.t(), /*upper=*/true)
-                             .t()
-                         : part.mm(mass_dense_[q].t()));
-      continue;
-    }
     const double* factor = mass_factors_[q].data_ptr<double>();
     for (int64_t i = 0; i < count; i++) {
       double* f = rows + i * Ns + off;
@@ -237,17 +259,20 @@ void FiberStore::apply_dual_mass(double* rows, int64_t count) const
 {
   const int64_t Ns = num_space_;
   auto t = torch::from_blob(rows, {count, Ns}, torch::kFloat64);
-  for (size_t q = 0; q < mass_factors_.size(); q++) {
+  // Dense factors by group: rows are functionals f, R^{-T} f^T = (f
+  // R^{-1})^T, solving R on the right
+  for (const auto& grp : dense_groups_) {
+    const int64_t B = grp.factors.size(0), n = grp.factors.size(1);
+    const auto part = t.index_select(1, grp.columns)
+                        .view({count, B, n})
+                        .transpose(0, 1); // (B, count, n)
+    const auto out = torch::linalg_solve_triangular(
+      grp.factors, part, /*upper=*/true, /*left=*/false);
+    t.index_copy_(1, grp.columns, out.transpose(0, 1).reshape({count, B * n}));
+  }
+  for (size_t q : banded_patches_) {
     const int64_t off = problem_.patch_offsets[q];
     const int64_t n = mass_factors_[q].size(0);
-    if (mass_dense_[q].defined()) {
-      // Rows are functionals f: R^{-T} f^T = (f R^{-1})^T, solving R on the
-      // right
-      auto part = t.narrow(1, off, n);
-      part.copy_(torch::linalg_solve_triangular(
-        mass_dense_[q], part, /*upper=*/true, /*left=*/false));
-      continue;
-    }
     // R^{-T} = L^{-1} with the band factor M = L L^T
     const double* factor = mass_factors_[q].data_ptr<double>();
     for (int64_t i = 0; i < count; i++)

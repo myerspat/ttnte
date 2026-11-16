@@ -1,5 +1,7 @@
 #include "ttnte/galerkin/greedy_galerkin.hpp"
 #include "ttnte/linalg/gram_schmidt.hpp"
+#include "ttnte/linalg/lapack.hpp"
+#include "ttnte/linalg/matrix_ops.hpp"
 #include "ttnte/utils/exception.hpp"
 #include <algorithm>
 #include <chrono>
@@ -48,6 +50,9 @@ GreedyGalerkin::GreedyGalerkin(sampling::SamplingProblem problem,
   if (!(config_.basis_rtol >= 0.0))
     throw utils::runtime_error(
       ctx("GreedyGalerkin"), "basis_rtol must be >= 0");
+  if (!(config_.svd_tol >= 0.0 && config_.svd_tol < 1.0))
+    throw utils::runtime_error(
+      ctx("GreedyGalerkin"), "svd_tol must be in [0, 1)");
   if (config_.max_iter < 0)
     throw utils::runtime_error(ctx("GreedyGalerkin"), "max_iter must be >= 0");
   if (config_.phi_old == GalerkinPhiOld::AUTO)
@@ -210,9 +215,15 @@ void GreedyGalerkin::run()
     c.clear();
   coefficients_ = torch::Tensor();
   basis_ = torch::Tensor();
+  moments_ = torch::Tensor();
+  truncated_rank_ = -1;
   history_.clear();
   run_dropped_ = 0;
   run_failures_ = 0;
+  carried_rank_ = 0;
+  if (config_.carry_basis)
+    start_from_kept_basis();
+  rhs_norm_.assign(num_directions_, std::numeric_limits<double>::quiet_NaN());
   // (3.9)'s reference: the previous run's flux (carried) or none yet
   if (config_.phi_old == GalerkinPhiOld::WITHIN_RUN)
     phi_old_ = torch::Tensor();
@@ -252,18 +263,35 @@ void GreedyGalerkin::run()
     }
 
     // Score the candidates: residuals of their reduced solutions, and their
-    // right-hand sides (residuals of zero) for the pooled scale
+    // right-hand sides (residuals of zero) for the pooled scale. A
+    // direction's right-hand side is fixed within the run (the sources and
+    // traces are), so its norm is computed once and cached
     auto tc = Clock::now();
     const auto C = op_->solve(candidates);
     timings_["solve"] += elapsed(tc);
+    std::vector<int64_t> fresh;
+    for (int64_t d : candidates)
+      if (std::isnan(rhs_norm_[d]))
+        fresh.push_back(d);
     tc = Clock::now();
     const auto R = op_->residuals(candidates, C);
-    const auto B = op_->residuals(candidates,
-      torch::zeros({static_cast<int64_t>(candidates.size()), rank_}, F64));
+    torch::Tensor B;
+    if (!fresh.empty())
+      B = op_->residuals(
+        fresh, torch::zeros({static_cast<int64_t>(fresh.size()), rank_}, F64));
     timings_["residual"] += elapsed(tc);
     tc = Clock::now();
     const auto norms = store_->residual_norms(candidates, R);
-    const auto rhs = store_->residual_norms(candidates, B);
+    if (!fresh.empty()) {
+      const auto fresh_norms = store_->residual_norms(fresh, B);
+      const double* fp = fresh_norms.data_ptr<double>();
+      for (size_t i = 0; i < fresh.size(); i++)
+        rhs_norm_[fresh[i]] = fp[i];
+    }
+    auto rhs = torch::empty({static_cast<int64_t>(candidates.size())}, F64);
+    double* rp = rhs.data_ptr<double>();
+    for (size_t i = 0; i < candidates.size(); i++)
+      rp[i] = rhs_norm_[candidates[i]];
     timings_["norm"] += elapsed(tc);
     const double worst = norms.max().item<double>();
     const double scale = rhs.square().mean().sqrt().item<double>();
@@ -316,15 +344,133 @@ void GreedyGalerkin::run()
     fill();
     timings_["fill"] += elapsed(tf);
   }
+  if (config_.svd_tol > 0.0) {
+    auto ts = Clock::now();
+    truncate(false);
+    timings_["svd"] += elapsed(ts);
+  }
+  if (config_.carry_basis) {
+    auto tk = Clock::now();
+    keep_basis();
+    timings_["carry"] += elapsed(tk);
+  }
   // The fibers are not needed once the flux is formed
   store_->release();
   seconds_ = elapsed(t0);
+}
+
+void GreedyGalerkin::compress()
+{
+  if (config_.svd_tol <= 0.0 || !config_.keep_angular_flux ||
+      !coefficients_.defined() || moments_.defined())
+    return;
+  auto ts = Clock::now();
+  truncate(true);
+  timings_["svd"] += elapsed(ts);
+}
+
+void GreedyGalerkin::truncate(bool replace)
+{
+  const int64_t r = coefficients_.size(1);
+  if (r == 0) {
+    truncated_rank_ = 0;
+    return;
+  }
+  // The coefficients on the weighted orthonormal basis X~ with the angle
+  // factor a_d: a_d C is then the flux in the norm of the stored fibers, and
+  // its SVD the best truncation in that norm (Guo & Peng: C itself, every
+  // direction weighted equally, which is weighting.angle = false)
+  linalg::lapack::SingleThreaded single;
+  const auto& aw = store_->angle_weights();
+  const auto a = torch::tensor(aw, F64).unsqueeze(1); // (N_Omega, 1)
+  const auto Cw = coefficients_ * a;
+  // The factors (linalg::truncated_svd()); the cut in svd_norm: FROBENIUS
+  // is truncated_svd()'s own (relative), NUCLEAR the tail sum of the plain
+  // singular values (truncated_svd() at delta = 0 only factors)
+  const auto max_rank = std::numeric_limits<int64_t>::max();
+  torch::Tensor P, s, Vh;
+  int64_t k = 0;
+  if (config_.svd_norm == SvdNorm::FROBENIUS) {
+    std::tie(P, s, Vh, std::ignore, std::ignore) =
+      linalg::truncated_svd(Cw, config_.svd_tol, max_rank, true);
+    k = s.size(0);
+  } else {
+    std::tie(P, s, Vh, std::ignore, std::ignore) = linalg::truncated_svd(Cw);
+    s = s.contiguous();
+    const auto tail = s.flip(0).cumsum(0).flip(0); // tail[i] = sum_{j >= i}
+    const double bound = config_.svd_tol * s.sum().item<double>();
+    const double* t = tail.data_ptr<double>();
+    k = s.size(0);
+    while (k > 0 && t[k - 1] <= bound)
+      k--;
+  }
+  truncated_rank_ = k;
+  if (!replace)
+    return;
+
+  // The paper's phi^(n,*): the moments of the untruncated fill
+  moments_ = moments();
+  coefficients_ =
+    (P.narrow(1, 0, k) * s.narrow(0, 0, k).unsqueeze(0) / a).contiguous();
+  basis_ = Vh.narrow(0, 0, k)
+             .mm(basis_.reshape({r, -1}))
+             .reshape({k, num_groups_, num_space_})
+             .contiguous();
+}
+
+void GreedyGalerkin::keep_basis()
+{
+  carry_coefficients_ = torch::Tensor();
+  carry_rows_ = torch::Tensor();
+  carry_unweighted_ = torch::Tensor();
+  if (!coefficients_.defined() || coefficients_.size(1) == 0)
+    return;
+  // Copies: the run's buffers are overwritten by the next run (and the
+  // reduced operator's basis dropped at release())
+  const int64_t r = coefficients_.size(1);
+  const auto a = torch::tensor(store_->angle_weights(), F64).unsqueeze(1);
+  carry_coefficients_ = (coefficients_ * a).contiguous();
+  carry_rows_ = basis_rows_.narrow(0, 0, r).clone();
+  carry_unweighted_ = op_->basis().reshape({r, -1}).clone();
+}
+
+void GreedyGalerkin::start_from_kept_basis()
+{
+  if (!carry_coefficients_.defined())
+    return;
+  // a_d C on the weighted orthonormal basis X~: its right singular vectors
+  // V rotate X~ into the directions that carry the last run's flux, ordered
+  // by weight. Cut at this run's tolerance in the Frobenius norm, V^T X~
+  // keeps that flux to a weighted L2 error of tol and stays orthonormal
+  linalg::lapack::SingleThreaded single;
+  const auto [U, s, Vh, delta, rest] =
+    linalg::truncated_svd(carry_coefficients_, config_.tol,
+      std::numeric_limits<int64_t>::max(), /*with_normalize=*/true);
+  const int64_t k = Vh.size(0), L = num_groups_ * num_space_;
+  // The rotated rows become X~'s first rows (capacity doubles as in
+  // orthonormalize()), and the reduced operator is bordered with all of
+  // them at once (one BLAS-3 extension; it projects the new sources too)
+  int64_t cap = basis_rows_.defined() ? basis_rows_.size(0) : 0;
+  if (cap < k) {
+    cap = std::max<int64_t>(4, cap);
+    while (cap < k)
+      cap *= 2;
+    basis_rows_ = torch::zeros({cap, L}, F64);
+  }
+  basis_rows_.narrow(0, 0, k).copy_(Vh.mm(carry_rows_));
+  auto t0 = Clock::now();
+  op_->extend(Vh.mm(carry_unweighted_).view({k, num_groups_, num_space_}));
+  timings_["project"] += elapsed(t0);
+  rank_ = k;
+  carried_rank_ = k;
 }
 
 torch::Tensor GreedyGalerkin::moments() const
 {
   if (!holds_flux())
     throw utils::runtime_error(ctx("moments"), "No flux held (run first)");
+  if (moments_.defined())
+    return moments_;
   const int64_t r = coefficients_.size(1);
   const int64_t M = harmonics_.size(1);
   if (r == 0)
@@ -354,6 +500,7 @@ void GreedyGalerkin::release()
 {
   coefficients_ = torch::Tensor();
   basis_ = torch::Tensor();
+  moments_ = torch::Tensor();
   op_->reset();
 }
 
@@ -372,6 +519,8 @@ sampling::RunRecord::Ptr GreedyGalerkin::record() const
   out->history = history_;
   out->dropped_snapshots = run_dropped_;
   out->orthogonality_failures = run_failures_;
+  out->truncated_rank = truncated_rank_;
+  out->carried_rank = carried_rank_;
   return out;
 }
 
