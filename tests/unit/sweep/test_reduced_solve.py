@@ -305,3 +305,55 @@ def test_residual_norms_reject_bad_input():
         sw.residual_norms([0], R)
     with pytest.raises(RuntimeError, match="Direction out of range"):
         sw.residual_norms([0, sw.ordinates.shape[0]], R)
+
+
+# =================================================================
+# Pair sampling (spatial_basis): one spatial basis, a system per (d, g)
+
+
+def _spatial_basis(sw, rank=5, seed=0):
+    """Swept single-group fibers and random vectors, (rank, 1, fiber_length),
+    orthonormalized (the same span): fibers of one direction in different groups are
+    nearly parallel, and the dense-solve comparison should test the projection, not the
+    conditioning of the basis."""
+    nd = sw.ordinates.shape[0]
+    fibers = sw.sweep_fibers([([0, nd // 3], [0, 1])]).reshape(-1, sw.fiber_length)
+    gen = torch.Generator().manual_seed(seed)
+    noise = torch.randn(rank - fibers.shape[0], sw.fiber_length, generator=gen)
+    Q = torch.linalg.qr(torch.cat([fibers, noise]).t())[0]
+    return Q.t().contiguous().unsqueeze(1)
+
+
+def _units(sw):
+    return [d * G + g for d in range(sw.ordinates.shape[0]) for g in range(G)]
+
+
+def test_pairs_match_transport_residual(case):
+    """With spatial_basis the residual of unit d G + g is the kernel's residual of group
+    g alone, for the flux X c_u (group g's sigma_t, sources and buffered inflow; the
+    shared streaming and faces)."""
+    sw, _, _, _ = case
+    X = _spatial_basis(sw)
+    units = _units(sw)
+    C = torch.randn(len(units), X.shape[0], generator=torch.Generator().manual_seed(5))
+    R = sw.galerkin_residuals(units, [X], C, spatial_basis=True)
+    assert R.shape == (len(units), 1, sw.fiber_length)
+    for i, u in enumerate(units):
+        d, g = divmod(u, G)
+        psi = torch.einsum("j,jn->n", C[i], X[:, 0]).unsqueeze(0)
+        assert _rel(R[i], sw.transport_residual(d, [g], psi)) < 1e-13
+
+
+def test_pairs_solve_matches_dense_solve(case):
+    """Pair solves (the basis bordered in chunks) equal dense solves of the projected
+    pair systems, and their residuals are orthogonal to the spatial basis."""
+    sw, _, _, _ = case
+    X = _spatial_basis(sw)
+    units = _units(sw)
+    A, b, _, _, _ = sw.projected_system(units, [X], spatial_basis=True)
+    C = sw.galerkin_solve(units, [X[:2], X[2:]], spatial_basis=True)
+    assert C.shape == (len(units), X.shape[0])
+    assert _rel(C, torch.linalg.solve(A, b)) < 1e-12
+    R = sw.galerkin_residuals(units, [X], C, spatial_basis=True)
+    XtR = torch.einsum("jn,un->uj", X[:, 0], R[:, 0])
+    assert (XtR.norm() / b.norm()).item() < 1e-11

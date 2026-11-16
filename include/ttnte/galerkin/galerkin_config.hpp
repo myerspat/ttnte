@@ -32,6 +32,17 @@ enum class GalerkinPhiOld : uint8_t {
   WITHIN_RUN,
 };
 
+/// @brief What one greedy sample is.
+enum class GalerkinSample : uint8_t {
+  /// A direction swept over every group of the set; basis vectors span space
+  /// x energy, one reduced system per direction (Guo & Peng's multigroup).
+  DIRECTION,
+  /// A (direction, group) pair: a spatial basis shared by the groups, one
+  /// reduced system per pair (ours, a labelled ablation: "Guo + energy
+  /// sampling"). The same as DIRECTION with one group.
+  PAIR,
+};
+
 /// @brief The norm of the discarded singular values in the svd_tol cut,
 /// relative to the same norm of all of them.
 enum class SvdNorm : uint8_t {
@@ -53,6 +64,9 @@ struct GalerkinConfig {
   int64_t per_iter = 1;
   /// Random unswept candidates scored per iteration (q > p).
   int64_t candidates = 8;
+  /// The sampling unit (directions or pairs: per_iter, candidates and the
+  /// start count units).
+  GalerkinSample sample = GalerkinSample::DIRECTION;
   /// First snapshots.
   GalerkinStart start = GalerkinStart::RANDOM;
   /// Relative accuracy of a run: the residual test (3.7) is

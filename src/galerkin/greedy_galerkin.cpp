@@ -66,20 +66,27 @@ GreedyGalerkin::GreedyGalerkin(sampling::SamplingProblem problem,
   num_directions_ = op_->num_directions();
   num_groups_ = store_->problem().num_groups;
   num_space_ = store_->problem().num_space;
+  num_units_ = op_->num_units();
+  basis_groups_ = op_->basis_groups();
   if (weights_.size(0) != num_directions_ ||
       harmonics_.size(0) != num_directions_)
     throw utils::runtime_error(ctx("GreedyGalerkin"),
       "The problem's and the operator's directions differ");
-  swept_.assign(static_cast<size_t>(num_directions_), 0);
-  coordinates_.resize(static_cast<size_t>(num_directions_));
+  if (num_units_ !=
+        (pairs() ? num_directions_ * num_groups_ : num_directions_) ||
+      basis_groups_ != (pairs() ? 1 : num_groups_))
+    throw utils::runtime_error(ctx("GreedyGalerkin"),
+      "The operator's sampling unit differs from the configured sample");
+  swept_.assign(static_cast<size_t>(num_units_), 0);
+  coordinates_.resize(static_cast<size_t>(num_units_));
 }
 
 std::vector<int64_t> GreedyGalerkin::draw(int64_t n)
 {
   std::vector<int64_t> pool;
-  for (int64_t d = 0; d < num_directions_; d++)
-    if (!swept_[d])
-      pool.push_back(d);
+  for (int64_t u = 0; u < num_units_; u++)
+    if (!swept_[u])
+      pool.push_back(u);
   const int64_t k = std::min<int64_t>(n, static_cast<int64_t>(pool.size()));
   // Partial Fisher-Yates: the first k of a uniform random permutation
   for (int64_t i = 0; i < k; i++) {
@@ -91,6 +98,15 @@ std::vector<int64_t> GreedyGalerkin::draw(int64_t n)
   return pool;
 }
 
+torch::Tensor GreedyGalerkin::unit_weights() const
+{
+  const auto a = torch::tensor(store_->angle_weights(), F64); // (N_Omega)
+  if (!pairs())
+    return a;
+  const auto e = torch::tensor(store_->energy_weights(), F64); // (G)
+  return (a.unsqueeze(1) * e.unsqueeze(0)).reshape({-1});      // u = d G + g
+}
+
 std::vector<double> GreedyGalerkin::orthonormalize(torch::Tensor snapshot)
 {
   // MGS2-A (Alg. 3.2) of one snapshot against the rank_ rows of X~, with
@@ -99,7 +115,7 @@ std::vector<double> GreedyGalerkin::orthonormalize(torch::Tensor snapshot)
   // coordinates but appends no vector, since its remainder would be
   // rounding noise (past the space's dimension, a dependent vector and a
   // singular reduced matrix)
-  const int64_t L = num_groups_ * num_space_;
+  const int64_t L = basis_groups_ * num_space_;
   const auto X = basis_rows_.defined() ? basis_rows_.narrow(0, 0, rank_)
                                        : torch::empty({0, L}, F64);
   linalg::MGS2Options options;
@@ -132,45 +148,58 @@ std::vector<double> GreedyGalerkin::orthonormalize(torch::Tensor snapshot)
 }
 
 void GreedyGalerkin::sample(
-  const std::vector<int64_t>& directions, const char* phase)
+  const std::vector<int64_t>& units, const char* phase)
 {
-  const int64_t G = num_groups_, Ns = num_space_;
-  std::vector<int64_t> pairs;
-  for (int64_t d : directions)
-    for (int64_t g = 0; g < G; g++)
-      pairs.push_back(d * G + g);
-  store_->ensure(pairs, phase);
+  const int64_t G = num_groups_, Ns = num_space_, Gb = basis_groups_;
+  // The fibers: every group of each direction, or each pair itself (the
+  // store's pair index is the unit, d G + g)
+  std::vector<int64_t> fibers;
+  for (int64_t u : units)
+    if (pairs())
+      fibers.push_back(u);
+    else
+      for (int64_t g = 0; g < G; g++)
+        fibers.push_back(u * G + g);
+  store_->ensure(fibers, phase);
 
   // Snapshots: the stored fibers a_d e_g R_P psi_{d,g} without the angle
-  // factor a_d. The span would not care, but a swept direction's MGS
-  // coordinates become its row of C (Remark 3.3), so they must reproduce
-  // e_g R_P psi_{d,g} itself; the angle factor enters only the residual
-  // norms. a_d is the store's own factor (1 with angle weighting off), so
-  // this undoes exactly what the store applied. Orthonormalized in turn
-  // (each new vector orthogonalizes the next, as in Alg. 3.2)
+  // factor a_d (and for a pair without e_g too: a spatial basis). The span
+  // would not care, but a swept unit's MGS coordinates become its row of C
+  // (Remark 3.3), so they must reproduce the basis' own weighting of psi;
+  // the removed factors enter only the residual norms. They are the store's
+  // own (1 where disabled), so this undoes exactly what the store applied.
+  // Orthonormalized in turn (each new vector orthogonalizes the next, as in
+  // Alg. 3.2)
   auto t0 = Clock::now();
   const int64_t r0 = rank_;
-  const auto& angle = store_->angle_weights();
-  for (int64_t d : directions) {
-    auto psi = torch::empty({G * Ns}, F64);
+  const auto w = unit_weights();
+  const double* wu = w.data_ptr<double>();
+  for (int64_t u : units) {
+    auto psi = torch::empty({Gb * Ns}, F64);
     double* p = psi.data_ptr<double>();
-    for (int64_t g = 0; g < G; g++)
-      std::copy_n(store_->fiber(d * G + g), Ns, p + g * Ns);
-    psi /= angle[d];
-    coordinates_[d] = orthonormalize(psi);
-    swept_[d] = 1;
+    if (pairs())
+      std::copy_n(store_->fiber(u), Ns, p);
+    else
+      for (int64_t g = 0; g < G; g++)
+        std::copy_n(store_->fiber(u * G + g), Ns, p + g * Ns);
+    psi /= wu[u];
+    coordinates_[u] = orthonormalize(psi);
+    swept_[u] = 1;
   }
   timings_["orth"] += elapsed(t0);
 
-  // The new rows, unweighted (R_P^{-1}, 1 / e_g) for the reduced operator
+  // The new rows, unweighted (R_P^{-1}, and 1 / e_g for direction
+  // sampling) for the reduced operator
   t0 = Clock::now();
   const int64_t p = rank_ - r0;
   if (p > 0) {
-    auto added = basis_rows_.narrow(0, r0, p).clone().view({p, G, Ns});
-    store_->apply_mass(added.data_ptr<double>(), p * G, true);
-    const auto& energy = store_->energy_weights();
-    for (int64_t g = 0; g < G; g++)
-      added.select(1, g).div_(energy[g]);
+    auto added = basis_rows_.narrow(0, r0, p).clone().view({p, Gb, Ns});
+    store_->apply_mass(added.data_ptr<double>(), p * Gb, true);
+    if (!pairs()) {
+      const auto& energy = store_->energy_weights();
+      for (int64_t g = 0; g < G; g++)
+        added.select(1, g).div_(energy[g]);
+    }
     op_->extend(added);
   }
   timings_["project"] += elapsed(t0);
@@ -178,30 +207,37 @@ void GreedyGalerkin::sample(
 
 torch::Tensor GreedyGalerkin::fill()
 {
-  const int64_t D = num_directions_, r = rank_;
-  auto C = torch::zeros({D, r}, F64);
+  const int64_t U = num_units_, r = rank_;
+  auto C = torch::zeros({U, r}, F64);
   if (r > 0) {
     std::vector<int64_t> unswept;
-    for (int64_t d = 0; d < D; d++)
-      if (!swept_[d])
-        unswept.push_back(d);
+    for (int64_t u = 0; u < U; u++)
+      if (!swept_[u])
+        unswept.push_back(u);
     if (!unswept.empty())
       C.index_copy_(0, index_tensor(unswept), op_->solve(unswept));
-    // Swept directions: their exact fibers (Remark 3.3), zero beyond the
-    // rank at which they were added (later vectors are orthogonal to them)
+    // Swept units: their exact fibers (Remark 3.3), zero beyond the rank at
+    // which they were added (later vectors are orthogonal to them)
     double* c = C.data_ptr<double>();
-    for (int64_t d = 0; d < D; d++)
-      if (swept_[d])
-        std::copy(coordinates_[d].begin(), coordinates_[d].end(), c + d * r);
+    for (int64_t u = 0; u < U; u++)
+      if (swept_[u])
+        std::copy(coordinates_[u].begin(), coordinates_[u].end(), c + u * r);
   }
   coefficients_ = C;
   basis_ = op_->basis();
-  // Weighted scalar flux X~ a, a = C^T (w Y_0): the space and energy factors
-  // only (X~ carries no angle factor)
-  const auto a = C.t().mv(weights_ * harmonics_.select(1, 0));
   if (r == 0)
     return torch::zeros({num_groups_ * num_space_}, F64);
-  return basis_rows_.narrow(0, 0, r).t().mv(a);
+  // Weighted scalar flux, the space and energy factors only (X~ carries no
+  // angle factor): X~ a with a = C^T (w Y_0) for directions; per group g
+  // e_g X~ a_g, a_g = sum_d w_d Y_0(d) c_{d,g}, for pairs (spatial X~)
+  const auto wy = weights_ * harmonics_.select(1, 0);
+  const auto X = basis_rows_.narrow(0, 0, r);
+  if (!pairs())
+    return X.t().mv(C.t().mv(wy));
+  const auto A =
+    torch::einsum("d,dgr->gr", {wy, C.view({num_directions_, num_groups_, r})});
+  const auto e = torch::tensor(store_->energy_weights(), F64).unsqueeze(1);
+  return (A.mm(X) * e).reshape({-1});
 }
 
 void GreedyGalerkin::run()
@@ -223,7 +259,7 @@ void GreedyGalerkin::run()
   carried_rank_ = 0;
   if (config_.carry_basis)
     start_from_kept_basis();
-  rhs_norm_.assign(num_directions_, std::numeric_limits<double>::quiet_NaN());
+  rhs_norm_.assign(num_units_, std::numeric_limits<double>::quiet_NaN());
   // (3.9)'s reference: the previous run's flux (carried) or none yet
   if (config_.phi_old == GalerkinPhiOld::WITHIN_RUN)
     phi_old_ = torch::Tensor();
@@ -231,13 +267,19 @@ void GreedyGalerkin::run()
   error_ = std::numeric_limits<double>::infinity();
   const double nan = std::numeric_limits<double>::quiet_NaN();
 
-  // Start: p random directions, or the cross's initial ones
+  // Start: p random units, or the cross's initial directions (every group
+  // of each for pairs)
   std::vector<int64_t> start;
   if (config_.start == GalerkinStart::INITIAL_DIRECTIONS) {
-    for (int64_t d : initial_directions_)
-      if (d >= 0 && d < num_directions_ &&
-          std::find(start.begin(), start.end(), d) == start.end())
-        start.push_back(d);
+    for (int64_t d : initial_directions_) {
+      if (d < 0 || d >= num_directions_)
+        continue;
+      for (int64_t g = 0; g < (pairs() ? num_groups_ : 1); g++) {
+        const int64_t u = pairs() ? d * num_groups_ + g : d;
+        if (std::find(start.begin(), start.end(), u) == start.end())
+          start.push_back(u);
+      }
+    }
   }
   if (start.empty())
     start = draw(config_.per_iter);
@@ -281,9 +323,14 @@ void GreedyGalerkin::run()
         fresh, torch::zeros({static_cast<int64_t>(fresh.size()), rank_}, F64));
     timings_["residual"] += elapsed(tc);
     tc = Clock::now();
-    const auto norms = store_->residual_norms(candidates, R);
+    auto norm_of = [&](const std::vector<int64_t>& units,
+                     const torch::Tensor& residuals) {
+      return pairs() ? store_->pair_residual_norms(units, residuals)
+                     : store_->residual_norms(units, residuals);
+    };
+    const auto norms = norm_of(candidates, R);
     if (!fresh.empty()) {
-      const auto fresh_norms = store_->residual_norms(fresh, B);
+      const auto fresh_norms = norm_of(fresh, B);
       const double* fp = fresh_norms.data_ptr<double>();
       for (size_t i = 0; i < fresh.size(); i++)
         rhs_norm_[fresh[i]] = fp[i];
@@ -381,8 +428,7 @@ void GreedyGalerkin::truncate(bool replace)
   // its SVD the best truncation in that norm (Guo & Peng: C itself, every
   // direction weighted equally, which is weighting.angle = false)
   linalg::lapack::SingleThreaded single;
-  const auto& aw = store_->angle_weights();
-  const auto a = torch::tensor(aw, F64).unsqueeze(1); // (N_Omega, 1)
+  const auto a = unit_weights().unsqueeze(1); // (num_units, 1)
   const auto Cw = coefficients_ * a;
   // The factors (linalg::truncated_svd()); the cut in svd_norm: FROBENIUS
   // is truncated_svd()'s own (relative), NUCLEAR the tail sum of the plain
@@ -414,7 +460,7 @@ void GreedyGalerkin::truncate(bool replace)
     (P.narrow(1, 0, k) * s.narrow(0, 0, k).unsqueeze(0) / a).contiguous();
   basis_ = Vh.narrow(0, 0, k)
              .mm(basis_.reshape({r, -1}))
-             .reshape({k, num_groups_, num_space_})
+             .reshape({k, basis_groups_, num_space_})
              .contiguous();
 }
 
@@ -428,7 +474,7 @@ void GreedyGalerkin::keep_basis()
   // Copies: the run's buffers are overwritten by the next run (and the
   // reduced operator's basis dropped at release())
   const int64_t r = coefficients_.size(1);
-  const auto a = torch::tensor(store_->angle_weights(), F64).unsqueeze(1);
+  const auto a = unit_weights().unsqueeze(1);
   carry_coefficients_ = (coefficients_ * a).contiguous();
   carry_rows_ = basis_rows_.narrow(0, 0, r).clone();
   carry_unweighted_ = op_->basis().reshape({r, -1}).clone();
@@ -446,7 +492,7 @@ void GreedyGalerkin::start_from_kept_basis()
   const auto [U, s, Vh, delta, rest] =
     linalg::truncated_svd(carry_coefficients_, config_.tol,
       std::numeric_limits<int64_t>::max(), /*with_normalize=*/true);
-  const int64_t k = Vh.size(0), L = num_groups_ * num_space_;
+  const int64_t k = Vh.size(0), L = basis_groups_ * num_space_;
   // The rotated rows become X~'s first rows (capacity doubles as in
   // orthonormalize()), and the reduced operator is bordered with all of
   // them at once (one BLAS-3 extension; it projects the new sources too)
@@ -459,7 +505,7 @@ void GreedyGalerkin::start_from_kept_basis()
   }
   basis_rows_.narrow(0, 0, k).copy_(Vh.mm(carry_rows_));
   auto t0 = Clock::now();
-  op_->extend(Vh.mm(carry_unweighted_).view({k, num_groups_, num_space_}));
+  op_->extend(Vh.mm(carry_unweighted_).view({k, basis_groups_, num_space_}));
   timings_["project"] += elapsed(t0);
   rank_ = k;
   carried_rank_ = k;
@@ -475,9 +521,18 @@ torch::Tensor GreedyGalerkin::moments() const
   const int64_t M = harmonics_.size(1);
   if (r == 0)
     return torch::zeros({M, num_groups_, num_space_}, F64);
-  // phi_m = X (sum_d w_d Y_m(d) c_d)
-  const auto B = (harmonics_.t() * weights_.unsqueeze(0)).mm(coefficients_);
-  return B.mm(basis_.reshape({r, -1})).view({M, num_groups_, num_space_});
+  // phi_m = X (sum_d w_d Y_m(d) c_d); for pairs per group g, phi_{m,g} =
+  // X (sum_d w_d Y_m(d) c_{d,g}) with X spatial
+  const auto HW = harmonics_.t() * weights_.unsqueeze(0); // (M, N_Omega)
+  if (!pairs())
+    return HW.mm(coefficients_)
+      .mm(basis_.reshape({r, -1}))
+      .view({M, num_groups_, num_space_});
+  const auto B = torch::einsum(
+    "md,dgr->mgr", {HW, coefficients_.view({num_directions_, num_groups_, r})});
+  return B.reshape({M * num_groups_, r})
+    .mm(basis_.reshape({r, -1}))
+    .view({M, num_groups_, num_space_});
 }
 
 torch::Tensor GreedyGalerkin::evaluate(const std::vector<int64_t>& directions,
@@ -490,6 +545,17 @@ torch::Tensor GreedyGalerkin::evaluate(const std::vector<int64_t>& directions,
   const int64_t ns = static_cast<int64_t>(space.size());
   if (coefficients_.size(1) == 0)
     return torch::zeros({D, ng, ns}, F64);
+  if (pairs()) {
+    // Unit d G + g per (direction, group), on the spatial basis
+    std::vector<int64_t> units;
+    for (int64_t d : directions)
+      for (int64_t g : groups)
+        units.push_back(d * num_groups_ + g);
+    const auto C =
+      coefficients_.index_select(0, index_tensor(units)).view({D, ng, -1});
+    const auto X = basis_.select(1, 0).index_select(1, index_tensor(space));
+    return torch::einsum("dgr,rs->dgs", {C, X});
+  }
   const auto C = coefficients_.index_select(0, index_tensor(directions));
   const auto X = basis_.index_select(1, index_tensor(groups))
                    .index_select(2, index_tensor(space));

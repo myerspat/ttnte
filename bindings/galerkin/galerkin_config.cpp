@@ -14,6 +14,12 @@ void register_GalerkinConfig(py::module_& m)
     .value("INITIAL_DIRECTIONS", GalerkinStart::INITIAL_DIRECTIONS,
       "The cross's initial directions");
 
+  py::enum_<GalerkinSample>(m, "GalerkinSample")
+    .value("DIRECTION", GalerkinSample::DIRECTION,
+      "A direction over every group of the set (Guo & Peng's multigroup)")
+    .value("PAIR", GalerkinSample::PAIR,
+      "A (direction, group) pair, spatial basis (our ablation)");
+
   py::enum_<SvdNorm>(m, "SvdNorm")
     .value("FROBENIUS", SvdNorm::FROBENIUS,
       "||discarded||_F <= svd_tol ||all||_F: the truncated flux's weighted L2 "
@@ -37,6 +43,8 @@ void register_GalerkinConfig(py::module_& m)
       "Directions swept per greedy iteration (p).")
     .def_readwrite("candidates", &GalerkinConfig::candidates,
       "Random unswept candidates scored per iteration (q).")
+    .def_readwrite("sample", &GalerkinConfig::sample,
+      "Sampling unit (GalerkinSample; DIRECTION by default).")
     .def_readwrite("start", &GalerkinConfig::start)
     .def_readwrite("tol", &GalerkinConfig::tol,
       "Relative accuracy: max_j ||r_j|| <= tol RMS_j ||b_j|| over the "

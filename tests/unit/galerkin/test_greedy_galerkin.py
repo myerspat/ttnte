@@ -11,7 +11,13 @@ import pytest
 import torch
 
 from ttnte.sampling import Weighting
-from ttnte.galerkin import GalerkinConfig, GalerkinPhiOld, GalerkinStart, SvdNorm
+from ttnte.galerkin import (
+    GalerkinConfig,
+    GalerkinPhiOld,
+    GalerkinSample,
+    GalerkinStart,
+    SvdNorm,
+)
 from ttnte.sweep import InnerSolver, SweepConfig, TransportSolve
 
 from ..sweep.problems import BUILDERS, driver, quadrature, quarter_circle
@@ -457,3 +463,89 @@ def test_svd_norms():
         g.run()
         ranks[norm] = g.truncated_rank
     assert 0 < ranks[SvdNorm.FROBENIUS] <= ranks[SvdNorm.NUCLEAR]
+
+
+# =================================================================
+# Pair sampling (GalerkinSample.PAIR, our ablation)
+
+PAIR = dict(sample=GalerkinSample.PAIR)
+
+
+@pytest.fixture(scope="module")
+def circle_pairs():
+    return _sampler(lambda: quarter_circle(G, True, factor=4), 2, 8, **PAIR)
+
+
+def test_pairs_error_tracks_tolerance(circle_pairs):
+    """Pair sampling: the moment error stays below tol, fewer pairs are swept for a
+    looser tol, and a sample is one fiber (any count, not whole directions)."""
+    sw, g, ref, _ = circle_pairs
+    fibers = []
+    for tol in (1e-2, 1e-3, 1e-4):
+        g.set_tolerance(tol)
+        g.run()
+        assert g.converged
+        assert _rel(g.moments(), ref) <= tol
+        fibers.append(g.num_fibers)
+    assert fibers[0] < fibers[1] < fibers[2] < sw.ordinates.shape[0] * G
+    assert len(g.swept) == sw.ordinates.shape[0] * G
+
+
+def test_pairs_swept_are_exact_and_moments_match(circle_pairs):
+    """A swept pair keeps its own fiber; moments() is the quadrature of evaluate()."""
+    sw, g, _, fibers = circle_pairs
+    g.set_tolerance(1e-3)
+    g.run()
+    swept = [u for u, s in enumerate(g.swept) if s]
+    assert swept
+    space = list(range(sw.fiber_length))
+    for u in swept:
+        d, k = divmod(u, G)
+        assert _rel(g.evaluate([d], [k], space)[0, 0], fibers[d, k]) < 1e-11
+    psi = g.evaluate(*_all(sw))
+    ref = torch.einsum("dm,d,dgl->mgl", sw.harmonics, sw.weights, psi)
+    assert _rel(g.moments(), ref) < 1e-13
+
+
+def test_pairs_exact_once_every_pair_is_swept():
+    """1-D slab, tol at rounding: every pair is swept and the flux is the exact
+    sweep."""
+    sw, g, ref, fibers = _sampler(lambda: BUILDERS[1](G, True), 1, 2, **PAIR)
+    g.set_tolerance(1e-14)
+    g.run()
+    assert all(g.swept) and g.converged and g.error == 0.0
+    assert _rel(g.evaluate(*_all(sw)), fibers) < 1e-13
+    assert _rel(g.moments(), ref) < 1e-13
+
+
+@pytest.mark.parametrize("inner", [InnerSolver.GMRES, InnerSolver.RICHARDSON])
+@pytest.mark.parametrize("set_size", [0, 2])
+def test_pairs_fixed_source_matches_exact(inner, set_size):
+    """Whole multigroup solves with pair sampling converge to the EXACT solution."""
+    kw = dict(inner_solver=inner, group_set_size=set_size)
+    exact, _ = _phi(2, TransportSolve.EXACT, **kw)
+    phi, sw = _phi(2, TransportSolve.GALERKIN, galerkin=GalerkinConfig(**PAIR), **kw)
+    assert sw.converged
+    assert _rel(phi, exact) < 1e-4
+
+
+def test_one_group_pairs_equal_directions():
+    """With one group a pair is a direction: the same solve, sample by sample."""
+    out = {}
+    for sample in (GalerkinSample.DIRECTION, GalerkinSample.PAIR):
+        mesh, xs = BUILDERS[2](1, True)
+        sw = driver(2, mesh, xs)
+        cfg = SweepConfig(
+            tol=1e-6,
+            max_iter=500,
+            verbose=False,
+            transport=TransportSolve.GALERKIN,
+            galerkin=GalerkinConfig(sample=sample),
+        )
+        sw.setup(quadrature(2, 4), cfg)
+        sw.solve_fixed_source()
+        phi = torch.cat([sw.get_scalar_flux(i).flatten() for i in sw.local_gids])
+        out[sample] = (phi, [r.fibers for r in sw.sampling_records])
+    (phi_d, fib_d), (phi_p, fib_p) = out.values()
+    assert fib_d == fib_p
+    assert _rel(phi_p, phi_d) < 1e-12

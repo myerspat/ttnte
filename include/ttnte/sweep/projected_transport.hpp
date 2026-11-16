@@ -88,6 +88,13 @@ public:
     /// cylinder: 28 faces x 34 classes against 1024 directions, 10x the
     /// bordering).
     double max_class_ratio = 1.0;
+    /// Pair sampling (GalerkinConfig::sample = PAIR): a spatial basis, one
+    /// group per vector, and one reduced system per (direction, group),
+    /// unit u = d num_groups + g. The streaming and face projections do not
+    /// depend on the group and are shared; the collision (sigma_{t,g}), the
+    /// sources and the buffered inflow are per group. False: one system per
+    /// direction over the set's groups (Guo & Peng's multigroup).
+    bool spatial_basis = false;
   };
 
 protected:
@@ -118,10 +125,11 @@ protected:
     std::vector<uint8_t> dependency;
     /// Index into normals_ of a flat face's unit normal, -1 if curved.
     int64_t normal = -1;
-    /// Flat: (num_groups Qf) |n_q| w_q, repeated per group.
+    /// Flat: (basis_groups Qf) |n_q| w_q, repeated per basis group.
     torch::Tensor measure;
-    /// Its rows [row0, row0 + rows) of the global traces (rows = num_groups
-    /// Qf): the basis at the face's quadrature points, (R X)_{g,q}, row
+    /// Its rows [row0, row0 + rows) of the global traces (rows =
+    /// basis_groups Qf): the basis at the face's quadrature points, (R
+    /// X)_{g,q}, row
     /// row0 + g * Qf + q (traces_own_); INTERNAL: the neighbor's, (R^nb
     /// X^nb)_{g,q} (traces_upwind_, zero rows otherwise).
     int64_t row0 = 0;
@@ -161,8 +169,12 @@ protected:
   const SweepSolver& solver_;
   std::vector<int64_t> groups_;
   Options options_;
-  /// Groups of the projected set, groups_.size().
+  /// Groups of the projected set, groups_.size(); groups of a basis vector
+  /// (num_groups_, or 1 with spatial_basis); sampling units (directions, or
+  /// (direction, group) pairs).
   int64_t num_groups_ = 0;
+  int64_t basis_groups_ = 0;
+  int64_t num_units_ = 0;
   int64_t num_space_ = 0;
   int64_t ndim_ = 0;
   int64_t num_moments_ = 0;
@@ -170,12 +182,14 @@ protected:
   int64_t num_sets_ = 0;
   int64_t rank_ = 0;
 
-  /// (r, num_groups, num_space) basis (rows of storage).
+  /// (r, basis_groups, num_space) basis (rows of storage).
   Growing basis_;
-  /// (r, r) collision and per dimension streaming projections.
-  Growing collision_;
+  /// (r, r) collision projections (one; per group with spatial_basis) and
+  /// per dimension streaming projections.
+  std::vector<Growing> collision_;
   std::vector<Growing> streaming_;
-  /// (num_moments, r) X^T s_m.
+  /// X^T s_m: (num_moments, r), or (num_moments num_groups, r) per (m, g)
+  /// with spatial_basis.
   Growing source_;
   std::vector<FaceProjection> faces_;
   /// Volume operators of the whole fiber, applied in one pass: the units'
@@ -251,10 +265,26 @@ protected:
   /// @brief Gather the sources at the set's groups (source_all_) if not
   /// yet done in this transport solve.
   void gather_sources() const;
-  /// @brief Add direction d's buffered inflow (lagged edges, reflective
-  /// faces: data, not unknown) to out (num_groups, num_space), assembled by
-  /// the sweep kernel's buffered_inflow() as a sweep adds it.
-  void add_buffered_inflow(int64_t d, double* out) const;
+  /// @brief Add unit u's buffered inflow (lagged edges, reflective faces:
+  /// data, not unknown) to out (basis_groups, num_space), assembled by the
+  /// sweep kernel's buffered_inflow() as a sweep adds it.
+  void add_buffered_inflow(int64_t u, double* out) const;
+  /// @return Unit u's direction, and its group (index into groups_; -1:
+  /// every group of the set, direction sampling).
+  int64_t unit_direction(int64_t u) const noexcept
+  {
+    return options_.spatial_basis ? u / num_groups_ : u;
+  }
+  int64_t unit_group(int64_t u) const noexcept
+  {
+    return options_.spatial_basis ? u % num_groups_ : -1;
+  }
+  /// @return What a unit is, for messages ("direction" or "unit").
+  std::string unit_name(bool capital) const
+  {
+    return options_.spatial_basis ? (capital ? "Unit" : "unit")
+                                  : (capital ? "Direction" : "direction");
+  }
   /// @brief The trace rows of every face (FaceProjection::row0), their
   /// gather indices and values, and the per-normal row blocks and weights.
   void build_traces();
@@ -264,12 +294,12 @@ protected:
   /// @brief Border the sign-class matrices of the curved faces with the
   /// new columns J = [r0, r1) (traces already extended).
   void extend_classes(int64_t r0, int64_t r1);
-  /// @return (num_groups Qf, r) a face's own traces (rows g * Qf + q).
+  /// @return (basis_groups Qf, r) a face's own traces (rows g * Qf + q).
   torch::Tensor face_own(const FaceProjection& fp) const
   {
     return traces_own_.view().narrow(0, fp.row0, fp.rows);
   }
-  /// @return (num_groups Qf, r) an INTERNAL face's upwind traces.
+  /// @return (basis_groups Qf, r) an INTERNAL face's upwind traces.
   torch::Tensor face_upwind(const FaceProjection& fp) const
   {
     return traces_upwind_.view().narrow(0, fp.row0, fp.rows);
@@ -288,47 +318,47 @@ public:
   void reset() override final;
 
   /// @brief Append basis vectors and border every projection.
-  /// @param X (p, num_groups, fiber_length) new basis vectors (unweighted, the
-  /// set's groups in order).
+  /// @param X (p, basis_groups, fiber_length) new basis vectors (unweighted,
+  /// the set's groups in order, or one spatial flux with spatial_basis).
   /// @throws std::runtime_error On a wrong shape.
   void extend(const torch::Tensor& X) override final;
 
-  /// @brief Assemble and solve the reduced systems of `directions`: an LU
-  /// (LAPACK dgetrf/dgetrs, single-threaded) per direction, in parallel
-  /// over directions.
-  /// @return (D, r) coefficients c_d.
-  /// @throws std::runtime_error On a direction out of range or a singular
-  /// reduced matrix (a rank-deficient basis; with sigma_t > 0 the symmetric
-  /// part of the upwind operator is positive definite, so a basis of
-  /// independent vectors gives a nonsingular one).
-  torch::Tensor solve(const std::vector<int64_t>& directions) override final;
+  /// @brief Assemble and solve the reduced systems of `units` (distinct):
+  /// an LU (LAPACK dgetrf/dgetrs, single-threaded) per unit, in parallel
+  /// over units (the per-direction curved caches bordered first, once per
+  /// direction).
+  /// @return (U, r) coefficients c_u.
+  /// @throws std::runtime_error On a unit out of range or repeated, or a
+  /// singular reduced matrix (a rank-deficient basis; with sigma_t > 0 the
+  /// symmetric part of the upwind operator is positive definite, so a basis
+  /// of independent vectors gives a nonsingular one).
+  torch::Tensor solve(const std::vector<int64_t>& units) override final;
 
-  /// @brief Residuals b_d - A_d X c_d over every local unit, all directions
+  /// @brief Residuals b_u - A_u X c_u over every local unit, all units
   /// at once and matrix-free on the whole fiber: Y = C X (one GEMM), the
   /// volume terms through the fiber's pair lists, the face terms through
   /// the global traces with per-point upwind weights, b_d the sources plus
   /// the buffered inflow (the kernel's buffered_inflow()). Equal to
   /// SweepSolver::transport_residual() of X c_d (unless implicit_lagged).
-  /// @param C (D, r) coefficients.
-  /// @return (D, num_groups, fiber_length) residuals.
-  /// @throws std::runtime_error On a wrong shape or a direction out of
-  /// range.
-  torch::Tensor residuals(const std::vector<int64_t>& directions,
+  /// @param C (U, r) coefficients.
+  /// @return (U, basis_groups, fiber_length) residuals.
+  /// @throws std::runtime_error On a wrong shape or a unit out of range.
+  torch::Tensor residuals(const std::vector<int64_t>& units,
     const torch::Tensor& C) const override final;
 
-  /// @brief The reduced system of direction d, X^T A_d X and X^T b_d.
-  /// Directions may be assembled concurrently (each borders only its own
-  /// cache).
+  /// @brief The reduced system of unit u, X^T A_u X and X^T b_u. Units of
+  /// different directions may be assembled concurrently (each borders only
+  /// its direction's cache).
   /// @return (r, r) matrix and (r) right-hand side.
-  /// @throws std::runtime_error If d is out of range.
-  std::pair<torch::Tensor, torch::Tensor> reduced_system(int64_t d);
+  /// @throws std::runtime_error If u is out of range.
+  std::pair<torch::Tensor, torch::Tensor> reduced_system(int64_t u);
 
-  /// @brief The part of X^T b_d that is data rather than source: the
-  /// inflow of direction d read from the buffers (lagged internal edges of
-  /// d's angle set, reflective faces), projected.
-  /// @return (r) X^T (lagged and reflected inflow of direction d).
-  /// @throws std::runtime_error If d is out of range.
-  torch::Tensor buffered_rhs(int64_t d) const;
+  /// @brief The part of X^T b_u that is data rather than source: the
+  /// inflow of unit u read from the buffers (lagged internal edges of its
+  /// direction's angle set, reflective faces), projected.
+  /// @return (r) X^T (lagged and reflected inflow of unit u).
+  /// @throws std::runtime_error If u is out of range.
+  torch::Tensor buffered_rhs(int64_t u) const;
 
   // =================================================================
   // Public getters
@@ -337,7 +367,9 @@ public:
   {
     return num_directions_;
   }
-  /// @return (r, num_groups, fiber_length) the basis.
+  int64_t num_units() const noexcept override final { return num_units_; }
+  int64_t basis_groups() const noexcept override final { return basis_groups_; }
+  /// @return (r, basis_groups, fiber_length) the basis.
   torch::Tensor basis() const override final;
   const std::vector<int64_t>& groups() const noexcept { return groups_; }
   /// @return Distinct unit normals of the flat faces.

@@ -77,6 +77,10 @@ protected:
   int64_t num_directions_ = 0;
   int64_t num_groups_ = 0;
   int64_t num_space_ = 0;
+  /// Sampling units (directions, or (direction, group) pairs u = d G + g,
+  /// GalerkinConfig::sample) and the groups of a basis vector (G, or 1).
+  int64_t num_units_ = 0;
+  int64_t basis_groups_ = 0;
   /// (N_Omega) quadrature weights and (N_Omega, M) harmonics.
   torch::Tensor weights_;
   torch::Tensor harmonics_;
@@ -87,12 +91,12 @@ protected:
   /// buffer (doubling), rank_ of them in use.
   torch::Tensor basis_rows_;
   int64_t rank_ = 0;
-  /// Per direction whether it is swept, and a swept direction's MGS
-  /// coordinates in X~ (as many as the rank when it was added).
+  /// Per unit whether it is swept, and a swept unit's MGS coordinates in
+  /// X~ (as many as the rank when it was added).
   std::vector<uint8_t> swept_;
   std::vector<std::vector<double>> coordinates_;
-  /// The held flux: (N_Omega, r) coefficients of every direction on the
-  /// unweighted basis (r, G, Ns) of the reduced operator.
+  /// The held flux: (num_units, r) coefficients of every unit on the
+  /// unweighted basis (r, basis_groups, Ns) of the reduced operator.
   torch::Tensor coefficients_;
   torch::Tensor basis_;
   /// The untruncated fill's moments, when the held flux was truncated
@@ -142,9 +146,10 @@ protected:
     return "ttnte::galerkin::GreedyGalerkin::" + f;
   }
 
-  /// @brief Sweep `directions` (every group), orthonormalize their
-  /// snapshots into X~ and border the reduced operator.
-  void sample(const std::vector<int64_t>& directions, const char* phase);
+  /// @brief Sweep `units` (a direction over every group, or a pair),
+  /// orthonormalize their snapshots into X~ and border the reduced
+  /// operator.
+  void sample(const std::vector<int64_t>& units, const char* phase);
   /// @brief MGS2-A (linalg::mgs2a()) of one weighted snapshot (G Ns)
   /// against X~: append the new unit vector (unless the snapshot is zero,
   /// in the span to basis_rtol, or the basis full), count drops and
@@ -169,6 +174,12 @@ protected:
   void start_from_kept_basis();
   /// @return Up to n distinct unswept directions, uniformly at random.
   std::vector<int64_t> draw(int64_t n);
+  /// @return (num_units) the weight of each unit's coefficients in the
+  /// fibers' norm: a_d (directions; X~ carries e_g) or a_d e_g (pairs; X~
+  /// is spatial).
+  torch::Tensor unit_weights() const;
+  /// @return Whether a unit is a (direction, group) pair.
+  bool pairs() const noexcept { return config_.sample == GalerkinSample::PAIR; }
 
 public:
   // =================================================================
@@ -242,7 +253,8 @@ public:
   {
     return orthogonality_failures_;
   }
-  /// @return Whether each direction was swept in the last run.
+  /// @return Whether each unit (direction, or pair d G + g) was swept in
+  /// the last run.
   const std::vector<uint8_t>& swept() const noexcept { return swept_; }
   /// @return The last run's rank after the truncated SVD (-1: svd_tol off).
   int64_t truncated_rank() const noexcept { return truncated_rank_; }

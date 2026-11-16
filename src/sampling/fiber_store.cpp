@@ -323,4 +323,42 @@ torch::Tensor FiberStore::residual_norms(
   return norms;
 }
 
+torch::Tensor FiberStore::pair_residual_norms(
+  const std::vector<int64_t>& pairs, const torch::Tensor& residuals) const
+{
+  const int64_t U = static_cast<int64_t>(pairs.size());
+  const int64_t G = num_groups_, Ns = num_space_;
+  if (!((residuals.dim() == 2 && residuals.size(0) == U &&
+          residuals.size(1) == Ns) ||
+        (residuals.dim() == 3 && residuals.size(0) == U &&
+          residuals.size(1) == 1 && residuals.size(2) == Ns)))
+    throw utils::runtime_error(
+      ctx("pair_residual_norms"), "residuals must be (len(pairs), num_space)");
+  for (int64_t u : pairs)
+    if (u < 0 || u >= num_directions_ * G)
+      throw utils::runtime_error(
+        ctx("pair_residual_norms"), "Pair out of range");
+  // Weighted in a copy, row by row, in parallel over rows
+  auto work =
+    residuals.to(torch::kFloat64).reshape({U, Ns}).contiguous().clone();
+  double* data = work.data_ptr<double>();
+  auto norms = torch::empty({U}, torch::kFloat64);
+  double* out = norms.data_ptr<double>();
+  const int64_t grain =
+    U < SERIAL_ROWS ? std::max<int64_t>(U, 1) : row_grain(U);
+  at::parallel_for(0, U, grain, [&](int64_t r0, int64_t r1) {
+    apply_dual_mass(data + r0 * Ns, r1 - r0);
+    for (int64_t i = r0; i < r1; i++) {
+      const int64_t u = pairs[i];
+      const double scale = angle_weight_[u / G] * energy_weight_[u % G];
+      const double* f = data + i * Ns;
+      double sq = 0.0;
+      for (int64_t k = 0; k < Ns; k++)
+        sq += f[k] * f[k];
+      out[i] = scale * std::sqrt(sq);
+    }
+  });
+  return norms;
+}
+
 } // namespace ttnte::sampling

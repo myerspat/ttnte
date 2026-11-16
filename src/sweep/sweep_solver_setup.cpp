@@ -170,7 +170,10 @@ void SweepSolver::build_samplers()
   for (size_t s = 0; s < group_indices_.size(); s++) {
     if (config_.transport == TransportSolve::GALERKIN)
       samplers_.push_back(galerkin::GreedyGalerkin::create(sampling_problem(s),
-        ProjectedTransport::create(*this, s, ProjectedTransport::Options {}),
+        ProjectedTransport::create(*this, s,
+          ProjectedTransport::Options {
+            .spatial_basis =
+              galerkin_config.sample == galerkin::GalerkinSample::PAIR}),
         galerkin_config));
     else
       samplers_.push_back(

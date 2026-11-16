@@ -166,6 +166,16 @@ public:
   torch::Tensor residual_norms(const std::vector<int64_t>& directions,
     const torch::Tensor& residuals) const;
 
+  /// @brief residual_norms() for (direction, group) pairs: one residual of
+  /// one group per pair (pair index d num_groups + g), the same weighting
+  /// (R_P^{-T} in space, times a_d e_g).
+  /// @param pairs (U) pair of each residual.
+  /// @param residuals (U, num_space), or (U, 1, num_space).
+  /// @return (U) norms.
+  /// @throws std::runtime_error On a wrong shape or a pair out of range.
+  torch::Tensor pair_residual_norms(
+    const std::vector<int64_t>& pairs, const torch::Tensor& residuals) const;
+
   // =================================================================
   // Public getters
   /// @return Whether fiber `pair` is stored.

@@ -141,11 +141,12 @@ static void register_SweepDriver_impl(
         const std::vector<torch::Tensor>& chunks, size_t group_set,
         bool flat_faces, bool assemble_each,
         const std::vector<torch::Tensor>& previous, bool implicit_lagged,
-        bool sign_split, int64_t max_face_classes, double max_class_ratio) {
+        bool sign_split, int64_t max_face_classes, double max_class_ratio,
+        bool spatial_basis) {
         using ttnte::sweep::ProjectedTransport;
         auto pt = ProjectedTransport::create(self, group_set,
           ProjectedTransport::Options {flat_faces, implicit_lagged, sign_split,
-            max_face_classes, max_class_ratio});
+            max_face_classes, max_class_ratio, spatial_basis});
         // An earlier basis, every direction assembled on it, then dropped:
         // what a sampler does between transport solves
         if (!previous.empty()) {
@@ -182,12 +183,14 @@ static void register_SweepDriver_impl(
       "reset() before the chunks; implicit_lagged: lagged edges in A, not b; "
       "sign_split / max_face_classes / max_class_ratio: curved faces per "
       "sign class (the last returned value: classes per curved face, -1 per "
-      "direction) (testing aid).",
+      "direction); spatial_basis: pair sampling, `directions` are then units "
+      "d |set| + g and the chunks (p, 1, fiber_length) (testing aid).",
       py::arg("directions"), py::arg("chunks"), py::arg("group_set") = 0,
       py::arg("flat_faces") = true, py::arg("assemble_each") = false,
       py::arg("previous") = std::vector<torch::Tensor> {},
       py::arg("implicit_lagged") = false, py::arg("sign_split") = true,
-      py::arg("max_face_classes") = 64, py::arg("max_class_ratio") = 1.0)
+      py::arg("max_face_classes") = 64, py::arg("max_class_ratio") = 1.0,
+      py::arg("spatial_basis") = false)
     .def(
       "buffered_projection",
       [](const SweepDriver& self, const std::vector<int64_t>& directions,
@@ -207,34 +210,37 @@ static void register_SweepDriver_impl(
     .def(
       "galerkin_solve",
       [](const SweepDriver& self, const std::vector<int64_t>& directions,
-        const std::vector<torch::Tensor>& chunks, size_t group_set) {
+        const std::vector<torch::Tensor>& chunks, size_t group_set,
+        bool spatial_basis) {
         using ttnte::sweep::ProjectedTransport;
-        auto pt = ProjectedTransport::create(
-          self, group_set, ProjectedTransport::Options {});
+        auto pt = ProjectedTransport::create(self, group_set,
+          ProjectedTransport::Options {.spatial_basis = spatial_basis});
         for (const auto& X : chunks)
           pt->extend(X.to(torch::kFloat64).contiguous());
         return pt->solve(directions);
       },
-      "Reduced coefficients C (D, r) of directions on a basis given in "
-      "chunks (ProjectedTransport::solve, parallel over directions on "
-      "torch's threads; testing aid).",
-      py::arg("directions"), py::arg("chunks"), py::arg("group_set") = 0)
+      "Reduced coefficients C (D, r) of directions (units with "
+      "spatial_basis) on a basis given in chunks (ProjectedTransport::solve, "
+      "parallel over units on torch's threads; testing aid).",
+      py::arg("directions"), py::arg("chunks"), py::arg("group_set") = 0,
+      py::arg("spatial_basis") = false)
     .def(
       "galerkin_residuals",
       [](const SweepDriver& self, const std::vector<int64_t>& directions,
         const std::vector<torch::Tensor>& chunks, const torch::Tensor& C,
-        size_t group_set) {
+        size_t group_set, bool spatial_basis) {
         using ttnte::sweep::ProjectedTransport;
-        auto pt = ProjectedTransport::create(
-          self, group_set, ProjectedTransport::Options {});
+        auto pt = ProjectedTransport::create(self, group_set,
+          ProjectedTransport::Options {.spatial_basis = spatial_basis});
         for (const auto& X : chunks)
           pt->extend(X.to(torch::kFloat64).contiguous());
         return pt->residuals(directions, C);
       },
       "Residuals b_d - A_d X c_d (D, |set|, fiber_length) of coefficients C "
-      "(D, r) on a basis given in chunks (testing aid).",
+      "(D, r) on a basis given in chunks; with spatial_basis per unit d |set| "
+      "+ g, (U, 1, fiber_length) (testing aid).",
       py::arg("directions"), py::arg("chunks"), py::arg("C"),
-      py::arg("group_set") = 0)
+      py::arg("group_set") = 0, py::arg("spatial_basis") = false)
     .def(
       "residual_norms",
       [](SweepDriver& self, const std::vector<int64_t>& directions,
