@@ -98,6 +98,25 @@ def test_lebesgue_constant():
     assert value == pytest.approx(ref, rel=1e-12) and value >= 1.0
 
 
+def test_weighted_lebesgue_constant():
+    """With weights: the norm of the interpolation projector in ||W^1/2 g||."""
+    gen = torch.Generator().manual_seed(8)
+    n, r = 50, 5
+    V = torch.randn(n, r, dtype=torch.float64, generator=gen)
+    w = torch.rand(n, dtype=torch.float64, generator=gen) + 0.05
+    I = qdeim_select(torch.linalg.qr(V)[0])
+    P = torch.zeros(n, n, dtype=torch.float64)
+    P[:, I] = V @ torch.linalg.inv(V[I])
+    s = w.sqrt()
+    ref = torch.linalg.matrix_norm(s[:, None] * P / s[None, :], 2).item()
+    value = lebesgue_constant(V, I, w)
+    assert value == pytest.approx(ref, rel=1e-10) and value >= 1.0
+    # uniform weights: the unweighted constant
+    assert lebesgue_constant(V, I, torch.full((n,), 0.3, dtype=torch.float64)) == (
+        pytest.approx(lebesgue_constant(V, I), rel=1e-12)
+    )
+
+
 @pytest.mark.parametrize(
     "call, match",
     [
@@ -108,6 +127,12 @@ def test_lebesgue_constant():
                 torch.ones(3, 2, dtype=torch.float64), torch.tensor([1.0, 0.0, 1.0])
             ),
             "positive",
+        ),
+        (
+            lambda: lebesgue_constant(
+                torch.eye(3, 2, dtype=torch.float64), [0, 1], torch.ones(2)
+            ),
+            "w must be",
         ),
     ],
 )

@@ -3,6 +3,7 @@
 #include "ttnte/galerkin/reduced_operator.hpp"
 #include "ttnte/sweep/sweep_driver.hpp"
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <torch/extension.h>
@@ -50,6 +51,12 @@ namespace ttnte::sweep {
 /// The sources and lagged traces are read at extend() and reduced_system(),
 /// so a basis belongs to one transport solve (reset() between solves).
 ///
+/// With Options::scattering it also projects the within-set scattering
+/// S_l (S_l x)_g = sum_{g' in set} sigma_{s,l,u}(g <- g') M_u x_{g'} per
+/// Legendre order, K_l = X^T S_l X, and solves Han et al. (2026)'s angular
+/// Galerkin problem (angular_galerkin(): eq. 3.4, every direction coupled
+/// through the reduced scattering moments).
+///
 /// solve() and residuals() complete the galerkin::ReducedOperator: per
 /// direction an LU of the r x r system (LAPACK, in parallel over
 /// directions), and the residuals of X c_d for a batch of directions,
@@ -95,6 +102,12 @@ public:
     /// sources and the buffered inflow are per group. False: one system per
     /// direction over the set's groups (Guo & Peng's multigroup).
     bool spatial_basis = false;
+    /// Also project the within-set scattering, K_l = X^T S_l X per Legendre
+    /// order (bordered with the volume terms in extend()), for
+    /// project_scattering() and angular_galerkin() (Han et al. 2026's
+    /// angular update). Off: extend() costs as before. Direction sampling
+    /// only.
+    bool scattering = false;
   };
 
 protected:
@@ -247,6 +260,16 @@ protected:
   /// Per angle set, the (unit, face) pairs whose inflow comes from a buffer
   /// (lagged edges, reflective faces).
   std::vector<std::vector<std::pair<size_t, size_t>>> buffered_;
+  /// Options::scattering: Legendre orders L (the solver's), the order of
+  /// each moment, per local unit the within-set transfer (U, L, G, G)
+  /// (rows the destination group, the set's groups only), whether every
+  /// unit's is symmetric (then S_l is, and K_l needs no new rows), and the
+  /// projections K_l (r, r).
+  int64_t num_orders_ = 0;
+  std::vector<int64_t> moment_order_;
+  torch::Tensor scatter_xs_;
+  bool scatter_symmetric_ = true;
+  std::vector<Growing> scatter_;
 
   // =================================================================
   // Protected constructors
@@ -285,6 +308,21 @@ protected:
     return options_.spatial_basis ? (capital ? "Unit" : "unit")
                                   : (capital ? "Direction" : "direction");
   }
+  /// @brief Add the within-set transfer of order l to out (G, Ns), dof by
+  /// dof: out_g += sum_g' sigma_{s,l,u}(g <- g') y_g' (transpose: sigma(g'
+  /// <- g)), y already multiplied by the mass matrix (sigma is constant on a
+  /// unit, so it commutes with M_u).
+  void add_transfer(
+    const double* y, int64_t l, bool transpose, double* out) const;
+  /// @brief Assemble and LU-factor the reduced systems of `units`, in
+  /// parallel over units, and call fn(i, lu, ipiv, b) for units[i] (lu the
+  /// row-major factors for linalg::dense::lu_solve(), b its X^T b_u). The
+  /// per-direction curved caches are bordered first, once per direction.
+  /// @throws std::runtime_error On a unit out of range or repeated, or a
+  /// singular reduced matrix (named by `caller`).
+  void factor_units(const std::vector<int64_t>& units, const char* caller,
+    const std::function<void(
+      int64_t, const double*, const int64_t*, const torch::Tensor&)>& fn);
   /// @brief The trace rows of every face (FaceProjection::row0), their
   /// gather indices and values, and the per-normal row blocks and weights.
   void build_traces();
@@ -353,6 +391,49 @@ public:
   /// @throws std::runtime_error If u is out of range.
   std::pair<torch::Tensor, torch::Tensor> reduced_system(int64_t u);
 
+  /// @brief The solver's current flux moments at the set's groups, (M, G,
+  /// Ns) in the fiber layout: during a transport solve under source
+  /// iteration, the moments that made its within-set scattering source.
+  torch::Tensor solver_moments() const;
+
+  /// @brief X^T s_m, the projected source moments of the running transport
+  /// solve (scattering included), (M, r). Direction sampling.
+  torch::Tensor source_projection() const;
+
+  /// @brief Projected within-set scattering of a flux: row m is X^T S_{l(m)}
+  /// phi_m (zero for l(m) >= L). Options::scattering.
+  /// @param phi (M, G, Ns) moments at the set's groups, fiber layout.
+  /// @return (M, r).
+  /// @throws std::runtime_error Without Options::scattering, or on a wrong
+  /// shape.
+  torch::Tensor project_scattering(const torch::Tensor& phi) const;
+
+  /// @return (r, r) K_l = X^T S_l X. Options::scattering.
+  /// @throws std::runtime_error Without it, or if l is out of range.
+  torch::Tensor scattering(int64_t l) const;
+
+  /// @brief Han et al. (2026)'s angular Galerkin problem (eq. 3.4, with
+  /// angular moments): the flux psi_d = X L_d of every direction, coupled
+  /// through its own within-set scattering,
+  ///   A_d L_d - sum_m Y_m(d) K_{l(m)} Lam_m = f_d,
+  ///   Lam_m = sum_d w_d Y_m(d) L_d,
+  ///   f_d = sum_m Y_m(d) F_m + X^T (buffered inflow of d),
+  /// with A_d = X^T L_d X the reduced transport matrix. Eliminating L_d,
+  ///   (I - T) Lam = sum_d w_d Y(d) (x) A_d^{-1} f_d,
+  ///   T_{m,m'} = [sum_d w_d Y_m(d) Y_m'(d) A_d^{-1}] K_{l(m')},
+  /// one (M r)-system; then L_d = A_d^{-1} (f_d + sum_m Y_m(d) K_{l(m)}
+  /// Lam_m). Two passes over the directions (an LU each; the first also
+  /// forms A_d^{-1}), in parallel over directions in fixed blocks, so the
+  /// result does not depend on the thread count.
+  /// @param F (M, r) the fixed source moments, projected: X^T of the source
+  /// without the within-set scattering (e.g. source_projection() -
+  /// project_scattering(solver_moments())).
+  /// @return L (D, r) and Lam (M, r).
+  /// @throws std::runtime_error Without Options::scattering, on a wrong
+  /// shape, or a singular system.
+  std::pair<torch::Tensor, torch::Tensor> angular_galerkin(
+    const torch::Tensor& F);
+
   /// @brief The part of X^T b_u that is data rather than source: the
   /// inflow of unit u read from the buffers (lagged internal edges of its
   /// direction's angle set, reflective faces), projected.
@@ -372,6 +453,9 @@ public:
   /// @return (r, basis_groups, fiber_length) the basis.
   torch::Tensor basis() const override final;
   const std::vector<int64_t>& groups() const noexcept { return groups_; }
+  /// @return Legendre orders of the projected scattering (0 without
+  /// Options::scattering).
+  int64_t num_orders() const noexcept { return num_orders_; }
   /// @return Distinct unit normals of the flat faces.
   int64_t num_normals() const noexcept
   {

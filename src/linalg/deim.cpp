@@ -85,12 +85,27 @@ std::pair<torch::Tensor, torch::Tensor> weighted_orthonormal(
   return {(Q / s).contiguous(), R.contiguous()};
 }
 
-double lebesgue_constant(const torch::Tensor& V, const std::vector<int64_t>& I)
+double lebesgue_constant(const torch::Tensor& V, const std::vector<int64_t>& I,
+  const std::optional<torch::Tensor>& w)
 {
   if (V.dim() != 2 || static_cast<int64_t>(I.size()) < V.size(1))
     throw utils::runtime_error("ttnte::linalg::lebesgue_constant",
       "V must be (n, r) and I hold at least r rows");
-  const auto Vo = std::get<0>(torch::linalg_qr(V.to(torch::kFloat64)));
+  auto Vw = V.to(torch::kFloat64);
+  if (w) {
+    // In ||g||_w = ||diag(sqrt w) g||_2 the interpolation projector
+    // P = V V(I, :)^{-1} S^T has norm ||Q(I, :)^{-1}||_2 with Q an orthonormal
+    // basis of diag(sqrt w) V: the weights of the rows I cancel
+    if (w->dim() != 1 || w->size(0) != V.size(0))
+      throw utils::runtime_error(
+        "ttnte::linalg::lebesgue_constant", "w must be (n)");
+    const auto wd = w->to(torch::kFloat64);
+    if (!(wd > 0).all().item<bool>())
+      throw utils::runtime_error(
+        "ttnte::linalg::lebesgue_constant", "Weights must be positive");
+    Vw = wd.sqrt().unsqueeze(1) * Vw;
+  }
+  const auto Vo = std::get<0>(torch::linalg_qr(Vw));
   const auto s =
     torch::linalg_svdvals(Vo.index_select(0, torch::tensor(I, torch::kInt64)));
   const double smin = s.min().item<double>();

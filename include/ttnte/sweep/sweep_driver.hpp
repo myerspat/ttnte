@@ -922,6 +922,11 @@ public:
     return patches_.at(gid_to_local_.at(gid)).disc;
   }
   const torch::Tensor& get_harmonics() const noexcept { return harmonics_; }
+  /// @return (num_moments) Legendre order of each moment.
+  const torch::Tensor& get_moment_order() const noexcept
+  {
+    return moment_order_;
+  }
   const torch::Tensor& get_ordinates() const noexcept { return omega_; }
   const torch::Tensor& get_weights() const noexcept { return weights_; }
   const std::vector<double>& get_errors() const noexcept { return errors_; }

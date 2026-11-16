@@ -104,7 +104,8 @@ void ProjectedTransport::Growing::resize(int64_t num_rows, int64_t num_cols)
 //   2. build_volume(), build_traces(): the global pair lists and traces;
 //   3. curved faces: by sign class where that pays (max_face_classes,
 //      max_class_ratio), else per direction;
-//   4. reset(): an empty basis.
+//   4. with Options::scattering, the within-set transfer of every unit;
+//   5. reset(): an empty basis.
 ProjectedTransport::ProjectedTransport(
   const SweepSolver& solver, size_t group_set, Options options)
   : solver_(solver), options_(options)
@@ -247,7 +248,34 @@ ProjectedTransport::ProjectedTransport(
   }
   if (!per_direction_.empty())
     curved_cache_.resize(num_directions_);
-  // 4. An empty basis
+  // 4. Within-set scattering: per unit its transfer among the set's groups,
+  // (L, G, G) rows the destination, zero past a unit's own orders (the
+  // solver's L is the largest; moments of higher order get nothing)
+  if (options_.scattering) {
+    if (options_.spatial_basis)
+      throw utils::runtime_error(ctx("ProjectedTransport"),
+        "Projected scattering needs direction sampling (spatial_basis off)");
+    moment_order_ = S.moment_order_raw_;
+    num_orders_ = 1;
+    for (const auto& P : S.patches_)
+      if (P.scatter.defined())
+        num_orders_ = std::max<int64_t>(num_orders_, P.scatter.size(0));
+    const int64_t U = static_cast<int64_t>(S.patches_.size());
+    const auto group_index = torch::tensor(groups_, torch::kInt64);
+    scatter_xs_ = torch::zeros({U, num_orders_, num_groups_, num_groups_}, F64);
+    for (int64_t u = 0; u < U; u++) {
+      const auto& xs = S.patches_[u].scatter;
+      if (!xs.defined())
+        continue;
+      scatter_xs_[u]
+        .narrow(0, 0, xs.size(0))
+        .copy_(
+          xs.to(F64).index_select(1, group_index).index_select(2, group_index));
+    }
+    scatter_symmetric_ = torch::equal(scatter_xs_, scatter_xs_.transpose(2, 3));
+    scatter_.resize(num_orders_);
+  }
+  // 5. An empty basis
   reset();
 }
 
@@ -606,6 +634,8 @@ void ProjectedTransport::reset()
     C.resize(0, 0);
   for (auto& s : streaming_)
     s.resize(0, 0);
+  for (auto& K : scatter_)
+    K.resize(0, 0);
   source_.resize(num_moments_ * static_cast<int64_t>(collision_.size()), 0);
   traces_own_.resize(num_trace_rows_, 0);
   if (any_internal_)
@@ -678,9 +708,17 @@ void ProjectedTransport::extend(const torch::Tensor& X)
   // block k for group k), k = Gc..Gc+ndim-1 G_i P_j, k = Gc+ndim.. G_i^T
   // P_j. Each pair (a, b) = (test, trial) adds to row a of the forward
   // products and to row b of the transposed ones
-  const int64_t K = Gc + 2 * ndim_;
+  // With Options::scattering, after them: S_l P per order (k0 + l) and,
+  // unless every transfer is symmetric, S_l^T P (k0 + L + l) for the new
+  // rows of K_l; S_l mixes the groups of M P dof by dof (add_transfer())
+  const int64_t k0 = Gc + 2 * ndim_;
+  const int64_t Ks =
+    options_.scattering ? (scatter_symmetric_ ? 1 : 2) * num_orders_ : 0;
+  const int64_t K = k0 + Ks;
   auto stack = torch::zeros({K, p, GN}, F64);
   {
+    // M P_j over every group (Options::scattering), reused per j
+    std::vector<double> mp(Ks > 0 ? static_cast<size_t>(GN) : 0);
     double* st = stack.data_ptr<double>();
     const int64_t P = volume_row_.numel();
     const int64_t* prow = volume_row_.data_ptr<int64_t>();
@@ -688,12 +726,15 @@ void ProjectedTransport::extend(const torch::Tensor& X)
     const double* mass = volume_mass_.data_ptr<double>();
     const double* grad = volume_grad_.data_ptr<double>();
     const double* sigma = sigma_.data_ptr<double>();
-    for (int64_t j = 0; j < p; j++)
+    for (int64_t j = 0; j < p; j++) {
+      std::fill(mp.begin(), mp.end(), 0.0);
       for (int64_t g = 0; g < G; g++) {
         const double* y = pv + j * GN + g * Ns;
         for (int64_t p_ = 0; p_ < P; p_++) {
           const int64_t a = prow[p_], b = pcol[p_];
           const double my = mass[p_] * y[b];
+          if (Ks > 0)
+            mp[g * Ns + a] += my;
           // Collision: block 0 at group g's rows with sigma_g, or one block
           // per group of the set on the single spatial row
           for (int64_t c = 0; c < Gc; c++) {
@@ -707,6 +748,10 @@ void ProjectedTransport::extend(const torch::Tensor& X)
           }
         }
       }
+      for (int64_t k = 0; k < Ks; k++)
+        add_transfer(mp.data(), k % num_orders_, k >= num_orders_,
+          st + ((k0 + k) * p + j) * GN);
+    }
   }
   // cols[:, k p + j] = [X P]^T stack[k][j]: the new columns of C and S_i,
   // and (transposed) the new rows of S_i
@@ -732,6 +777,17 @@ void ProjectedTransport::extend(const torch::Tensor& X)
       {Slice(), J}, cols.narrow(1, (Gc + i) * p, p));
     streaming_[i].view().index_put_(
       {J, Slice()}, cols.narrow(1, (Gc + ndim_ + i) * p, p).t());
+  }
+  // K_l: new columns X^T S_l P, new rows (S_l^T P)^T X (or the columns
+  // transposed when S_l is symmetric)
+  for (int64_t l = 0; l < (Ks > 0 ? num_orders_ : 0); l++) {
+    const auto col_K = cols.narrow(1, (k0 + l) * p, p);
+    const auto row_K = scatter_symmetric_
+                         ? col_K
+                         : cols.narrow(1, (k0 + num_orders_ + l) * p, p);
+    scatter_[l].resize(r1, r1);
+    scatter_[l].view().index_put_({Slice(), J}, col_K);
+    scatter_[l].view().index_put_({J, Slice()}, row_K.t());
   }
   source_.resize(num_moments_ * Gc, r1);
   source_.view().index_put_({Slice(), J}, col_P);
@@ -1001,26 +1057,26 @@ std::pair<torch::Tensor, torch::Tensor> ProjectedTransport::reduced_system(
   return {A, b};
 }
 
-// The reduced solutions c_d = A_d^{-1} b_d, (D, r): assembly, LU and solve
-// per direction, in parallel over directions (an LU per direction: A_d is
-// not symmetric and differs per direction).
-torch::Tensor ProjectedTransport::solve(const std::vector<int64_t>& units)
+// Assembly and LU of the reduced systems of `units`, in parallel over
+// units, handing each factored system to fn (solve(), angular_galerkin()).
+void ProjectedTransport::factor_units(const std::vector<int64_t>& units,
+  const char* caller,
+  const std::function<void(
+    int64_t, const double*, const int64_t*, const torch::Tensor&)>& fn)
 {
-  const auto& directions = units;
   const int64_t D = static_cast<int64_t>(units.size());
   const int64_t r = rank_;
   std::vector<uint8_t> seen(static_cast<size_t>(num_units_), 0);
   for (int64_t u : units) {
     if (u < 0 || u >= num_units_)
       throw utils::runtime_error(
-        ctx("solve"), unit_name(true) + " out of range");
+        ctx(caller), unit_name(true) + " out of range");
     if (seen[u]++)
       throw utils::runtime_error(
-        ctx("solve"), unit_name(true) + "s must be distinct");
+        ctx(caller), unit_name(true) + "s must be distinct");
   }
-  auto C = torch::zeros({D, r}, F64);
   if (D == 0 || r == 0)
-    return C;
+    return;
   // The per-direction curved caches first, each by one task (several units
   // can share a direction with spatial_basis): the assembly below then only
   // reads them, so units are assembled concurrently
@@ -1036,31 +1092,250 @@ torch::Tensor ProjectedTransport::solve(const std::vector<int64_t>& units)
           update_curved(dirs[i]);
       });
   }
-  double* c = C.data_ptr<double>();
-  // Per direction: assemble (r x r, row-major), LU in place, solve
+  // Per unit: assemble (r x r, row-major), LU in place, hand over
   std::vector<uint8_t> singular(static_cast<size_t>(D), 0);
   at::parallel_for(0, D, 1, [&](int64_t i0, int64_t i1) {
     std::vector<int64_t> ipiv(static_cast<size_t>(r));
     for (int64_t i = i0; i < i1; i++) {
-      auto [A, b] = reduced_system(directions[i]);
+      auto [A, b] = reduced_system(units[i]);
       A = A.contiguous();
       double* a = A.data_ptr<double>();
       if (linalg::dense::lu_factor(a, r, ipiv.data()) != 0) {
         singular[i] = 1;
         continue;
       }
-      double* x = c + i * r;
-      std::copy_n(b.contiguous().data_ptr<double>(), r, x);
-      linalg::dense::lu_solve(a, r, ipiv.data(), x);
+      fn(i, a, ipiv.data(), b.contiguous());
     }
   });
   for (int64_t i = 0; i < D; i++)
     if (singular[i])
-      throw utils::runtime_error(
-        ctx("solve"), "The reduced matrix of " + unit_name(false) + " " +
-                        std::to_string(directions[i]) +
-                        " is singular (rank-deficient basis?)");
+      throw utils::runtime_error(ctx(caller),
+        "The reduced matrix of " + unit_name(false) + " " +
+          std::to_string(units[i]) + " is singular (rank-deficient basis?)");
+}
+
+// The reduced solutions c_u = A_u^{-1} b_u, (U, r): an LU per unit (A_u is
+// not symmetric and differs per direction).
+torch::Tensor ProjectedTransport::solve(const std::vector<int64_t>& units)
+{
+  const int64_t r = rank_;
+  auto C = torch::zeros({static_cast<int64_t>(units.size()), r}, F64);
+  double* c = C.data_ptr<double>();
+  factor_units(units, "solve",
+    [&](
+      int64_t i, const double* a, const int64_t* ipiv, const torch::Tensor& b) {
+      double* x = c + i * r;
+      std::copy_n(b.data_ptr<double>(), r, x);
+      linalg::dense::lu_solve(a, r, ipiv, x);
+    });
   return C;
+}
+
+// =================================================================
+// Within-set scattering and the angular Galerkin problem (Options::scattering)
+// =================================================================
+
+// out_g += sum_g' sigma_{s,l,u}(g <- g') y_g' on every unit's dofs (y = M x:
+// sigma_s is constant on a unit, so the transfer commutes with M_u)
+void ProjectedTransport::add_transfer(
+  const double* y, int64_t l, bool transpose, double* out) const
+{
+  const auto& S = solver_;
+  const int64_t G = num_groups_, Ns = num_space_;
+  const double* xs = scatter_xs_.data_ptr<double>();
+  for (size_t u = 0; u < S.patches_.size(); u++) {
+    const int64_t off = S.fiber_offsets_[u], N = S.patches_[u].disc->num_dofs();
+    const double* T = xs + (static_cast<int64_t>(u) * num_orders_ + l) * G * G;
+    for (int64_t g = 0; g < G; g++)
+      for (int64_t gp = 0; gp < G; gp++) {
+        const double c = transpose ? T[gp * G + g] : T[g * G + gp];
+        if (c == 0.0)
+          continue;
+        const double* src = y + gp * Ns + off;
+        double* dst = out + g * Ns + off;
+        for (int64_t a = 0; a < N; a++)
+          dst[a] += c * src[a];
+      }
+  }
+}
+
+// The solver's moments at the set's groups, gathered like the sources
+torch::Tensor ProjectedTransport::solver_moments() const
+{
+  const auto& S = solver_;
+  const auto group_index = torch::tensor(groups_, torch::kInt64);
+  auto phi = torch::zeros({num_moments_, num_groups_, num_space_}, F64);
+  for (size_t u = 0; u < S.patches_.size(); u++) {
+    const auto& P = S.patches_[u];
+    phi.narrow(2, S.fiber_offsets_[u], P.disc->num_dofs())
+      .copy_(P.moments.index_select(1, group_index));
+  }
+  return phi;
+}
+
+torch::Tensor ProjectedTransport::source_projection() const
+{
+  if (options_.spatial_basis)
+    throw utils::runtime_error(
+      ctx("source_projection"), "Direction sampling only");
+  return source_.view().clone();
+}
+
+torch::Tensor ProjectedTransport::scattering(int64_t l) const
+{
+  if (!options_.scattering)
+    throw utils::runtime_error(
+      ctx("scattering"), "Built without Options::scattering");
+  if (l < 0 || l >= num_orders_)
+    throw utils::runtime_error(ctx("scattering"), "Order out of range");
+  return scatter_[l].view().clone();
+}
+
+// X^T S_{l(m)} phi_m: M phi_m through the fiber's pair lists, the transfer
+// dof by dof, then one product with the basis
+torch::Tensor ProjectedTransport::project_scattering(
+  const torch::Tensor& phi) const
+{
+  if (!options_.scattering)
+    throw utils::runtime_error(
+      ctx("project_scattering"), "Built without Options::scattering");
+  if (phi.dim() != 3 || phi.size(0) != num_moments_ ||
+      phi.size(1) != num_groups_ || phi.size(2) != num_space_)
+    throw utils::runtime_error(ctx("project_scattering"),
+      "phi must be (num_moments, |set|, fiber_length)");
+  const int64_t G = num_groups_, Ns = num_space_, GN = G * Ns;
+  const auto x = phi.to(F64).contiguous();
+  auto Sphi = torch::zeros({num_moments_, GN}, F64);
+  std::vector<double> mphi(static_cast<size_t>(GN));
+  const int64_t P = volume_row_.numel();
+  const int64_t* prow = volume_row_.data_ptr<int64_t>();
+  const int64_t* pcol = volume_col_.data_ptr<int64_t>();
+  const double* mass = volume_mass_.data_ptr<double>();
+  for (int64_t m = 0; m < num_moments_; m++) {
+    const int64_t l = moment_order_[m];
+    if (l >= num_orders_)
+      continue;
+    std::fill(mphi.begin(), mphi.end(), 0.0);
+    const double* y = x.data_ptr<double>() + m * GN;
+    for (int64_t g = 0; g < G; g++)
+      for (int64_t p_ = 0; p_ < P; p_++)
+        mphi[g * Ns + prow[p_]] += mass[p_] * y[g * Ns + pcol[p_]];
+    add_transfer(mphi.data(), l, false, Sphi.data_ptr<double>() + m * GN);
+  }
+  linalg::lapack::SingleThreaded single;
+  return Sphi.mm(basis_.view().t()); // (M, r)
+}
+
+// Han et al. (2026), eq. 3.4 with angular moments. Pass 1 forms, per
+// direction, A_d^{-1} (from its LU) and z_d = A_d^{-1} f_d, and accumulates
+//   G_{m,m'} = sum_d w_d Y_m(d) Y_m'(d) A_d^{-1}   (m <= m'),
+//   rhs_m    = sum_d w_d Y_m(d) z_d;
+// then (I - T) Lam = rhs with T_{m,m'} = G_{m,m'} K_{l(m')}; pass 2 solves
+// every direction again with the scattering of Lam added to its right-hand
+// side. Directions go in fixed blocks (assembled in parallel, then summed by
+// one product), so the sums do not depend on the thread count.
+std::pair<torch::Tensor, torch::Tensor> ProjectedTransport::angular_galerkin(
+  const torch::Tensor& F)
+{
+  if (!options_.scattering)
+    throw utils::runtime_error(
+      ctx("angular_galerkin"), "Built without Options::scattering");
+  const int64_t M = num_moments_, r = rank_, D = num_directions_;
+  if (F.dim() != 2 || F.size(0) != M || F.size(1) != r)
+    throw utils::runtime_error(
+      ctx("angular_galerkin"), "F must be (num_moments, rank)");
+  const auto& S = solver_;
+  auto L = torch::zeros({D, r}, F64);
+  auto Lam = torch::zeros({M, r}, F64);
+  if (r == 0)
+    return {L, Lam};
+  // b_u of reduced_system() holds Y(d)^T X^T s + buffered: swap the source
+  // for E (M, r) by adding Y(d)^T (E - X^T s)
+  const auto src = source_.view();
+  const auto& Y = S.harmonics_;           // (D, M)
+  const auto& wY = S.weighted_harmonics_; // (D, M)
+  // Pairs m <= m' and their per-direction coefficient w_d Y_m Y_m'
+  std::vector<std::pair<int64_t, int64_t>> pairs;
+  for (int64_t m = 0; m < M; m++)
+    for (int64_t mp = m; mp < M; mp++)
+      pairs.emplace_back(m, mp);
+  const int64_t Mp = static_cast<int64_t>(pairs.size());
+  std::vector<int64_t> pm, pmp;
+  for (const auto& [m, mp] : pairs) {
+    pm.push_back(m);
+    pmp.push_back(mp);
+  }
+  const auto coef = wY.index_select(1, torch::tensor(pm, torch::kInt64)) *
+                    Y.index_select(1, torch::tensor(pmp, torch::kInt64));
+
+  // Pass 1, in blocks of directions: Ginv (Mp, r r) holds sum w Y Y A_d^{-T}
+  // (rows of the inverse transposed, as lu_solve_many() returns them)
+  constexpr int64_t BLOCK = 64;
+  auto Gacc = torch::zeros({Mp, r * r}, F64);
+  auto Z = torch::zeros({D, r}, F64);
+  const auto E1 = (F.to(F64) - src).contiguous();
+  {
+    auto inv = torch::empty({std::min(BLOCK, D), r * r}, F64);
+    for (int64_t d0 = 0; d0 < D; d0 += BLOCK) {
+      const int64_t nb = std::min(BLOCK, D - d0);
+      std::vector<int64_t> dirs(static_cast<size_t>(nb));
+      for (int64_t i = 0; i < nb; i++)
+        dirs[i] = d0 + i;
+      double* iv = inv.data_ptr<double>();
+      double* z = Z.data_ptr<double>();
+      factor_units(dirs, "angular_galerkin",
+        [&](int64_t i, const double* a, const int64_t* ipiv,
+          const torch::Tensor& b) {
+          const int64_t d = d0 + i;
+          const auto f = (b + Y[d].matmul(E1)).contiguous();
+          std::copy_n(f.data_ptr<double>(), r, z + d * r);
+          linalg::dense::lu_solve(a, r, ipiv, z + d * r);
+          double* e = iv + i * r * r;
+          std::fill(e, e + r * r, 0.0);
+          for (int64_t k = 0; k < r; k++)
+            e[k * r + k] = 1.0;
+          linalg::dense::lu_solve_many(a, r, ipiv, e, r);
+        });
+      linalg::lapack::SingleThreaded single;
+      Gacc.addmm_(coef.narrow(0, d0, nb).t(), inv.narrow(0, 0, nb));
+    }
+  }
+  // (I - T) Lam = rhs, (M r) unknowns: block (m, m') of T is G_{m,m'}
+  // K_{l(m')}, G_{m,m'} the transpose of the accumulated A^{-T} sum
+  linalg::lapack::SingleThreaded single;
+  auto T = torch::zeros({M * r, M * r}, F64);
+  for (int64_t k = 0; k < Mp; k++) {
+    const auto [m, mp] = pairs[k];
+    const auto Gk = Gacc[k].view({r, r}).t();
+    if (moment_order_[mp] < num_orders_)
+      T.narrow(0, m * r, r)
+        .narrow(1, mp * r, r)
+        .copy_(Gk.mm(scatter_[moment_order_[mp]].view()));
+    if (m != mp && moment_order_[m] < num_orders_)
+      T.narrow(0, mp * r, r)
+        .narrow(1, m * r, r)
+        .copy_(Gk.mm(scatter_[moment_order_[m]].view()));
+  }
+  const auto rhs = wY.t().mm(Z).reshape({M * r, 1}); // sum_d w Y_m z_d
+  const auto I = torch::eye(M * r, F64);
+  Lam = torch::linalg_solve(I - T, rhs).reshape({M, r});
+  // Pass 2: L_d = A_d^{-1} (f_d + sum_m Y_m(d) K_{l(m)} Lam_m)
+  auto E2 = E1.clone();
+  for (int64_t m = 0; m < M; m++)
+    if (moment_order_[m] < num_orders_)
+      E2[m].add_(scatter_[moment_order_[m]].view().mv(Lam[m]));
+  std::vector<int64_t> all(static_cast<size_t>(D));
+  for (int64_t d = 0; d < D; d++)
+    all[d] = d;
+  double* lp = L.data_ptr<double>();
+  factor_units(all, "angular_galerkin",
+    [&](
+      int64_t i, const double* a, const int64_t* ipiv, const torch::Tensor& b) {
+      const auto f = (b + Y[i].matmul(E2)).contiguous();
+      std::copy_n(f.data_ptr<double>(), r, lp + i * r);
+      linalg::dense::lu_solve(a, r, ipiv, lp + i * r);
+    });
+  return {L, Lam};
 }
 
 // =================================================================

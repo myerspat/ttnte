@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <torch/extension.h>
 #include <utility>
 #include <vector>
@@ -38,12 +39,18 @@ std::vector<int64_t> qdeim_select(const torch::Tensor& V);
 std::pair<torch::Tensor, torch::Tensor> weighted_orthonormal(
   const torch::Tensor& L, const torch::Tensor& w);
 
-/// @brief The interpolation's Lebesgue constant ||V_o(I, :)^+||_2, V_o an
-/// orthonormal basis of span(V): the factor by which interpolation at the
-/// rows I can exceed the best approximation in span(V).
+/// @brief The interpolation's Lebesgue constant: the norm of the projector
+/// f -> V V(I, :)^{-1} f(I), the factor by which interpolation at the rows I
+/// can exceed the best approximation in span(V). Unweighted it is
+/// ||V_o(I, :)^+||_2, V_o an orthonormal basis of span(V); with weights w it
+/// is measured in ||g||_w = ||diag(sqrt w) g||_2 (quadrature-weighted, as Han
+/// et al.'s V and the moments are) and V_o spans diag(sqrt w) V.
 /// @param V (n, r) basis.
 /// @param I Selected rows (at least r).
+/// @param w Optional (n) positive weights.
 /// @return The constant (infinite if V_o(I, :) is rank deficient).
-double lebesgue_constant(const torch::Tensor& V, const std::vector<int64_t>& I);
+/// @throws std::runtime_error On mismatched shapes or a nonpositive weight.
+double lebesgue_constant(const torch::Tensor& V, const std::vector<int64_t>& I,
+  const std::optional<torch::Tensor>& w = std::nullopt);
 
 } // namespace ttnte::linalg

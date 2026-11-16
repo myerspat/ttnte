@@ -6,6 +6,7 @@
 #include "ttnte/sampling/fiber_store.hpp"
 #include "ttnte/sweep/projected_transport.hpp"
 #include <algorithm>
+#include <optional>
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -242,6 +243,47 @@ static void register_SweepDriver_impl(
       py::arg("directions"), py::arg("chunks"), py::arg("C"),
       py::arg("group_set") = 0, py::arg("spatial_basis") = false)
     .def(
+      "galerkin_scattering",
+      [](const SweepDriver& self, const std::vector<torch::Tensor>& chunks,
+        size_t group_set, std::optional<torch::Tensor> phi) {
+        using ttnte::sweep::ProjectedTransport;
+        auto pt = ProjectedTransport::create(
+          self, group_set, ProjectedTransport::Options {.scattering = true});
+        for (const auto& X : chunks)
+          pt->extend(X.to(torch::kFloat64).contiguous());
+        std::vector<torch::Tensor> K;
+        for (int64_t l = 0; l < pt->num_orders(); l++)
+          K.push_back(pt->scattering(l));
+        const auto moments = phi ? *phi : pt->solver_moments();
+        return py::make_tuple(torch::stack(K), pt->source_projection(),
+          pt->project_scattering(moments), pt->solver_moments());
+      },
+      "Projected within-set scattering on a basis given in chunks: K (L, r, "
+      "r) = X^T S_l X, the projected source X^T s (M, r), X^T S phi (M, r) "
+      "of phi (M, |set|, fiber_length) (default: the solver's moments), and "
+      "those moments (testing aid).",
+      py::arg("chunks"), py::arg("group_set") = 0, py::arg("phi") = py::none())
+    .def(
+      "galerkin_angular",
+      [](const SweepDriver& self, const std::vector<torch::Tensor>& chunks,
+        std::optional<torch::Tensor> F, size_t group_set) {
+        using ttnte::sweep::ProjectedTransport;
+        auto pt = ProjectedTransport::create(
+          self, group_set, ProjectedTransport::Options {.scattering = true});
+        for (const auto& X : chunks)
+          pt->extend(X.to(torch::kFloat64).contiguous());
+        const auto f = F ? F->to(torch::kFloat64)
+                         : pt->source_projection() -
+                             pt->project_scattering(pt->solver_moments());
+        auto [L, Lam] = pt->angular_galerkin(f);
+        return py::make_tuple(L, Lam, f);
+      },
+      "Han et al.'s angular Galerkin problem on a basis given in chunks: L "
+      "(D, r) and Lam (M, r) for the projected fixed source F (M, r) "
+      "(default: X^T s - X^T S phi of the solver's source and moments), and "
+      "that F (testing aid).",
+      py::arg("chunks"), py::arg("F") = py::none(), py::arg("group_set") = 0)
+    .def(
       "residual_norms",
       [](SweepDriver& self, const std::vector<int64_t>& directions,
         const torch::Tensor& residuals, size_t group_set,
@@ -363,6 +405,8 @@ static void register_SweepDriver_impl(
     .def_property_readonly("graph", &SweepDriver::get_graph)
     .def_property_readonly("mesh", &SweepDriver::get_mesh)
     .def_property_readonly("harmonics", &SweepDriver::get_harmonics)
+    .def_property_readonly("moment_order", &SweepDriver::get_moment_order,
+      "(num_moments) Legendre order of each moment of the harmonics.")
     .def_property_readonly("ordinates", &SweepDriver::get_ordinates)
     .def_property_readonly("weights", &SweepDriver::get_weights)
     .def_property_readonly("angular_modes", &SweepDriver::angular_modes)
