@@ -527,6 +527,17 @@ private:
         .count();
   }
 
+  /// @return Whether the samplers of group set `s` (every set: s < 0) let
+  /// the iteration stop (SampledTransport::settled(); true without
+  /// samplers).
+  bool samplers_settled(int64_t s = -1) const
+  {
+    for (size_t i = 0; i < samplers_.size(); i++)
+      if ((s < 0 || static_cast<size_t>(s) == i) && !samplers_[i]->settled())
+        return false;
+    return true;
+  }
+
   /// @brief One transport solve of group set `s` with the current sources
   /// and lagged traces: an exact sweep or a cross.
   void transport_group_set(size_t s);

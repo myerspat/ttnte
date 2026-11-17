@@ -422,8 +422,9 @@ public:
   ///   (I - T) Lam = sum_d w_d Y(d) (x) A_d^{-1} f_d,
   ///   T_{m,m'} = [sum_d w_d Y_m(d) Y_m'(d) A_d^{-1}] K_{l(m')},
   /// one (M r)-system; then L_d = A_d^{-1} (f_d + sum_m Y_m(d) K_{l(m)}
-  /// Lam_m). Two passes over the directions (an LU each; the first also
-  /// forms A_d^{-1}), in parallel over directions in fixed blocks, so the
+  /// Lam_m). One LU per direction (the first pass, which also forms
+  /// A_d^{-1}, keeps the factors: D r^2 doubles), the second pass only
+  /// solves with them; in parallel over directions in fixed blocks, so the
   /// result does not depend on the thread count.
   /// @param F (M, r) the fixed source moments, projected: X^T of the source
   /// without the within-set scattering (e.g. source_projection() -
@@ -432,7 +433,16 @@ public:
   /// @throws std::runtime_error Without Options::scattering, on a wrong
   /// shape, or a singular system.
   std::pair<torch::Tensor, torch::Tensor> angular_galerkin(
-    const torch::Tensor& F);
+    const torch::Tensor& F) override final;
+
+  /// @brief source_projection() - project_scattering(solver_moments()): the
+  /// projected source without its within-set scattering, during a
+  /// Richardson transport solve (Options::scattering).
+  /// @return (M, r).
+  torch::Tensor fixed_source() const override final
+  {
+    return source_projection() - project_scattering(solver_moments());
+  }
 
   /// @brief The part of X^T b_u that is data rather than source: the
   /// inflow of unit u read from the buffers (lagged internal edges of its

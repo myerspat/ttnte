@@ -56,6 +56,68 @@ enum class SvdNorm : uint8_t {
   NUCLEAR,
 };
 
+/// @brief How the DEIM stage picks its directions from the angular basis V.
+enum class DeimSelect : uint8_t {
+  /// Han et al.'s Alg. B.1 (linalg::deim_select): column by column, so it
+  /// depends on the order of V's columns.
+  DEIM,
+  /// Q-DEIM (linalg::qdeim_select): column-pivoted QR of V^T, invariant to
+  /// orthogonal changes of V's basis.
+  QDEIM,
+};
+
+/// @brief Han et al. (2026)'s DEIM-based source iteration (Sec. 3.2) after
+/// the greedy stage (the hybrid of their Sec. 4.2). Source iteration only:
+/// each run of the sampler is then one source iteration.
+///  - Greedy stage: ordinary runs until a run's scalar flux changes from the
+///    previous run's by at most switch_tol (and the run's own tolerance is
+///    at most switch_tol: under relaxed tolerances loose runs can agree
+///    closely while being coarse); the angular basis V is then the
+///    left singular vectors of that run's coefficients (Alg. 3.1 step 17,
+///    cut at eps_SVD = svd_tol in svd_norm, 0: every nonzero mode;
+///    quadrature-weighted orthonormal), and DEIM picks |I| = rank(V)
+///    directions I. The stage keeps that rank: its flux lies in
+///    span(Psi_I), so the greedy rank at the switch bounds its accuracy
+///    (switch late enough, i.e. switch_tol small enough).
+///  - DEIM stage, inner iterations (eq. 3.2): a run sweeps only the
+///    directions I and interpolates every other direction,
+///    psi_d = Psi_I V(I, :)^{-T} V(d, :)^T.
+///  - Once a run's flux changes by at most inner_tol (eq. 3.3: the inner
+///    source iteration converged; 1e-6 as in Han et al.'s tests), the angular
+///    update (eq. 3.4-3.5): X = orth(Psi_I), every direction solved together
+///    with its within-set scattering (ProjectedTransport::angular_galerkin), V
+///    from that solution and I reselected. As in the paper ("set phi^(n+1) =
+///    phi^(n+1,l)") the run's flux stays the interpolant: the update only
+///    supplies V and I for the next inner iterations. The run is settled
+///    when its flux changed by at most the run's tolerance from the previous
+///    update's (Sec. 3.2 (iv)); the sweep solver stops only on settled runs.
+/// Two labelled additions (ours, off by default):
+///  - galerkin_flux: the update's run holds the Galerkin solution X L
+///    instead of the interpolant (the solver's next source and the outer
+///    test then use it).
+///  - update_on_growth: an inner run whose change exceeds the previous inner
+///    run's updates at once. Interpolation amplifies the error outside
+///    span(V) by up to the Lebesgue constant, and the interpolated source
+///    iteration can diverge with strong scattering; Han et al. have no
+///    safeguard. Each run records whether its change grew either way.
+struct DeimConfig {
+  bool enabled = false;
+  /// Switch from the greedy stage when a run changes the scalar flux by at
+  /// most this (relative).
+  double switch_tol = 1e-4;
+  /// Inner convergence (eq. 3.3: relative change of the scalar flux between
+  /// runs) that triggers an angular update. Han et al. use 1e-6 (Sec. 6.3).
+  /// 0 (ours): the run's tolerance, which the solver relaxes with the outer
+  /// change, so a drifting DEIM stage loosens its own inner test.
+  double inner_tol = 1e-6;
+  DeimSelect select = DeimSelect::DEIM;
+  /// Ours (ablation): an update's run holds the Galerkin flux X L, not the
+  /// interpolant.
+  bool galerkin_flux = false;
+  /// Ours (safeguard): a growing inner change triggers the update at once.
+  bool update_on_growth = false;
+};
+
 /// @brief Options of the residual-greedy Galerkin transport solve (Guo &
 /// Peng, 2026, Alg. 3.1-3.2, multigroup by angular augmentation over a group
 /// set's groups).
@@ -128,6 +190,9 @@ struct GalerkinConfig {
   /// an empty basis. No direction counts as swept at the start (its fiber
   /// belonged to the previous sources).
   bool carry_basis = false;
+  /// Han et al.'s DEIM stage after the greedy one (source iteration only,
+  /// direction sampling; svd_tol does not compress DEIM-stage fluxes).
+  DeimConfig deim;
 };
 
 } // namespace ttnte::galerkin

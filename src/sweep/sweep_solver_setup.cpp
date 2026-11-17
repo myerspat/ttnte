@@ -167,13 +167,20 @@ void SweepSolver::build_samplers()
     galerkin_config.phi_old = config_.inner_solver == InnerSolver::RICHARDSON
                                 ? galerkin::GalerkinPhiOld::PREVIOUS_RUN
                                 : galerkin::GalerkinPhiOld::WITHIN_RUN;
+  // Han et al.'s DEIM stage is a source iteration: each run one iterate
+  const bool deim = config_.transport == TransportSolve::GALERKIN &&
+                    galerkin_config.deim.enabled;
+  if (deim && config_.inner_solver != InnerSolver::RICHARDSON)
+    throw utils::runtime_error(ctx("setup"),
+      "galerkin.deim needs the RICHARDSON inner solver (source iteration)");
   for (size_t s = 0; s < group_indices_.size(); s++) {
     if (config_.transport == TransportSolve::GALERKIN)
       samplers_.push_back(galerkin::GreedyGalerkin::create(sampling_problem(s),
         ProjectedTransport::create(*this, s,
           ProjectedTransport::Options {
             .spatial_basis =
-              galerkin_config.sample == galerkin::GalerkinSample::PAIR}),
+              galerkin_config.sample == galerkin::GalerkinSample::PAIR,
+            .scattering = deim}),
         galerkin_config));
     else
       samplers_.push_back(

@@ -536,7 +536,10 @@ int64_t SweepSolver::inner_solve(size_t s, bool jacobi)
       den = global_sum(den);
       change = den == 0.0 ? 0.0 : std::sqrt(num / den);
       report_progress(s, it + 1, change, "Richardson");
-      if (den == 0.0 || change < tol)
+      // A sampler iterating on a representation the moments do not show
+      // (Han et al.'s DEIM inner loop) holds the stop until it is settled
+      if (den == 0.0 ||
+          (change < tol && samplers_settled(static_cast<int64_t>(s))))
         break;
     }
     sampling_tol_ = tol_min;

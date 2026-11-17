@@ -52,6 +52,11 @@ public:
   /// iteration needs from it (moments, lagged traces), before it is stored
   /// or kept as the angular flux. Default: nothing.
   virtual void compress() {}
+  /// @return Whether the last run may end the within-set iteration: false
+  /// while a sampler iterates on a lagged representation the solver cannot
+  /// see (Han et al.'s DEIM inner loop before its angular update), so that
+  /// the solver does not stop on it. Default: true.
+  virtual bool settled() const { return true; }
 
   // =================================================================
   // Public getters

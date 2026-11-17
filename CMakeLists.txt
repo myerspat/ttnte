@@ -276,6 +276,18 @@ message(STATUS "  Sweep settings: axis aligned <= ${TTNTE_AXIS_ALIGNED_TOL}, "
                "quadrature match <= ${TTNTE_REFLECTION_MATCH_TOL}, "
                "${TTNTE_FIBER_TASKS_PER_THREAD} fiber tasks/thread")
 
+# Galerkin settings (src/galerkin): at the switch to Han et al.'s DEIM stage,
+# singular values at most this times the largest are numerically zero and their
+# modes dropped (the accuracy knob is GalerkinConfig.svd_tol)
+set(TTNTE_DEIM_ZERO_MODE_TOL
+    1e-14
+    CACHE STRING
+          "Relative singular value below which a DEIM mode is numerically zero")
+target_compile_definitions(
+  ttnte_static PRIVATE TTNTE_DEIM_ZERO_MODE_TOL=${TTNTE_DEIM_ZERO_MODE_TOL})
+message(STATUS "  Galerkin settings: DEIM zero modes <= "
+               "${TTNTE_DEIM_ZERO_MODE_TOL} s_max")
+
 option(TTNTE_OPENMP "Compile with OpenMP (parallel at::parallel_for)" ON)
 if(TTNTE_OPENMP)
   file(GLOB TORCH_OMP_LIBS "${TORCH_INSTALL_PREFIX}/lib/libgomp*.so*"

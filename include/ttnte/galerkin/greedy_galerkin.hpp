@@ -6,11 +6,13 @@
 #include "ttnte/sampling/sampled_transport.hpp"
 #include "ttnte/sampling/sampling_problem.hpp"
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <random>
 #include <string>
 #include <torch/extension.h>
+#include <tuple>
 #include <vector>
 
 namespace ttnte::galerkin {
@@ -35,6 +37,16 @@ namespace ttnte::galerkin {
 ///  5. sweep the p candidates with the largest residuals.
 /// Swept directions keep their exact fibers (their MGS coordinates); the
 /// rest are the reduced solutions X c_d.
+///
+/// With GalerkinConfig::deim (Han et al. 2026, Sec. 3.2 and 4.2) the runs
+/// switch, once a run changes the scalar flux by at most deim.switch_tol,
+/// to DEIM source iterations: a run sweeps only the DEIM directions I and
+/// interpolates the rest (the held flux is then the swept fibers with the
+/// interpolation coefficients V V(I, :)^{-1}), and a run whose change is
+/// within deim.inner_tol updates the angle instead: X = orth(Psi_I), every
+/// direction solved with its scattering (ReducedOperator::
+/// angular_galerkin()), V and I from that solution. Only such updates are
+/// settled() (within the run's tolerance of the previous update).
 class GreedyGalerkin : public sampling::SampledTransport {
 public:
   // =================================================================
@@ -47,6 +59,17 @@ public:
   /// scalar-flux change of its full solve (NaN when the residual test
   /// failed, or when there was no phi_old to compare with: the first full
   /// solve of a WITHIN_RUN run).
+  /// @brief What a run did.
+  enum class RunStage : uint8_t {
+    /// The greedy sampling (Guo & Peng).
+    GREEDY,
+    /// A DEIM inner source iteration: the directions I swept, the rest
+    /// interpolated.
+    DEIM_INNER,
+    /// A DEIM inner iteration followed by the angular update.
+    DEIM_UPDATE,
+  };
+
   struct IterationRecord {
     int64_t rank = 0;
     int64_t fibers = 0;
@@ -66,6 +89,21 @@ public:
     /// Basis vectors the run started from (GalerkinConfig::carry_basis;
     /// 0: an empty start).
     int64_t carried_rank = 0;
+    /// GalerkinConfig::deim: the run's stage; the relative change of its
+    /// weighted scalar flux from the previous run's (NaN: none, or deim
+    /// off); the DEIM directions it swept (0 in the greedy stage) and the
+    /// quadrature-weighted Lebesgue constant of the selection it used;
+    /// after an update, the change from the previous update (NaN: the
+    /// first) and whether the run is settled.
+    RunStage stage = RunStage::GREEDY;
+    double run_change = 0.0;
+    int64_t deim_directions = 0;
+    double lebesgue = 0.0;
+    double outer_change = 0.0;
+    bool settled = true;
+    /// The inner iteration's change grew: the update came early (our
+    /// safeguard, not part of Han et al.).
+    bool inner_diverged = false;
   };
 
 protected:
@@ -120,6 +158,27 @@ protected:
   /// (NaN: not computed yet), the residual test's pooled scale.
   std::vector<double> rhs_norm_;
 
+  /// GalerkinConfig::deim: whether the runs are in the DEIM stage; the DEIM
+  /// directions I, the interpolation coefficients V V(I, :)^{-1} (N_Omega,
+  /// |I|) and the selection's weighted Lebesgue constant; the weighted
+  /// scalar flux of the last run and of the last angular update; the last
+  /// run's stage, change, outer change and settledness; updates so far.
+  bool deim_ = false;
+  std::vector<int64_t> deim_rows_;
+  torch::Tensor deim_interp_;
+  double lebesgue_ = std::numeric_limits<double>::quiet_NaN();
+  torch::Tensor last_flux_;
+  torch::Tensor update_flux_;
+  RunStage run_stage_ = RunStage::GREEDY;
+  double run_change_ = std::numeric_limits<double>::quiet_NaN();
+  double outer_change_ = std::numeric_limits<double>::quiet_NaN();
+  bool settled_ = true;
+  int64_t updates_ = 0;
+  /// The last inner change (infinite after an update or the switch), and
+  /// whether the last run's grew from it.
+  double inner_change_ = std::numeric_limits<double>::infinity();
+  bool inner_diverged_ = false;
+
   double error_ = 0.0;
   bool converged_ = false;
   /// Over every run, and in the last run.
@@ -160,6 +219,11 @@ protected:
   /// coordinates, the others solved (coefficients_), and the weighted
   /// scalar flux they give.
   torch::Tensor fill();
+  /// @brief The SVD of angle-weighted coefficients a_d C and the rank cut
+  /// at svd_tol in svd_norm (svd_tol = 0: every singular value).
+  /// @return (P, s, Vh, k).
+  std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, int64_t> svd_cut(
+    const torch::Tensor& Cw) const;
   /// @brief The truncated SVD of the held coefficients (svd_tol): record
   /// the rank, and with `replace` the held flux becomes the truncated one
   /// (the moments kept from before).
@@ -172,6 +236,25 @@ protected:
   /// singular vectors of a_d C and cut at this run's tolerance (rows of X~,
   /// and one extend() of the reduced operator).
   void start_from_kept_basis();
+  /// @brief Reset the per-run state (empty basis, nothing swept, no held
+  /// flux).
+  void reset();
+  /// @brief The greedy stage's run (Guo & Peng, Alg. 3.1).
+  void run_greedy();
+  /// @brief A DEIM-stage run: sweep I, interpolate, and update the angle
+  /// once the inner iteration converged.
+  void run_deim();
+  /// @brief Enter the DEIM stage from the held (greedy) flux: V the left
+  /// singular vectors of a_d C, cut at the run's tolerance.
+  void enter_deim();
+  /// @brief Select the DEIM directions of an angular basis (N_Omega, k):
+  /// quadrature-weighted orthonormalized (eq. 3.5), then DEIM or Q-DEIM.
+  void select_directions(const torch::Tensor& V);
+  /// @return (|dirs|, G, Ns) the stored fibers of `dirs`, unweighted.
+  torch::Tensor unweighted_fibers(const std::vector<int64_t>& dirs) const;
+  /// @return (G Ns) the held flux's scalar flux in the basis' weighting
+  /// (space R_P and energy e_g), as fill() returns it.
+  torch::Tensor weighted_scalar_flux() const;
   /// @return Up to n distinct unswept directions, uniformly at random.
   std::vector<int64_t> draw(int64_t n);
   /// @return (num_units) the weight of each unit's coefficients in the
@@ -200,6 +283,7 @@ public:
   /// @brief With keep_angular_flux and svd_tol: the held flux becomes the
   /// truncated one (after the solver read the moments and traces).
   void compress() override final;
+  bool settled() const noexcept override final { return settled_; }
 
   // =================================================================
   // Public getters
@@ -260,6 +344,15 @@ public:
   int64_t truncated_rank() const noexcept { return truncated_rank_; }
   /// @return Basis vectors the last run started from (carry_basis).
   int64_t carried_rank() const noexcept { return carried_rank_; }
+  /// @return Whether the runs are in the DEIM stage (GalerkinConfig::deim).
+  bool in_deim_stage() const noexcept { return deim_; }
+  /// @return The DEIM directions of the next run.
+  const std::vector<int64_t>& deim_directions() const noexcept
+  {
+    return deim_rows_;
+  }
+  /// @return Angular updates so far.
+  int64_t num_updates() const noexcept { return updates_; }
 };
 
 } // namespace ttnte::galerkin

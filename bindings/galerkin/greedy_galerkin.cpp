@@ -17,6 +17,13 @@ void register_GreedyGalerkin(py::module_& m)
     .def_readonly("residual", &GreedyGalerkin::IterationRecord::residual)
     .def_readonly("phi_change", &GreedyGalerkin::IterationRecord::phi_change);
 
+  py::enum_<GreedyGalerkin::RunStage>(m, "GalerkinStage")
+    .value("GREEDY", GreedyGalerkin::RunStage::GREEDY)
+    .value("DEIM_INNER", GreedyGalerkin::RunStage::DEIM_INNER,
+      "DEIM directions swept, the rest interpolated")
+    .value("DEIM_UPDATE", GreedyGalerkin::RunStage::DEIM_UPDATE,
+      "An inner iteration followed by the angular update");
+
   py::class_<GreedyGalerkin::RunRecord, ttnte::sampling::RunRecord,
     std::shared_ptr<GreedyGalerkin::RunRecord>>(m, "GalerkinRun",
     "One Galerkin run (transport solve): the common record (a RunRecord), "
@@ -30,7 +37,25 @@ void register_GreedyGalerkin(py::module_& m)
     .def_readonly("carried_rank", &GreedyGalerkin::RunRecord::carried_rank,
       "Basis vectors the run started from (GalerkinConfig.carry_basis).")
     .def_readonly("truncated_rank", &GreedyGalerkin::RunRecord::truncated_rank,
-      "Rank after the truncated SVD (GalerkinConfig.svd_tol; -1: off).");
+      "Rank after the truncated SVD (GalerkinConfig.svd_tol; -1: off).")
+    .def_readonly(
+      "stage", &GreedyGalerkin::RunRecord::stage, "GalerkinStage of the run.")
+    .def_readonly("run_change", &GreedyGalerkin::RunRecord::run_change,
+      "Relative scalar-flux change from the previous run (deim only; NaN: "
+      "none).")
+    .def_readonly("deim_directions",
+      &GreedyGalerkin::RunRecord::deim_directions,
+      "DEIM directions swept (0 in the greedy stage).")
+    .def_readonly("lebesgue", &GreedyGalerkin::RunRecord::lebesgue,
+      "Quadrature-weighted Lebesgue constant of the current DEIM selection.")
+    .def_readonly("outer_change", &GreedyGalerkin::RunRecord::outer_change,
+      "After an angular update, its change from the previous update (NaN: "
+      "the first, or no update).")
+    .def_readonly("settled", &GreedyGalerkin::RunRecord::settled,
+      "Whether the run may end the within-set iteration.")
+    .def_readonly("inner_diverged", &GreedyGalerkin::RunRecord::inner_diverged,
+      "The DEIM inner change grew, so the update came early (our safeguard, "
+      "not Han et al.'s).");
 
   // Built by the sweep solver (TransportSolve.GALERKIN): it needs the
   // solver's projected transport operator
@@ -66,6 +91,12 @@ void register_GreedyGalerkin(py::module_& m)
     .def_property_readonly("swept", &GreedyGalerkin::swept)
     .def_property_readonly("truncated_rank", &GreedyGalerkin::truncated_rank)
     .def_property_readonly("carried_rank", &GreedyGalerkin::carried_rank)
+    .def_property_readonly("in_deim_stage", &GreedyGalerkin::in_deim_stage)
+    .def_property_readonly("deim_directions", &GreedyGalerkin::deim_directions,
+      "DEIM directions of the next run.")
+    .def_property_readonly(
+      "num_updates", &GreedyGalerkin::num_updates, "Angular updates so far.")
+    .def_property_readonly("settled", &GreedyGalerkin::settled)
     .def_property_readonly("record", &GreedyGalerkin::record,
       "The last run's record (a GalerkinRun)")
     .def_property_readonly(

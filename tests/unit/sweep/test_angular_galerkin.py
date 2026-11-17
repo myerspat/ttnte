@@ -97,6 +97,9 @@ CASES = {
         2,
     ),
     "boxes-3d": lambda: (_mid_solve(*boxes(3, G, True), 3), 3),
+    # 144 directions: more than one block of 64 (pass 1's factors are kept
+    # per direction across blocks for pass 2)
+    "many-directions": lambda: (_mid_solve(*BUILDERS[2](G, False), 2, n=6), 2),
 }
 
 

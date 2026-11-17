@@ -1,8 +1,10 @@
 #pragma once
 
+#include "ttnte/utils/exception.hpp"
 #include <cstdint>
 #include <memory>
 #include <torch/extension.h>
+#include <utility>
 #include <vector>
 
 namespace ttnte::galerkin {
@@ -52,6 +54,30 @@ public:
   /// test functions, unweighted).
   virtual torch::Tensor residuals(
     const std::vector<int64_t>& units, const torch::Tensor& C) const = 0;
+
+  /// @brief The projected fixed source of the running transport solve: X^T
+  /// of its source without the within-set scattering, per angular moment
+  /// (Han et al.'s DEIM stage). Default: unsupported.
+  /// @return (num_moments, r).
+  /// @throws std::runtime_error If the operator does not project scattering.
+  virtual torch::Tensor fixed_source() const
+  {
+    throw utils::runtime_error(
+      "ttnte::galerkin::ReducedOperator::fixed_source", "Not supported");
+  }
+
+  /// @brief Every direction's coefficients psi_d = X L_d, coupled through
+  /// the within-set scattering (Han et al. 2026, eq. 3.4), for a projected
+  /// fixed source F. Default: unsupported.
+  /// @return L (num_directions, r) and the moments' coefficients Lam (M, r).
+  /// @throws std::runtime_error If the operator does not project scattering.
+  virtual std::pair<torch::Tensor, torch::Tensor> angular_galerkin(
+    const torch::Tensor& F)
+  {
+    (void)F;
+    throw utils::runtime_error(
+      "ttnte::galerkin::ReducedOperator::angular_galerkin", "Not supported");
+  }
 
   // =================================================================
   // Public getters

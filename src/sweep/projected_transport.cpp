@@ -1230,10 +1230,10 @@ torch::Tensor ProjectedTransport::project_scattering(
 // direction, A_d^{-1} (from its LU) and z_d = A_d^{-1} f_d, and accumulates
 //   G_{m,m'} = sum_d w_d Y_m(d) Y_m'(d) A_d^{-1}   (m <= m'),
 //   rhs_m    = sum_d w_d Y_m(d) z_d;
-// then (I - T) Lam = rhs with T_{m,m'} = G_{m,m'} K_{l(m')}; pass 2 solves
-// every direction again with the scattering of Lam added to its right-hand
-// side. Directions go in fixed blocks (assembled in parallel, then summed by
-// one product), so the sums do not depend on the thread count.
+// then (I - T) Lam = rhs with T_{m,m'} = G_{m,m'} K_{l(m')}; pass 2 adds
+// A_d^{-1} of the scattering of Lam to z_d, with the LU factors pass 1 kept.
+// Directions go in fixed blocks (assembled in parallel, then summed by one
+// product), so the sums do not depend on the thread count.
 std::pair<torch::Tensor, torch::Tensor> ProjectedTransport::angular_galerkin(
   const torch::Tensor& F)
 {
@@ -1273,6 +1273,12 @@ std::pair<torch::Tensor, torch::Tensor> ProjectedTransport::angular_galerkin(
   constexpr int64_t BLOCK = 64;
   auto Gacc = torch::zeros({Mp, r * r}, F64);
   auto Z = torch::zeros({D, r}, F64);
+  // Every direction's LU and pivots, kept for pass 2 (D r^2 doubles: no
+  // second assembly and factorization)
+  auto LU = torch::empty({D, r * r}, F64);
+  auto piv = torch::empty({D, r}, torch::kInt64);
+  double* lu = LU.data_ptr<double>();
+  int64_t* pv = piv.data_ptr<int64_t>();
   const auto E1 = (F.to(F64) - src).contiguous();
   {
     auto inv = torch::empty({std::min(BLOCK, D), r * r}, F64);
@@ -1287,6 +1293,8 @@ std::pair<torch::Tensor, torch::Tensor> ProjectedTransport::angular_galerkin(
         [&](int64_t i, const double* a, const int64_t* ipiv,
           const torch::Tensor& b) {
           const int64_t d = d0 + i;
+          std::copy_n(a, r * r, lu + d * r * r);
+          std::copy_n(ipiv, r, pv + d * r);
           const auto f = (b + Y[d].matmul(E1)).contiguous();
           std::copy_n(f.data_ptr<double>(), r, z + d * r);
           linalg::dense::lu_solve(a, r, ipiv, z + d * r);
@@ -1320,21 +1328,19 @@ std::pair<torch::Tensor, torch::Tensor> ProjectedTransport::angular_galerkin(
   const auto I = torch::eye(M * r, F64);
   Lam = torch::linalg_solve(I - T, rhs).reshape({M, r});
   // Pass 2: L_d = A_d^{-1} (f_d + sum_m Y_m(d) K_{l(m)} Lam_m)
-  auto E2 = E1.clone();
+  //            = z_d + A_d^{-1} (Y(d)^T dE), dE_m = K_{l(m)} Lam_m,
+  // with the stored factors
+  auto dE = torch::zeros({M, r}, F64);
   for (int64_t m = 0; m < M; m++)
     if (moment_order_[m] < num_orders_)
-      E2[m].add_(scatter_[moment_order_[m]].view().mv(Lam[m]));
-  std::vector<int64_t> all(static_cast<size_t>(D));
-  for (int64_t d = 0; d < D; d++)
-    all[d] = d;
-  double* lp = L.data_ptr<double>();
-  factor_units(all, "angular_galerkin",
-    [&](
-      int64_t i, const double* a, const int64_t* ipiv, const torch::Tensor& b) {
-      const auto f = (b + Y[i].matmul(E2)).contiguous();
-      std::copy_n(f.data_ptr<double>(), r, lp + i * r);
-      linalg::dense::lu_solve(a, r, ipiv, lp + i * r);
-    });
+      dE[m].copy_(scatter_[moment_order_[m]].view().mv(Lam[m]));
+  auto Rhs = Y.to(F64).mm(dE).contiguous(); // (D, r)
+  double* rp = Rhs.data_ptr<double>();
+  at::parallel_for(0, D, 1, [&](int64_t i0, int64_t i1) {
+    for (int64_t d = i0; d < i1; d++)
+      linalg::dense::lu_solve(lu + d * r * r, r, pv + d * r, rp + d * r);
+  });
+  L = (Z + Rhs).contiguous();
   return {L, Lam};
 }
 

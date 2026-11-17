@@ -12,7 +12,13 @@ import torch
 
 from tests.unit.sweep.problems import BUILDERS, driver, quadrature
 from ttnte import mpi_context
-from ttnte.galerkin import GalerkinConfig, GalerkinPhiOld, GalerkinRun
+from ttnte.galerkin import (
+    DeimConfig,
+    GalerkinConfig,
+    GalerkinPhiOld,
+    GalerkinRun,
+    GalerkinStage,
+)
 from ttnte.sweep import InnerSolver, SweepConfig, TransportSolve
 
 G = 6
@@ -121,6 +127,62 @@ def test_source_iteration(num_dim, reflective, fissile):
     else:
         assert _flux_rel(galerkin, exact) < 10 * TOL
     _check_records(galerkin)
+
+
+# Han et al.'s DEIM stage as published, and with our labelled additions (the
+# update's flux X L, an update on a growing inner change, the run's tolerance as the
+# inner test). Without DSA the published
+# version diverges on the 2-D/3-D problems, so it runs in 1-D only
+DEIM_VARIANTS = [
+    (1, True, "paper"),
+    (1, True, "ours"),
+    (2, True, "ours"),
+    (3, False, "ours"),
+]
+
+
+@pytest.mark.mpi(min_size=1)
+@pytest.mark.parametrize("num_dim, reflective, variant", DEIM_VARIANTS)
+@pytest.mark.parametrize("fissile", [False, True])
+def test_deim_source_iteration(num_dim, reflective, variant, fissile):
+    """Han et al.'s hybrid (GalerkinConfig.deim): greedy source iterations, then DEIM
+    ones with angular updates.
+
+    The DEIM stage keeps the greedy rank of the switch, so its accuracy is set
+    there (as in test_source_iteration's bounds).
+    """
+    kw = dict(fissile=fissile, inner_solver=InnerSolver.RICHARDSON)
+    ours = variant == "ours"
+    exact = _solve(num_dim, reflective, TransportSolve.EXACT, **kw)
+    deim = _solve(
+        num_dim,
+        reflective,
+        TransportSolve.GALERKIN,
+        galerkin=GalerkinConfig(
+            deim=DeimConfig(
+                enabled=True,
+                galerkin_flux=ours,
+                update_on_growth=ours,
+                inner_tol=0.0 if ours else 1e-6,
+            )
+        ),
+        **kw,
+    )
+    if fissile:
+        assert abs(deim.k_eff - exact.k_eff) < 1e-5
+        assert _flux_rel(deim, exact) < 1e-4
+    else:
+        assert _flux_rel(deim, exact) < 10 * TOL
+    records = deim.sampling_records
+    stages = [r.stage for r in records]
+    assert GalerkinStage.DEIM_UPDATE in stages and records[-1].settled
+    for rec in records:
+        assert isinstance(rec, GalerkinRun)
+        if rec.stage == GalerkinStage.GREEDY:
+            assert len(rec.history) > 0 and rec.deim_directions == 0
+        else:
+            assert rec.fibers == rec.deim_directions * G
+            assert rec.lebesgue >= 1.0 - 1e-12
 
 
 @pytest.mark.mpi(min_size=1)

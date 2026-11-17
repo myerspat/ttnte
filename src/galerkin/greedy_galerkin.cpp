@@ -1,4 +1,5 @@
 #include "ttnte/galerkin/greedy_galerkin.hpp"
+#include "ttnte/linalg/deim.hpp"
 #include "ttnte/linalg/gram_schmidt.hpp"
 #include "ttnte/linalg/lapack.hpp"
 #include "ttnte/linalg/matrix_ops.hpp"
@@ -12,6 +13,17 @@
 namespace ttnte::galerkin {
 
 namespace {
+
+// Default; CMake overrides it (TTNTE_DEIM_ZERO_MODE_TOL)
+#ifndef TTNTE_DEIM_ZERO_MODE_TOL
+#define TTNTE_DEIM_ZERO_MODE_TOL 1e-14
+#endif
+
+/// Singular values of the greedy coefficients at most this times the largest
+/// are numerically zero: enter_deim() drops their modes (rounding noise that
+/// DEIM would otherwise spend directions on). Not an accuracy knob: that is
+/// GalerkinConfig::svd_tol.
+constexpr double DEIM_ZERO_MODE_TOL = TTNTE_DEIM_ZERO_MODE_TOL;
 
 using Clock = std::chrono::steady_clock;
 const auto F64 = torch::TensorOptions().dtype(torch::kFloat64);
@@ -55,6 +67,12 @@ GreedyGalerkin::GreedyGalerkin(sampling::SamplingProblem problem,
       ctx("GreedyGalerkin"), "svd_tol must be in [0, 1)");
   if (config_.max_iter < 0)
     throw utils::runtime_error(ctx("GreedyGalerkin"), "max_iter must be >= 0");
+  if (config_.deim.enabled && !(config_.deim.switch_tol > 0.0))
+    throw utils::runtime_error(
+      ctx("GreedyGalerkin"), "deim.switch_tol must be positive");
+  if (config_.deim.enabled && !(config_.deim.inner_tol >= 0.0))
+    throw utils::runtime_error(
+      ctx("GreedyGalerkin"), "deim.inner_tol must be >= 0");
   if (config_.phi_old == GalerkinPhiOld::AUTO)
     throw utils::runtime_error(ctx("GreedyGalerkin"),
       "phi_old must be resolved (PREVIOUS_RUN or WITHIN_RUN) before "
@@ -77,6 +95,9 @@ GreedyGalerkin::GreedyGalerkin(sampling::SamplingProblem problem,
       basis_groups_ != (pairs() ? 1 : num_groups_))
     throw utils::runtime_error(ctx("GreedyGalerkin"),
       "The operator's sampling unit differs from the configured sample");
+  if (config_.deim.enabled && pairs())
+    throw utils::runtime_error(ctx("GreedyGalerkin"),
+      "deim needs direction sampling (GalerkinSample::DIRECTION)");
   swept_.assign(static_cast<size_t>(num_units_), 0);
   coordinates_.resize(static_cast<size_t>(num_units_));
 }
@@ -240,9 +261,8 @@ torch::Tensor GreedyGalerkin::fill()
   return (A.mm(X) * e).reshape({-1});
 }
 
-void GreedyGalerkin::run()
+void GreedyGalerkin::reset()
 {
-  const auto t0 = Clock::now();
   store_->clear();
   op_->reset();
   rank_ = 0;
@@ -257,6 +277,46 @@ void GreedyGalerkin::run()
   run_dropped_ = 0;
   run_failures_ = 0;
   carried_rank_ = 0;
+  run_change_ = std::numeric_limits<double>::quiet_NaN();
+  outer_change_ = std::numeric_limits<double>::quiet_NaN();
+}
+
+// One run: the greedy stage, or (GalerkinConfig::deim) a DEIM-stage source
+// iteration. After a greedy run, the switch: its flux changed from the
+// previous run's by at most deim.switch_tol
+void GreedyGalerkin::run()
+{
+  const auto t0 = Clock::now();
+  if (deim_) {
+    run_deim();
+  } else {
+    run_greedy();
+    run_stage_ = RunStage::GREEDY;
+    settled_ = true;
+    if (config_.deim.enabled) {
+      auto td = Clock::now();
+      const auto phi = weighted_scalar_flux();
+      if (last_flux_.defined())
+        run_change_ = (phi - last_flux_).norm().item<double>() /
+                      std::max(phi.norm().item<double>(),
+                        std::numeric_limits<double>::min());
+      last_flux_ = phi;
+      // Han et al. switch once the source iteration has settled to
+      // switch_tol; under relaxed tolerances two loose runs can agree that
+      // well while each is far coarser (and the rank, which the DEIM stage
+      // keeps, too small), so the run itself must be that accurate as well
+      if (run_change_ <= config_.deim.switch_tol &&
+          config_.tol <= config_.deim.switch_tol)
+        enter_deim();
+      timings_["deim"] += elapsed(td);
+    }
+  }
+  seconds_ = elapsed(t0);
+}
+
+void GreedyGalerkin::run_greedy()
+{
+  reset();
   if (config_.carry_basis)
     start_from_kept_basis();
   rhs_norm_.assign(num_units_, std::numeric_limits<double>::quiet_NaN());
@@ -403,33 +463,23 @@ void GreedyGalerkin::run()
   }
   // The fibers are not needed once the flux is formed
   store_->release();
-  seconds_ = elapsed(t0);
 }
 
 void GreedyGalerkin::compress()
 {
-  if (config_.svd_tol <= 0.0 || !config_.keep_angular_flux ||
-      !coefficients_.defined() || moments_.defined())
+  // DEIM-stage fluxes are not on an orthonormal basis: left as they are
+  if (run_stage_ != RunStage::GREEDY || config_.svd_tol <= 0.0 ||
+      !config_.keep_angular_flux || !coefficients_.defined() ||
+      moments_.defined())
     return;
   auto ts = Clock::now();
   truncate(true);
   timings_["svd"] += elapsed(ts);
 }
 
-void GreedyGalerkin::truncate(bool replace)
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, int64_t>
+GreedyGalerkin::svd_cut(const torch::Tensor& Cw) const
 {
-  const int64_t r = coefficients_.size(1);
-  if (r == 0) {
-    truncated_rank_ = 0;
-    return;
-  }
-  // The coefficients on the weighted orthonormal basis X~ with the angle
-  // factor a_d: a_d C is then the flux in the norm of the stored fibers, and
-  // its SVD the best truncation in that norm (Guo & Peng: C itself, every
-  // direction weighted equally, which is weighting.angle = false)
-  linalg::lapack::SingleThreaded single;
-  const auto a = unit_weights().unsqueeze(1); // (num_units, 1)
-  const auto Cw = coefficients_ * a;
   // The factors (linalg::truncated_svd()); the cut in svd_norm: FROBENIUS
   // is truncated_svd()'s own (relative), NUCLEAR the tail sum of the plain
   // singular values (truncated_svd() at delta = 0 only factors)
@@ -450,6 +500,23 @@ void GreedyGalerkin::truncate(bool replace)
     while (k > 0 && t[k - 1] <= bound)
       k--;
   }
+  return {P, s, Vh, k};
+}
+
+void GreedyGalerkin::truncate(bool replace)
+{
+  const int64_t r = coefficients_.size(1);
+  if (r == 0) {
+    truncated_rank_ = 0;
+    return;
+  }
+  // The coefficients on the weighted orthonormal basis X~ with the angle
+  // factor a_d: a_d C is then the flux in the norm of the stored fibers, and
+  // its SVD the best truncation in that norm (Guo & Peng: C itself, every
+  // direction weighted equally, which is weighting.angle = false)
+  linalg::lapack::SingleThreaded single;
+  const auto a = unit_weights().unsqueeze(1); // (num_units, 1)
+  const auto [P, s, Vh, k] = svd_cut(coefficients_ * a);
   truncated_rank_ = k;
   if (!replace)
     return;
@@ -509,6 +576,175 @@ void GreedyGalerkin::start_from_kept_basis()
   timings_["project"] += elapsed(t0);
   rank_ = k;
   carried_rank_ = k;
+}
+
+// =================================================================
+// Han et al. (2026): the DEIM stage
+// =================================================================
+
+torch::Tensor GreedyGalerkin::unweighted_fibers(
+  const std::vector<int64_t>& dirs) const
+{
+  // The stored fibers are a_d e_g R_P psi_{d,g}: undo each factor (the
+  // store's own, 1 where disabled)
+  const int64_t k = static_cast<int64_t>(dirs.size());
+  const int64_t G = num_groups_, Ns = num_space_;
+  auto out = torch::empty({k, G, Ns}, F64);
+  double* o = out.data_ptr<double>();
+  const auto& a = store_->angle_weights();
+  const auto& e = store_->energy_weights();
+  for (int64_t i = 0; i < k; i++)
+    for (int64_t g = 0; g < G; g++) {
+      const double* f = store_->fiber(dirs[i] * G + g);
+      const double c = 1.0 / (a[dirs[i]] * e[g]);
+      for (int64_t n = 0; n < Ns; n++)
+        o[(i * G + g) * Ns + n] = c * f[n];
+    }
+  store_->apply_mass(o, k * G, true);
+  return out;
+}
+
+torch::Tensor GreedyGalerkin::weighted_scalar_flux() const
+{
+  const int64_t G = num_groups_, Ns = num_space_;
+  if (!coefficients_.defined() || coefficients_.size(1) == 0)
+    return torch::zeros({G * Ns}, F64);
+  const int64_t r = coefficients_.size(1);
+  const auto wy = weights_ * harmonics_.select(1, 0);
+  auto phi = coefficients_.t()
+               .mv(wy)
+               .unsqueeze(0)
+               .mm(basis_.reshape({r, -1}))
+               .reshape({G, Ns})
+               .contiguous();
+  store_->apply_mass(phi.data_ptr<double>(), G, false);
+  const auto e = torch::tensor(store_->energy_weights(), F64).unsqueeze(1);
+  return (phi * e).reshape({-1});
+}
+
+void GreedyGalerkin::select_directions(const torch::Tensor& V)
+{
+  // Eq. 3.5: a quadrature-weighted orthonormal basis of span(V), then the
+  // rows; the interpolation coefficients V V(I, :)^{-1} map the swept
+  // fibers to every direction (identity rows at I)
+  linalg::lapack::SingleThreaded single;
+  const auto Vw = linalg::weighted_orthonormal(V, weights_).first;
+  deim_rows_ = config_.deim.select == DeimSelect::QDEIM
+                 ? linalg::qdeim_select(Vw)
+                 : linalg::deim_select(Vw);
+  const auto VI = Vw.index_select(0, index_tensor(deim_rows_)); // (k, k)
+  deim_interp_ = torch::linalg_solve(VI.t(), Vw.t()).t().contiguous();
+  lebesgue_ = linalg::lebesgue_constant(Vw, deim_rows_, weights_);
+}
+
+void GreedyGalerkin::enter_deim()
+{
+  // Han et al., Alg. 3.1 step 17: the angular modes of the greedy flux, the
+  // left singular vectors of its coefficients (with the angle factor a_d,
+  // as truncate() weighs them), cut at eps_SVD (svd_tol in svd_norm, as
+  // truncate() cuts; 0: every nonzero mode). The DEIM stage never changes
+  // this rank (X = orth(Psi_I) has |I| vectors), so it bounds the stage's
+  // accuracy: the run's own (relaxed) tolerance would freeze too few
+  linalg::lapack::SingleThreaded single;
+  const auto a = unit_weights().unsqueeze(1);
+  auto [P, s, Vh, k] = svd_cut(coefficients_ * a);
+  // Numerically zero modes carry nothing to interpolate
+  const auto sv = s.contiguous();
+  const double* sp = sv.data_ptr<double>();
+  while (k > 1 && !(sp[k - 1] > DEIM_ZERO_MODE_TOL * sp[0]))
+    k--;
+  select_directions(P.narrow(1, 0, std::max<int64_t>(k, 1)) / a);
+  deim_ = true;
+  inner_change_ = std::numeric_limits<double>::infinity();
+}
+
+void GreedyGalerkin::run_deim()
+{
+  reset();
+  settled_ = false;
+  run_stage_ = RunStage::DEIM_INNER;
+  const int64_t G = num_groups_;
+  std::vector<int64_t> fibers;
+  for (int64_t d : deim_rows_)
+    for (int64_t g = 0; g < G; g++)
+      fibers.push_back(d * G + g);
+  store_->ensure(fibers, "deim");
+
+  // Inner source iteration: the swept fibers, every direction interpolated
+  auto td = Clock::now();
+  coefficients_ = deim_interp_;
+  basis_ = unweighted_fibers(deim_rows_);
+  rank_ = static_cast<int64_t>(deim_rows_.size()); // reported by ranks()
+  auto phi = weighted_scalar_flux();
+  // A diverged interpolated source iteration overflows, first in the norms
+  // (Han et al.'s has DSA inside its inner iterations, this solver none)
+  if (!std::isfinite(phi.norm().item<double>()))
+    throw utils::runtime_error(ctx("run"),
+      "The DEIM source iteration diverged (the flux norm overflows after " +
+        std::to_string(updates_) +
+        " angular updates); deim.update_on_growth and deim.galerkin_flux "
+        "(ours) stabilize it");
+  auto relative = [](const torch::Tensor& x, const torch::Tensor& ref) {
+    return (x - ref).norm().item<double>() /
+           std::max(
+             x.norm().item<double>(), std::numeric_limits<double>::min());
+  };
+  run_change_ = last_flux_.defined() ? relative(phi, last_flux_)
+                                     : std::numeric_limits<double>::infinity();
+  error_ = run_change_;
+  converged_ = true;
+  const double inner =
+    config_.deim.inner_tol > 0.0 ? config_.deim.inner_tol : config_.tol;
+  // Recorded either way; with deim.update_on_growth (our safeguard, not Han
+  // et al.'s) a growing change ends the inner loop early: interpolation
+  // amplifies the error outside span(V) by up to the Lebesgue constant, so
+  // with strong scattering the interpolated source iteration can diverge
+  inner_diverged_ = run_change_ > inner_change_;
+  timings_["deim"] += elapsed(td);
+
+  // Converged inner iteration: the angular update. X = orth(Psi_I) (MGS2-A
+  // of the swept snapshots: the fibers are stored, nothing is swept again;
+  // the reduced operator is bordered with X and projects this solve's
+  // sources and scattering), every direction solved with its scattering,
+  // then V and I from that solution. Han et al. keep the interpolant as the
+  // iterate (phi^(n+1) = phi^(n+1,l)); deim.galerkin_flux (ours) holds X L
+  if (run_change_ <= inner ||
+      (config_.deim.update_on_growth && inner_diverged_)) {
+    run_stage_ = RunStage::DEIM_UPDATE;
+    inner_change_ = std::numeric_limits<double>::infinity();
+    auto held_coefficients = coefficients_;
+    auto held_basis = basis_;
+    const int64_t held_rank = rank_;
+    rank_ = 0; // X~ starts empty
+    sample(deim_rows_, "deim");
+    if (rank_ == 0)
+      throw utils::runtime_error(ctx("run"),
+        "The DEIM directions' fibers are zero or overflow (a diverged "
+        "source iteration?): no basis for the angular update");
+    auto tu = Clock::now();
+    auto [L, Lam] = op_->angular_galerkin(op_->fixed_source());
+    if (config_.deim.galerkin_flux) {
+      coefficients_ = L;
+      basis_ = op_->basis();
+      phi = weighted_scalar_flux();
+    } else {
+      coefficients_ = std::move(held_coefficients);
+      basis_ = std::move(held_basis);
+      rank_ = held_rank;
+    }
+    outer_change_ = update_flux_.defined()
+                      ? relative(phi, update_flux_)
+                      : std::numeric_limits<double>::quiet_NaN();
+    update_flux_ = phi;
+    settled_ = !std::isnan(outer_change_) && outer_change_ <= config_.tol;
+    updates_++;
+    select_directions(L);
+    timings_["update"] += elapsed(tu);
+  } else {
+    inner_change_ = run_change_;
+  }
+  last_flux_ = phi;
+  store_->release();
 }
 
 torch::Tensor GreedyGalerkin::moments() const
@@ -587,6 +823,16 @@ sampling::RunRecord::Ptr GreedyGalerkin::record() const
   out->orthogonality_failures = run_failures_;
   out->truncated_rank = truncated_rank_;
   out->carried_rank = carried_rank_;
+  out->stage = run_stage_;
+  out->run_change = run_change_;
+  out->deim_directions = run_stage_ == RunStage::GREEDY
+                           ? 0
+                           : static_cast<int64_t>(store_->num_swept()) /
+                               std::max<int64_t>(1, num_groups_);
+  out->lebesgue = lebesgue_;
+  out->outer_change = outer_change_;
+  out->settled = settled_;
+  out->inner_diverged = run_stage_ != RunStage::GREEDY && inner_diverged_;
   return out;
 }
 

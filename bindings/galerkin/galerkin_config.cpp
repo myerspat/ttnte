@@ -36,6 +36,32 @@ void register_GalerkinConfig(py::module_& m)
     .value("WITHIN_RUN", GalerkinPhiOld::WITHIN_RUN,
       "Successive full solves of the same run (Han et al. under GMRES)");
 
+  py::enum_<DeimSelect>(m, "DeimSelect")
+    .value("DEIM", DeimSelect::DEIM,
+      "Han et al.'s Alg. B.1 (depends on the order of V's columns)")
+    .value("QDEIM", DeimSelect::QDEIM,
+      "Column-pivoted QR of V^T (invariant to V's orthogonal basis changes)");
+
+  py::class_<DeimConfig>(m, "DeimConfig",
+    "Han et al. (2026)'s DEIM source iteration after the greedy stage "
+    "(RICHARDSON inner solver, direction sampling).")
+    .def(ttnte::bindings::kwargs_init<DeimConfig>())
+    .def_readwrite("enabled", &DeimConfig::enabled)
+    .def_readwrite("switch_tol", &DeimConfig::switch_tol,
+      "Switch from the greedy stage once a run changes the scalar flux by at "
+      "most this (relative).")
+    .def_readwrite("inner_tol", &DeimConfig::inner_tol,
+      "Inner-iteration change that triggers the angular update (eq. 3.3; "
+      "1e-6 as in Han et al.; 0, ours: the run's relaxed tolerance).")
+    .def_readwrite("select", &DeimConfig::select,
+      "Row selection (DeimSelect; DEIM by default).")
+    .def_readwrite("galerkin_flux", &DeimConfig::galerkin_flux,
+      "Ours (ablation): an update's run holds the Galerkin flux X L instead "
+      "of the interpolant (Han et al.: the interpolant; False).")
+    .def_readwrite("update_on_growth", &DeimConfig::update_on_growth,
+      "Ours (safeguard): an inner run whose change exceeds the previous "
+      "one's updates the angle at once (Han et al.: none; False).");
+
   py::class_<GalerkinConfig>(m, "GalerkinConfig")
     // Keyword arguments only, each an attribute below; defaults from C++
     .def(ttnte::bindings::kwargs_init<GalerkinConfig>())
@@ -72,5 +98,7 @@ void register_GalerkinConfig(py::module_& m)
       "relative, in svd_norm. Reported as the record's truncated_rank; with "
       "keep_angular_flux the held flux is truncated (the moments are not).")
     .def_readwrite("svd_norm", &GalerkinConfig::svd_norm,
-      "Norm of the svd_tol cut (SvdNorm; FROBENIUS by default).");
+      "Norm of the svd_tol cut (SvdNorm; FROBENIUS by default).")
+    .def_readwrite("deim", &GalerkinConfig::deim,
+      "Han et al.'s DEIM stage (a DeimConfig; off by default).");
 }

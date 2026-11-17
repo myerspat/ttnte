@@ -191,7 +191,7 @@ void SweepSolver::outer_iterations(double k_tol)
           .count();
     }
     const bool k_ok = !eigenvalue_mode_ || k_error < k_tol;
-    if (it > 0 && error < target && k_ok) {
+    if (it > 0 && error < target && k_ok && samplers_settled()) {
       converged_ = true;
       it++;
       break;
