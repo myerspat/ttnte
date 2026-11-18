@@ -57,6 +57,10 @@ public:
   /// see (Han et al.'s DEIM inner loop before its angular update), so that
   /// the solver does not stop on it. Default: true.
   virtual bool settled() const { return true; }
+  /// @brief Set the relative change at which the solver stops iterating on
+  /// this sampler's runs (its within-set tolerance), for settled(). Default:
+  /// ignored.
+  virtual void set_stop_tolerance(double /*tol*/) {}
 
   // =================================================================
   // Public getters

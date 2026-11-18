@@ -654,6 +654,9 @@ void GreedyGalerkin::enter_deim()
   while (k > 1 && !(sp[k - 1] > DEIM_ZERO_MODE_TOL * sp[0]))
     k--;
   select_directions(P.narrow(1, 0, std::max<int64_t>(k, 1)) / a);
+  // Han et al.'s outer test compares consecutive outer iterates: the first
+  // update's predecessor is the greedy iterate of the switch
+  update_flux_ = last_flux_;
   deim_ = true;
   inner_change_ = std::numeric_limits<double>::infinity();
 }
@@ -736,7 +739,10 @@ void GreedyGalerkin::run_deim()
                       ? relative(phi, update_flux_)
                       : std::numeric_limits<double>::quiet_NaN();
     update_flux_ = phi;
-    settled_ = !std::isnan(outer_change_) && outer_change_ <= config_.tol;
+    // Han et al.'s outer test, ||phi^(n) - phi^(n-1)|| <= eps_phi: the
+    // solver's own stop tolerance (the run's tolerance is a fraction of it)
+    const double stop = stop_tol_ > 0.0 ? stop_tol_ : config_.tol;
+    settled_ = !std::isnan(outer_change_) && outer_change_ <= stop;
     updates_++;
     select_directions(L);
     timings_["update"] += elapsed(tu);
@@ -831,6 +837,7 @@ sampling::RunRecord::Ptr GreedyGalerkin::record() const
                                std::max<int64_t>(1, num_groups_);
   out->lebesgue = lebesgue_;
   out->outer_change = outer_change_;
+  out->stop_tolerance = stop_tol_ > 0.0 ? stop_tol_ : config_.tol;
   out->settled = settled_;
   out->inner_diverged = run_stage_ != RunStage::GREEDY && inner_diverged_;
   return out;

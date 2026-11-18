@@ -314,6 +314,9 @@ private:
   /// records (tolerance, fibers, largest rank, error).
   std::vector<sampling::SampledTransport::Ptr> samplers_;
   double sampling_tol_ = 0.0;
+  /// The within-set solver's stop tolerance of the current solve, for the
+  /// samplers' settled() (SampledTransport::set_stop_tolerance(); 0: none).
+  double stop_tol_ = 0.0;
   /// SweepConfig::correction_form: ||b|| / ||x|| of each group set from its
   /// last standard within-group-set solve (b the transport solve of the fixed
   /// sources, x the solution), which turns tolerances relative to ||b|| into

@@ -71,7 +71,9 @@ def _rel(a, b):
 def _check_records(sw, set_size):
     """The records tell the stages apart: greedy runs first, then DEIM runs that sweep
     exactly their DEIM directions (fewer than all), settled only after an update within
-    the run's tolerance of the previous one; the last run of the solve is settled."""
+    the solver's stop tolerance (Han et al.'s eps_phi) of the previous outer iterate
+    (for the first update, the greedy iterate of the switch); the last run of the
+    solve is settled."""
     D = sw.ordinates.shape[0]
     recs = sw.sampling_records
     stages = [r.stage for r in recs]
@@ -90,8 +92,10 @@ def _check_records(sw, set_size):
         assert r.lebesgue >= 1.0 - 1e-12
         if r.stage == GalerkinStage.DEIM_INNER:
             assert not r.settled and math.isnan(r.outer_change)
-        elif r.settled:
-            assert r.outer_change <= r.tolerance
+            continue
+        assert not math.isnan(r.outer_change)
+        assert r.stop_tolerance > 0.0
+        assert r.settled == (r.outer_change <= r.stop_tolerance)
     assert recs[-1].settled
     return recs
 

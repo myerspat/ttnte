@@ -49,8 +49,12 @@ void register_GreedyGalerkin(py::module_& m)
     .def_readonly("lebesgue", &GreedyGalerkin::RunRecord::lebesgue,
       "Quadrature-weighted Lebesgue constant of the current DEIM selection.")
     .def_readonly("outer_change", &GreedyGalerkin::RunRecord::outer_change,
-      "After an angular update, its change from the previous update (NaN: "
-      "the first, or no update).")
+      "After an angular update, its change from the previous outer iterate "
+      "(the previous update, or the greedy iterate of the switch; NaN: no "
+      "update).")
+    .def_readonly("stop_tolerance", &GreedyGalerkin::RunRecord::stop_tolerance,
+      "The solver's stop tolerance an update's outer change is tested "
+      "against (Han et al.'s eps_phi; the within-set tolerance).")
     .def_readonly("settled", &GreedyGalerkin::RunRecord::settled,
       "Whether the run may end the within-set iteration.")
     .def_readonly("inner_diverged", &GreedyGalerkin::RunRecord::inner_diverged,

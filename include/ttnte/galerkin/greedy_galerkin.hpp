@@ -93,13 +93,16 @@ public:
     /// weighted scalar flux from the previous run's (NaN: none, or deim
     /// off); the DEIM directions it swept (0 in the greedy stage) and the
     /// quadrature-weighted Lebesgue constant of the selection it used;
-    /// after an update, the change from the previous update (NaN: the
-    /// first) and whether the run is settled.
+    /// after an update, the change from the previous outer iterate (the
+    /// previous update, or the greedy iterate of the switch), the solver's
+    /// stop tolerance it was tested against (Han et al.'s eps_phi) and
+    /// whether the run is settled.
     RunStage stage = RunStage::GREEDY;
     double run_change = 0.0;
     int64_t deim_directions = 0;
     double lebesgue = 0.0;
     double outer_change = 0.0;
+    double stop_tolerance = 0.0;
     bool settled = true;
     /// The inner iteration's change grew: the update came early (our
     /// safeguard, not part of Han et al.).
@@ -173,6 +176,8 @@ protected:
   double run_change_ = std::numeric_limits<double>::quiet_NaN();
   double outer_change_ = std::numeric_limits<double>::quiet_NaN();
   bool settled_ = true;
+  /// The solver's stop tolerance (set_stop_tolerance(); <= 0: the run's).
+  double stop_tol_ = 0.0;
   int64_t updates_ = 0;
   /// The last inner change (infinite after an update or the switch), and
   /// whether the last run's grew from it.
@@ -284,6 +289,7 @@ public:
   /// truncated one (after the solver read the moments and traces).
   void compress() override final;
   bool settled() const noexcept override final { return settled_; }
+  void set_stop_tolerance(double tol) override final { stop_tol_ = tol; }
 
   // =================================================================
   // Public getters

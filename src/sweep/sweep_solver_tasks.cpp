@@ -275,6 +275,7 @@ void SweepSolver::sampled_group_set(size_t s)
                          ? config_.galerkin.tol
                          : config_.cross.tol;
   sampler.set_tolerance(sampling_tol_ > 0 ? sampling_tol_ : fixed);
+  sampler.set_stop_tolerance(stop_tol_);
   // The sampler's linear algebra runs on at most sampling_threads threads (its
   // matrices are small; more threads cost more in synchronization). The
   // fiber sweeps it requests still use the solver's task pool

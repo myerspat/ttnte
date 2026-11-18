@@ -499,6 +499,7 @@ int64_t SweepSolver::inner_solve(size_t s, bool jacobi)
   // relaxed (sampling_relax) in GMRES and in Richardson alike
   const double tol_min = config_.sampling_inner_factor * tol;
   sampling_tol_ = tol_min;
+  stop_tol_ = tol;
 
   // Richardson (source iteration): sweep with the latest moments, commit,
   // stop when the set's moments change by less than tol (relative)
