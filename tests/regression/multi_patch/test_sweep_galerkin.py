@@ -17,6 +17,7 @@ from ttnte.galerkin import (
     GalerkinConfig,
     GalerkinPhiOld,
     GalerkinRun,
+    GalerkinSample,
     GalerkinStage,
 )
 from ttnte.sweep import InnerSolver, SweepConfig, TransportSolve
@@ -138,6 +139,9 @@ DEIM_VARIANTS = [
     (1, True, "ours"),
     (2, True, "ours"),
     (3, False, "ours"),
+    # DEIM over (direction, group) pairs (sample = PAIR, ours)
+    (1, True, "ours-pairs"),
+    (2, True, "ours-pairs"),
 ]
 
 
@@ -152,19 +156,21 @@ def test_deim_source_iteration(num_dim, reflective, variant, fissile):
     there (as in test_source_iteration's bounds).
     """
     kw = dict(fissile=fissile, inner_solver=InnerSolver.RICHARDSON)
-    ours = variant == "ours"
+    ours = variant.startswith("ours")
+    pairs = variant.endswith("pairs")
     exact = _solve(num_dim, reflective, TransportSolve.EXACT, **kw)
     deim = _solve(
         num_dim,
         reflective,
         TransportSolve.GALERKIN,
         galerkin=GalerkinConfig(
+            sample=GalerkinSample.PAIR if pairs else GalerkinSample.DIRECTION,
             deim=DeimConfig(
                 enabled=True,
                 galerkin_flux=ours,
                 update_on_growth=ours,
                 inner_tol=0.0 if ours else 1e-6,
-            )
+            ),
         ),
         **kw,
     )
@@ -181,7 +187,7 @@ def test_deim_source_iteration(num_dim, reflective, variant, fissile):
         if rec.stage == GalerkinStage.GREEDY:
             assert len(rec.history) > 0 and rec.deim_directions == 0
         else:
-            assert rec.fibers == rec.deim_directions * G
+            assert rec.fibers == rec.deim_directions * (1 if pairs else G)
             assert rec.lebesgue >= 1.0 - 1e-12
 
 

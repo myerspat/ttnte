@@ -20,7 +20,7 @@ void register_GreedyGalerkin(py::module_& m)
   py::enum_<GreedyGalerkin::RunStage>(m, "GalerkinStage")
     .value("GREEDY", GreedyGalerkin::RunStage::GREEDY)
     .value("DEIM_INNER", GreedyGalerkin::RunStage::DEIM_INNER,
-      "DEIM directions swept, the rest interpolated")
+      "DEIM units (directions, or pairs) swept, the rest interpolated")
     .value("DEIM_UPDATE", GreedyGalerkin::RunStage::DEIM_UPDATE,
       "An inner iteration followed by the angular update");
 
@@ -45,7 +45,8 @@ void register_GreedyGalerkin(py::module_& m)
       "none).")
     .def_readonly("deim_directions",
       &GreedyGalerkin::RunRecord::deim_directions,
-      "DEIM directions swept (0 in the greedy stage).")
+      "DEIM units swept: directions, or (direction, group) pairs with "
+      "sample = PAIR (0 in the greedy stage).")
     .def_readonly("lebesgue", &GreedyGalerkin::RunRecord::lebesgue,
       "Quadrature-weighted Lebesgue constant of the current DEIM selection.")
     .def_readonly("outer_change", &GreedyGalerkin::RunRecord::outer_change,
@@ -97,7 +98,7 @@ void register_GreedyGalerkin(py::module_& m)
     .def_property_readonly("carried_rank", &GreedyGalerkin::carried_rank)
     .def_property_readonly("in_deim_stage", &GreedyGalerkin::in_deim_stage)
     .def_property_readonly("deim_directions", &GreedyGalerkin::deim_directions,
-      "DEIM directions of the next run.")
+      "DEIM units (directions, or pairs) of the next run.")
     .def_property_readonly(
       "num_updates", &GreedyGalerkin::num_updates, "Angular updates so far.")
     .def_property_readonly("settled", &GreedyGalerkin::settled)

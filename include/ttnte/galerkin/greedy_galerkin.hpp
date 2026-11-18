@@ -40,13 +40,14 @@ namespace ttnte::galerkin {
 ///
 /// With GalerkinConfig::deim (Han et al. 2026, Sec. 3.2 and 4.2) the runs
 /// switch, once a run changes the scalar flux by at most deim.switch_tol,
-/// to DEIM source iterations: a run sweeps only the DEIM directions I and
+/// to DEIM source iterations: a run sweeps only the DEIM units I
+/// (directions, or (direction, group) pairs with sample = PAIR) and
 /// interpolates the rest (the held flux is then the swept fibers with the
 /// interpolation coefficients V V(I, :)^{-1}), and a run whose change is
 /// within deim.inner_tol updates the angle instead: X = orth(Psi_I), every
-/// direction solved with its scattering (ReducedOperator::
-/// angular_galerkin()), V and I from that solution. Only such updates are
-/// settled() (within the run's tolerance of the previous update).
+/// unit solved with its scattering (ReducedOperator::angular_galerkin()), V
+/// and I from that solution. Only such updates are settled() (within the
+/// solver's stop tolerance of the previous outer iterate).
 class GreedyGalerkin : public sampling::SampledTransport {
 public:
   // =================================================================
@@ -91,7 +92,8 @@ public:
     int64_t carried_rank = 0;
     /// GalerkinConfig::deim: the run's stage; the relative change of its
     /// weighted scalar flux from the previous run's (NaN: none, or deim
-    /// off); the DEIM directions it swept (0 in the greedy stage) and the
+    /// off); the DEIM units it swept (directions, or pairs; 0 in the greedy
+    /// stage) and the
     /// quadrature-weighted Lebesgue constant of the selection it used;
     /// after an update, the change from the previous outer iterate (the
     /// previous update, or the greedy iterate of the switch), the solver's
@@ -252,11 +254,16 @@ protected:
   /// @brief Enter the DEIM stage from the held (greedy) flux: V the left
   /// singular vectors of a_d C, cut at the run's tolerance.
   void enter_deim();
-  /// @brief Select the DEIM directions of an angular basis (N_Omega, k):
-  /// quadrature-weighted orthonormalized (eq. 3.5), then DEIM or Q-DEIM.
+  /// @brief Select the DEIM units of an angular basis (num_units, k):
+  /// quadrature-weighted orthonormalized (eq. 3.5, deim_weights()), then
+  /// DEIM or Q-DEIM.
   void select_directions(const torch::Tensor& V);
-  /// @return (|dirs|, G, Ns) the stored fibers of `dirs`, unweighted.
-  torch::Tensor unweighted_fibers(const std::vector<int64_t>& dirs) const;
+  /// @return (|units|, G, Ns) the stored fibers of directions, or (|units|,
+  /// 1, Ns) of pairs, unweighted.
+  torch::Tensor unweighted_fibers(const std::vector<int64_t>& units) const;
+  /// @return (num_units) the weights of eq. 3.5's orthonormality: w_d, or
+  /// w_d e_g^2 for pairs (ours).
+  torch::Tensor deim_weights() const;
   /// @return (G Ns) the held flux's scalar flux in the basis' weighting
   /// (space R_P and energy e_g), as fill() returns it.
   torch::Tensor weighted_scalar_flux() const;

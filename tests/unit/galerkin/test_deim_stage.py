@@ -28,7 +28,7 @@ from ttnte.galerkin import (
 )
 from ttnte.sweep import InnerSolver, SweepConfig, TransportSolve
 
-from ..sweep.problems import BUILDERS, driver, quadrature
+from ..sweep.problems import BUILDERS, driver, quadrature, quarter_circle
 
 G = 3
 
@@ -68,13 +68,13 @@ def _rel(a, b):
     return ((a - b).norm() / b.norm()).item()
 
 
-def _check_records(sw, set_size):
+def _check_records(sw, set_size, pairs=False):
     """The records tell the stages apart: greedy runs first, then DEIM runs that sweep
     exactly their DEIM directions (fewer than all), settled only after an update within
     the solver's stop tolerance (Han et al.'s eps_phi) of the previous outer iterate
     (for the first update, the greedy iterate of the switch); the last run of the
-    solve is settled."""
-    D = sw.ordinates.shape[0]
+    solve is settled. With pairs a DEIM unit is one (direction, group) fiber."""
+    D = sw.ordinates.shape[0] * (G if pairs else 1)
     recs = sw.sampling_records
     stages = [r.stage for r in recs]
     assert GalerkinStage.DEIM_UPDATE in stages
@@ -88,7 +88,10 @@ def _check_records(sw, set_size):
             assert r.settled and r.deim_directions == 0
             continue
         assert 1 <= r.deim_directions <= D
-        assert any(r.fibers == r.deim_directions * g for g in sets)
+        if pairs:
+            assert r.fibers == r.deim_directions
+        else:
+            assert any(r.fibers == r.deim_directions * g for g in sets)
         assert r.lebesgue >= 1.0 - 1e-12
         if r.stage == GalerkinStage.DEIM_INNER:
             assert not r.settled and math.isnan(r.outer_change)
@@ -265,16 +268,11 @@ def test_disabled_changes_nothing():
         (dict(inner_solver=InnerSolver.GMRES), _deim(), "RICHARDSON"),
         (
             dict(inner_solver=InnerSolver.RICHARDSON),
-            GalerkinConfig(sample=GalerkinSample.PAIR, deim=DeimConfig(enabled=True)),
-            "direction sampling",
-        ),
-        (
-            dict(inner_solver=InnerSolver.RICHARDSON),
             _deim(switch_tol=0.0),
             "switch_tol",
         ),
     ],
-    ids=["gmres", "pairs", "switch-tol"],
+    ids=["gmres", "switch-tol"],
 )
 def test_rejects_unsupported(kw, galerkin, match):
     mesh, xs = BUILDERS[1](G, True)
@@ -284,3 +282,114 @@ def test_rejects_unsupported(kw, galerkin, match):
     )
     with pytest.raises(RuntimeError, match=match):
         sw.setup(quadrature(1, 4), cfg)
+
+
+# ----------------------------------------------------------------------
+# DEIM over (direction, group) pairs (sample = PAIR, ours, a labelled ablation):
+# V has a row per pair, DEIM picks pairs, the angular update couples the groups
+# through the transfer blocks on the spatial basis.
+
+
+def _pair_deim(**kw):
+    return GalerkinConfig(
+        sample=GalerkinSample.PAIR, deim=DeimConfig(enabled=True, **kw)
+    )
+
+
+@pytest.mark.parametrize("num_dim, n, set_size", CASES)
+def test_pairs_ours_matches_exact(num_dim, n, set_size):
+    """With our additions DEIM over pairs converges to EXACT in 1/2/3-D, one and two
+    group sets, sweeping far fewer pairs than directions x groups."""
+    kw = dict(group_set_size=set_size)
+    exact, _ = _solve(num_dim, n, TransportSolve.EXACT, **kw)
+    phi, sw = _solve(
+        num_dim, n, TransportSolve.GALERKIN, galerkin=_pair_deim(**OURS), **kw
+    )
+    assert sw.converged
+    assert _rel(phi, exact) < 1e-5
+    recs = _check_records(sw, set_size, pairs=True)
+    units = sw.ordinates.shape[0] * (set_size or G)
+    assert max(r.deim_directions for r in recs) < units // 2
+
+
+@pytest.mark.parametrize(
+    "num_dim, n, set_size, switch_tol",
+    [(1, 16, 0, 1e-4), (1, 16, 2, 1e-4), (2, 6, 0, 1e-7), (3, 4, 0, 1e-7)],
+)
+def test_pairs_paper_matches_exact(num_dim, n, set_size, switch_tol):
+    """The paper's settings over pairs converge in 1-D (one and two sets) and, as over
+    directions, in 2-D and 3-D with a late switch (no DSA here)."""
+    kw = dict(group_set_size=set_size)
+    exact, _ = _solve(num_dim, n, TransportSolve.EXACT, **kw)
+    phi, sw = _solve(
+        num_dim,
+        n,
+        TransportSolve.GALERKIN,
+        galerkin=_pair_deim(switch_tol=switch_tol),
+        **kw,
+    )
+    assert sw.converged
+    assert _rel(phi, exact) < 1e-5
+    _check_records(sw, set_size, pairs=True)
+
+
+@pytest.mark.parametrize("deim", [{}, OURS], ids=["paper", "ours"])
+def test_one_group_pairs_equal_directions(deim):
+    """With one group a pair is a direction: the same DEIM solve, run by run (eq.
+    3.5's pair weights w_d e_0^2 only scale V)."""
+    out = {}
+    for sample in (GalerkinSample.DIRECTION, GalerkinSample.PAIR):
+        mesh, xs = BUILDERS[2](1, True)
+        sw = driver(2, mesh, xs)
+        cfg = SweepConfig(
+            tol=1e-6,
+            max_iter=500,
+            verbose=False,
+            transport=TransportSolve.GALERKIN,
+            inner_solver=InnerSolver.RICHARDSON,
+            galerkin=GalerkinConfig(
+                sample=sample, deim=DeimConfig(enabled=True, **deim)
+            ),
+        )
+        sw.setup(quadrature(2, 4), cfg)
+        sw.solve_fixed_source()
+        phi = torch.cat([sw.get_scalar_flux(i).flatten() for i in sw.local_gids])
+        recs = sw.sampling_records
+        out[sample] = (phi, [(r.stage, r.fibers, r.deim_directions) for r in recs])
+    (phi_d, rec_d), (phi_p, rec_p) = out.values()
+    assert rec_d == rec_p
+    assert any(stage == GalerkinStage.DEIM_UPDATE for stage, _, _ in rec_d)
+    assert _rel(phi_p, phi_d) < 1e-10
+
+
+def test_pairs_truncated_spatial_basis():
+    """On the step-3 meshes the pair greedy spans the whole spatial space (|I| = N_s);
+    on a finer quarter circle (N_s = 400) the DEIM pairs stay fewer than N_s, so the
+    stage interpolates on a truncated spatial basis, and still matches EXACT to the
+    accuracy of the switch (ours, switch 1e-4)."""
+    out = {}
+    for transport, galerkin in [
+        (TransportSolve.EXACT, None),
+        (TransportSolve.GALERKIN, _pair_deim(**OURS)),
+    ]:
+        mesh, xs = quarter_circle(G, True, factor=8)
+        sw = driver(2, mesh, xs)
+        cfg = SweepConfig(
+            tol=1e-6,
+            max_iter=500,
+            verbose=False,
+            transport=transport,
+            inner_solver=InnerSolver.RICHARDSON,
+            **({} if galerkin is None else dict(galerkin=galerkin)),
+        )
+        sw.setup(quadrature(2, 6), cfg)
+        sw.solve_fixed_source()
+        out[transport] = (
+            torch.cat([sw.get_scalar_flux(g).flatten() for g in sw.local_gids]),
+            sw,
+        )
+    (exact, _), (phi, sw) = out.values()
+    assert sw.converged
+    assert _rel(phi, exact) < 1e-5
+    recs = _check_records(sw, 0, pairs=True)
+    assert 0 < max(r.deim_directions for r in recs) < sw.fiber_length

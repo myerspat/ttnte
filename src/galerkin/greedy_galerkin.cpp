@@ -95,9 +95,6 @@ GreedyGalerkin::GreedyGalerkin(sampling::SamplingProblem problem,
       basis_groups_ != (pairs() ? 1 : num_groups_))
     throw utils::runtime_error(ctx("GreedyGalerkin"),
       "The operator's sampling unit differs from the configured sample");
-  if (config_.deim.enabled && pairs())
-    throw utils::runtime_error(ctx("GreedyGalerkin"),
-      "deim needs direction sampling (GalerkinSample::DIRECTION)");
   swept_.assign(static_cast<size_t>(num_units_), 0);
   coordinates_.resize(static_cast<size_t>(num_units_));
 }
@@ -583,24 +580,27 @@ void GreedyGalerkin::start_from_kept_basis()
 // =================================================================
 
 torch::Tensor GreedyGalerkin::unweighted_fibers(
-  const std::vector<int64_t>& dirs) const
+  const std::vector<int64_t>& units) const
 {
   // The stored fibers are a_d e_g R_P psi_{d,g}: undo each factor (the
-  // store's own, 1 where disabled)
-  const int64_t k = static_cast<int64_t>(dirs.size());
-  const int64_t G = num_groups_, Ns = num_space_;
-  auto out = torch::empty({k, G, Ns}, F64);
+  // store's own, 1 where disabled); a direction's every group, or a pair's
+  // one fiber (pair index = unit)
+  const int64_t k = static_cast<int64_t>(units.size());
+  const int64_t G = num_groups_, Ns = num_space_, Gb = basis_groups_;
+  auto out = torch::empty({k, Gb, Ns}, F64);
   double* o = out.data_ptr<double>();
   const auto& a = store_->angle_weights();
   const auto& e = store_->energy_weights();
   for (int64_t i = 0; i < k; i++)
-    for (int64_t g = 0; g < G; g++) {
-      const double* f = store_->fiber(dirs[i] * G + g);
-      const double c = 1.0 / (a[dirs[i]] * e[g]);
+    for (int64_t b = 0; b < Gb; b++) {
+      const int64_t f_index = pairs() ? units[i] : units[i] * G + b;
+      const int64_t d = f_index / G, g = f_index % G;
+      const double* f = store_->fiber(f_index);
+      const double c = 1.0 / (a[d] * e[g]);
       for (int64_t n = 0; n < Ns; n++)
-        o[(i * G + g) * Ns + n] = c * f[n];
+        o[(i * Gb + b) * Ns + n] = c * f[n];
     }
-  store_->apply_mass(o, k * G, true);
+  store_->apply_mass(o, k * Gb, true);
   return out;
 }
 
@@ -611,30 +611,41 @@ torch::Tensor GreedyGalerkin::weighted_scalar_flux() const
     return torch::zeros({G * Ns}, F64);
   const int64_t r = coefficients_.size(1);
   const auto wy = weights_ * harmonics_.select(1, 0);
-  auto phi = coefficients_.t()
-               .mv(wy)
-               .unsqueeze(0)
-               .mm(basis_.reshape({r, -1}))
-               .reshape({G, Ns})
-               .contiguous();
+  // phi_0 = X (C^T w Y_0), or per group X (sum_d w_d Y_0(d) c_{d,g}) for
+  // pairs (spatial X)
+  const auto A = pairs() ? torch::einsum("d,dgr->gr",
+                             {wy, coefficients_.view({num_directions_, G, r})})
+                         : coefficients_.t().mv(wy).unsqueeze(0);
+  auto phi = A.mm(basis_.reshape({r, -1})).reshape({G, Ns}).contiguous();
   store_->apply_mass(phi.data_ptr<double>(), G, false);
   const auto e = torch::tensor(store_->energy_weights(), F64).unsqueeze(1);
   return (phi * e).reshape({-1});
+}
+
+torch::Tensor GreedyGalerkin::deim_weights() const
+{
+  if (!pairs())
+    return weights_;
+  const auto e = torch::tensor(store_->energy_weights(), F64);
+  return (weights_.unsqueeze(1) * (e * e).unsqueeze(0)).reshape({-1});
 }
 
 void GreedyGalerkin::select_directions(const torch::Tensor& V)
 {
   // Eq. 3.5: a quadrature-weighted orthonormal basis of span(V), then the
   // rows; the interpolation coefficients V V(I, :)^{-1} map the swept
-  // fibers to every direction (identity rows at I)
+  // fibers to every unit (identity rows at I). For pairs (ours) the weight
+  // of unit (d, g) is w_d e_g^2, the energy factor of the fibers' norm (1
+  // when energy weighting is off)
   linalg::lapack::SingleThreaded single;
-  const auto Vw = linalg::weighted_orthonormal(V, weights_).first;
+  const auto w = deim_weights();
+  const auto Vw = linalg::weighted_orthonormal(V, w).first;
   deim_rows_ = config_.deim.select == DeimSelect::QDEIM
                  ? linalg::qdeim_select(Vw)
                  : linalg::deim_select(Vw);
   const auto VI = Vw.index_select(0, index_tensor(deim_rows_)); // (k, k)
   deim_interp_ = torch::linalg_solve(VI.t(), Vw.t()).t().contiguous();
-  lebesgue_ = linalg::lebesgue_constant(Vw, deim_rows_, weights_);
+  lebesgue_ = linalg::lebesgue_constant(Vw, deim_rows_, w);
 }
 
 void GreedyGalerkin::enter_deim()
@@ -667,10 +678,15 @@ void GreedyGalerkin::run_deim()
   settled_ = false;
   run_stage_ = RunStage::DEIM_INNER;
   const int64_t G = num_groups_;
+  // The DEIM units' fibers: every group of each direction, or each pair
+  // (ours: DEIM over the (direction, group) units of sample = PAIR)
   std::vector<int64_t> fibers;
-  for (int64_t d : deim_rows_)
-    for (int64_t g = 0; g < G; g++)
-      fibers.push_back(d * G + g);
+  for (int64_t u : deim_rows_)
+    if (pairs())
+      fibers.push_back(u);
+    else
+      for (int64_t g = 0; g < G; g++)
+        fibers.push_back(u * G + g);
   store_->ensure(fibers, "deim");
 
   // Inner source iteration: the swept fibers, every direction interpolated
@@ -831,10 +847,11 @@ sampling::RunRecord::Ptr GreedyGalerkin::record() const
   out->carried_rank = carried_rank_;
   out->stage = run_stage_;
   out->run_change = run_change_;
-  out->deim_directions = run_stage_ == RunStage::GREEDY
-                           ? 0
-                           : static_cast<int64_t>(store_->num_swept()) /
-                               std::max<int64_t>(1, num_groups_);
+  out->deim_directions =
+    run_stage_ == RunStage::GREEDY
+      ? 0
+      : static_cast<int64_t>(store_->num_swept()) /
+          (pairs() ? 1 : std::max<int64_t>(1, num_groups_));
   out->lebesgue = lebesgue_;
   out->outer_change = outer_change_;
   out->stop_tolerance = stop_tol_ > 0.0 ? stop_tol_ : config_.tol;

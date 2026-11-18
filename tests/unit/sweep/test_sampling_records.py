@@ -1,6 +1,5 @@
 """SweepDriver.sampling_records: one record per sampled transport solve, of the
-sampler's own class; the old cross_* records are deprecated aliases computed from
-them."""
+sampler's own class (the old cross_* record aliases are gone)."""
 
 import pytest
 
@@ -29,7 +28,7 @@ def _solve(transport):
     "transport, cls",
     [(TransportSolve.CROSS, CrossRun), (TransportSolve.GALERKIN, GalerkinRun)],
 )
-def test_records_and_deprecated_aliases(transport, cls):
+def test_records(transport, cls):
     sw = _solve(transport)
     records = sw.sampling_records
     assert len(records) > 0
@@ -37,22 +36,8 @@ def test_records_and_deprecated_aliases(transport, cls):
     assert all(len(r.history) > 0 for r in records)
     assert sw.sampling_seconds >= sw.sampling_sweep_seconds > 0.0
     assert "moments" in sw.sampling_timings
-    expected = {
-        "cross_fibers": [r.fibers for r in records],
-        "cross_tolerances": [r.tolerance for r in records],
-        "cross_errors": [r.error for r in records],
-        "cross_ranks": [list(r.ranks) for r in records],
-        "cross_max_ranks": [r.max_rank for r in records],
-        "cross_seconds": sw.sampling_seconds,
-        "cross_sweep_seconds": sw.sampling_sweep_seconds,
-        "cross_timings": sw.sampling_timings,
-    }
-    for old, value in expected.items():
-        with pytest.warns(FutureWarning, match="sampling"):
-            assert getattr(sw, old) == value
-    with pytest.warns(FutureWarning):
-        histories = sw.cross_histories
-    assert len(histories) == (len(records) if cls is CrossRun else 0)
+    for old in ["cross_fibers", "cross_tolerances", "cross_histories", "cross_seconds"]:
+        assert not hasattr(sw, old)
 
 
 def test_exact_transport_has_no_records():

@@ -1,57 +1,18 @@
 #include "ttnte/sweep/sweep_driver.hpp"
-#include "../cross/history.hpp"
 #include "ttnte/cad/patch.hpp"
 #include "ttnte/cross/layout_cross.hpp"
 #include "ttnte/parallel/parallel_context.hpp"
 #include "ttnte/sampling/fiber_store.hpp"
 #include "ttnte/sweep/projected_transport.hpp"
-#include <algorithm>
 #include <optional>
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <string>
 #include <torch/extension.h>
-#include <type_traits>
 #include <vector>
 
 namespace py = pybind11;
-
-namespace {
-
-using ttnte::sweep::SweepSolver;
-
-/// Deprecated read-only alias `old_name` of a record (warns, then returns
-/// get(solver)): the cross_* records are the samplers' since GALERKIN.
-template<typename Get>
-void deprecated_record(py::class_<SweepSolver, SweepSolver::Ptr>& cls,
-  const char* old_name, const char* use, Get get)
-{
-  const std::string message = std::string("SweepDriver.") + old_name +
-                              " is deprecated; use " + use +
-                              " (shared by CROSS and GALERKIN)";
-  cls.def_property_readonly(
-    old_name,
-    [get, message](const SweepSolver& self) {
-      if (PyErr_WarnEx(PyExc_FutureWarning, message.c_str(), 1) < 0)
-        throw py::error_already_set();
-      return get(self);
-    },
-    ("Deprecated: use " + std::string(use) + ".").c_str());
-}
-
-/// One field of every sampled transport solve's record.
-template<typename F>
-auto per_record(const SweepSolver& self, F field)
-{
-  using T = std::decay_t<decltype(field(*self.get_sampling_records()[0]))>;
-  std::vector<T> out;
-  for (const auto& r : self.get_sampling_records())
-    out.push_back(field(*r));
-  return out;
-}
-
-} // namespace
 
 template<typename BlockType, int64_t NumDim>
 static void register_SweepDriver_impl(
@@ -245,10 +206,12 @@ static void register_SweepDriver_impl(
     .def(
       "galerkin_scattering",
       [](const SweepDriver& self, const std::vector<torch::Tensor>& chunks,
-        size_t group_set, std::optional<torch::Tensor> phi) {
+        size_t group_set, std::optional<torch::Tensor> phi,
+        bool spatial_basis) {
         using ttnte::sweep::ProjectedTransport;
-        auto pt = ProjectedTransport::create(
-          self, group_set, ProjectedTransport::Options {.scattering = true});
+        auto pt = ProjectedTransport::create(self, group_set,
+          ProjectedTransport::Options {
+            .spatial_basis = spatial_basis, .scattering = true});
         for (const auto& X : chunks)
           pt->extend(X.to(torch::kFloat64).contiguous());
         std::vector<torch::Tensor> K;
@@ -261,15 +224,18 @@ static void register_SweepDriver_impl(
       "Projected within-set scattering on a basis given in chunks: K (L, r, "
       "r) = X^T S_l X, the projected source X^T s (M, r), X^T S phi (M, r) "
       "of phi (M, |set|, fiber_length) (default: the solver's moments), and "
-      "those moments (testing aid).",
-      py::arg("chunks"), py::arg("group_set") = 0, py::arg("phi") = py::none())
+      "those moments; with spatial_basis K (L, |set|, |set|, r, r) the "
+      "blocks K_l(g, g') and (M |set|, r) projections (testing aid).",
+      py::arg("chunks"), py::arg("group_set") = 0, py::arg("phi") = py::none(),
+      py::arg("spatial_basis") = false)
     .def(
       "galerkin_angular",
       [](const SweepDriver& self, const std::vector<torch::Tensor>& chunks,
-        std::optional<torch::Tensor> F, size_t group_set) {
+        std::optional<torch::Tensor> F, size_t group_set, bool spatial_basis) {
         using ttnte::sweep::ProjectedTransport;
-        auto pt = ProjectedTransport::create(
-          self, group_set, ProjectedTransport::Options {.scattering = true});
+        auto pt = ProjectedTransport::create(self, group_set,
+          ProjectedTransport::Options {
+            .spatial_basis = spatial_basis, .scattering = true});
         for (const auto& X : chunks)
           pt->extend(X.to(torch::kFloat64).contiguous());
         const auto f = F ? F->to(torch::kFloat64)
@@ -281,8 +247,10 @@ static void register_SweepDriver_impl(
       "Han et al.'s angular Galerkin problem on a basis given in chunks: L "
       "(D, r) and Lam (M, r) for the projected fixed source F (M, r) "
       "(default: X^T s - X^T S phi of the solver's source and moments), and "
-      "that F (testing aid).",
-      py::arg("chunks"), py::arg("F") = py::none(), py::arg("group_set") = 0)
+      "that F; with spatial_basis per unit d |set| + g, L (D |set|, r), Lam "
+      "and F (M |set|, r) (testing aid).",
+      py::arg("chunks"), py::arg("F") = py::none(), py::arg("group_set") = 0,
+      py::arg("spatial_basis") = false)
     .def(
       "residual_norms",
       [](SweepDriver& self, const std::vector<int64_t>& directions,
@@ -462,53 +430,8 @@ void register_SweepDriver(py::module_& m)
 {
   // The dimension-independent core: the base of every IGASweepDriver*D, so
   // its methods bind once for all of them (not constructible from Python)
-  auto solver = py::class_<SweepSolver, SweepSolver::Ptr>(m, "SweepSolver");
-
-  // TODO: remove the cross_* records once the scripts (ttnte-vnv, studies)
-  // read sampling_records, sampling_seconds, sampling_timings and
-  // sampling_sweep_seconds
-  using ttnte::sampling::RunRecord;
-  deprecated_record(solver, "cross_tolerances",
-    "[r.tolerance for r in sampling_records]", [](const SweepSolver& self) {
-      return per_record(self, [](const RunRecord& r) { return r.tolerance; });
-    });
-  deprecated_record(solver, "cross_fibers",
-    "[r.fibers for r in sampling_records]", [](const SweepSolver& self) {
-      return per_record(self, [](const RunRecord& r) { return r.fibers; });
-    });
-  deprecated_record(solver, "cross_errors",
-    "[r.error for r in sampling_records]", [](const SweepSolver& self) {
-      return per_record(self, [](const RunRecord& r) { return r.error; });
-    });
-  deprecated_record(solver, "cross_ranks",
-    "[r.ranks for r in sampling_records]", [](const SweepSolver& self) {
-      return per_record(self, [](const RunRecord& r) { return r.ranks; });
-    });
-  deprecated_record(solver, "cross_max_ranks",
-    "[r.max_rank for r in sampling_records]", [](const SweepSolver& self) {
-      return per_record(self, [](const RunRecord& r) {
-        int64_t out = 0;
-        for (int64_t v : r.ranks)
-          out = std::max(out, v);
-        return out;
-      });
-    });
-  deprecated_record(solver, "cross_histories",
-    "[r.history for r in sampling_records]", [](const SweepSolver& self) {
-      py::list out;
-      for (const auto& r : self.get_sampling_records())
-        if (const auto* c =
-              dynamic_cast<const ttnte::cross::LayoutCross::RunRecord*>(
-                r.get()))
-          out.append(ttnte::bindings::sweep_history(c->history));
-      return out;
-    });
-  deprecated_record(solver, "cross_seconds", "sampling_seconds",
-    [](const SweepSolver& self) { return self.get_sampling_seconds(); });
-  deprecated_record(solver, "cross_sweep_seconds", "sampling_sweep_seconds",
-    [](const SweepSolver& self) { return self.get_sampling_sweep_seconds(); });
-  deprecated_record(solver, "cross_timings", "sampling_timings",
-    [](const SweepSolver& self) { return self.get_sampling_timings(); });
+  py::class_<ttnte::sweep::SweepSolver, ttnte::sweep::SweepSolver::Ptr>(
+    m, "SweepSolver");
 
   register_SweepDriver_impl<ttnte::cad::Patch, 1>(m, "IGA");
   register_SweepDriver_impl<ttnte::cad::Patch, 2>(m, "IGA");

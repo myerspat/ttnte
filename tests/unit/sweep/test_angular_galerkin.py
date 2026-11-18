@@ -241,3 +241,155 @@ def test_rejects_bad_shapes():
         sw.galerkin_angular([X], F=torch.zeros(1, 2))
     with pytest.raises(RuntimeError, match="phi must be"):
         sw.galerkin_scattering([X], phi=torch.zeros(1, G, 2))
+
+
+# ----------------------------------------------------------------------
+# Pairs (Options::spatial_basis, ours: DEIM over (direction, group) units): a
+# spatial basis, per order and pair of groups the block K_l(g, g') = X^T
+# sigma_{s,l}(g <- g') M X, and the angular problem over every unit, the groups
+# coupled through the blocks: (M G r) unknowns Lam_{m,g}.
+
+
+@pytest.fixture(scope="module", params=list(CASES), ids=list(CASES))
+def pair_case(request):
+    sw, _ = CASES[request.param]()
+    return sw, _random_basis(sw, [0], rank=5)
+
+
+def _place(X, ng):
+    """Direction-sampling basis (r ng, ng, Ns): spatial vector j in group g' only,
+    vector j ng + g'."""
+    r, _, n = X.shape
+    out = torch.zeros(r, ng, ng, n)
+    for g in range(ng):
+        out[:, g, g] = X[:, 0]
+    return out.reshape(r * ng, ng, n)
+
+
+def test_pair_blocks_match_direction_projection(pair_case):
+    """K_l(g, g') equals the direction-sampling K_l on group-local vectors (block ((j,
+    g), (i, g')) = x_j^T sigma(g <- g') M x_i, through the dense transfer, not the per-
+    block one); bordered in chunks as at once; symmetric blocks; zero exactly where no
+    unit transfers."""
+    sw, X = pair_case
+    r = X.shape[0]
+    K, _, _, _ = sw.galerkin_scattering([X[:2], X[2:]], spatial_basis=True)
+    K1, _, _, _ = sw.galerkin_scattering([X], spatial_basis=True)
+    assert torch.allclose(K, K1, rtol=0, atol=1e-13 * K1.abs().max())
+    Kd, _, _, _ = sw.galerkin_scattering([_place(X, G)])
+    ref = Kd.reshape(-1, r, G, r, G).permute(0, 2, 4, 1, 3)  # (L, g, g', r, r)
+    assert _rel(K, ref) < 1e-12
+    assert torch.allclose(K, K.transpose(3, 4), rtol=0, atol=1e-13 * K.abs().max())
+    zero = K.flatten(3).norm(dim=3) == 0
+    assert zero.any() and not zero.all()  # no upscatter beyond one group
+
+
+def test_pair_projections_match_direction_projection(pair_case):
+    """X^T s and X^T S phi per (moment, group) row equal the direction-sampling
+    projections on group-local vectors."""
+    sw, X = pair_case
+    r = X.shape[0]
+    M = sw.harmonics.shape[1]
+    phi = torch.randn(M, G, sw.fiber_length, generator=torch.Generator().manual_seed(3))
+    _, src, XSphi, _ = sw.galerkin_scattering([X], phi=phi, spatial_basis=True)
+    _, src_d, XSphi_d, _ = sw.galerkin_scattering([_place(X, G)], phi=phi)
+    # direction row m, column j G + g' -> pair row m G + g', column j
+    to_pairs = lambda t: t.reshape(M, r, G).transpose(1, 2).reshape(M * G, r)
+    assert _rel(src, to_pairs(src_d)) < 1e-12
+    assert _rel(XSphi, to_pairs(XSphi_d)) < 1e-12
+
+
+def test_pair_angular_matches_dense_solve(pair_case):
+    """L solves A_u L_u - sum_m Y_m(d) sum_g' K_{l(m)}(g, g') Lam_{m,g'} = f_u,
+    Lam_{m,g} = sum_d w_d Y_m(d) L_{d,g}, assembled densely from the units'
+    projected systems."""
+    sw, X = pair_case
+    D, r = sw.ordinates.shape[0], X.shape[0]
+    U = D * G
+    A, b, _, _, _ = sw.projected_system(list(range(U)), [X], spatial_basis=True)
+    K, src, _, _ = sw.galerkin_scattering([X], spatial_basis=True)
+    Y = sw.harmonics
+    wY = Y * sw.weights[:, None]
+    M = Y.shape[1]
+    orders = sw.moment_order.tolist()
+    F = torch.randn(M * G, r, generator=torch.Generator().manual_seed(2))
+    L, Lam, _ = sw.galerkin_angular([X[:2], X[2:]], F=F, spatial_basis=True)
+
+    E = (F - src).reshape(M, G, r)
+    big = torch.zeros(U * r, U * r)
+    rhs = torch.zeros(U * r)
+    for u in range(U):
+        d, g = divmod(u, G)
+        big[u * r : (u + 1) * r, u * r : (u + 1) * r] = A[u]
+        rhs[u * r : (u + 1) * r] = b[u] + Y[d] @ E[:, g]
+        for m, l in enumerate(orders):
+            if l >= K.shape[0]:
+                continue
+            for dp in range(D):
+                for gp in range(G):
+                    up = dp * G + gp
+                    big[u * r : (u + 1) * r, up * r : (up + 1) * r] -= (
+                        Y[d, m] * wY[dp, m] * K[l, g, gp]
+                    )
+    ref = torch.linalg.solve(big, rhs).reshape(U, r)
+    assert _rel(L, ref) < 1e-11
+    lam = torch.einsum("dm,dgr->mgr", wY, ref.reshape(D, G, r)).reshape(M * G, r)
+    assert _rel(Lam, lam) < 1e-11
+
+
+def test_pair_angular_thread_independent(pair_case):
+    sw, X = pair_case
+    threads = torch.get_num_threads()
+    try:
+        torch.set_num_threads(1)
+        L1, Lam1, _ = sw.galerkin_angular([X], spatial_basis=True)
+        torch.set_num_threads(4)
+        L4, Lam4, _ = sw.galerkin_angular([X], spatial_basis=True)
+    finally:
+        torch.set_num_threads(threads)
+    assert torch.equal(L1, L4) and torch.equal(Lam1, Lam4)
+
+
+@pytest.mark.parametrize("name", list(EXACT))
+def test_pair_exact_basis_reproduces_flux(name):
+    """Converged source iteration, spatial basis = orthonormal span of every unit's
+    exact fiber: the pair angular solve with the fixed source returns the fibers and
+    each group's moments."""
+    sw, s = EXACT[name]()
+    groups = _groups(sw, s)
+    ng = len(groups)
+    D = sw.ordinates.shape[0]
+    fibers = sw.sweep_fibers([(list(range(D)), groups)]).reshape(D * ng, -1)
+    _, S, Vh = torch.linalg.svd(fibers, full_matrices=False)
+    k = int((S > 1e-10 * S[0]).sum())
+    X = Vh[:k].reshape(k, 1, -1)
+    L, Lam, _ = sw.galerkin_angular([X], group_set=s, spatial_basis=True)
+    assert _rel(L @ X[:, 0], fibers) < 1e-8
+    phi = torch.einsum(
+        "dm,dgn->mgn", sw.harmonics * sw.weights[:, None], fibers.reshape(D, ng, -1)
+    )
+    M = phi.shape[0]
+    assert _rel((Lam @ X[:, 0]).reshape(M, ng, -1), phi) < 1e-8
+
+
+@pytest.mark.parametrize("num_dim", [1, 2])
+def test_one_group_pairs_equal_directions(num_dim):
+    """With one group a pair is a direction: the same K, projections and angular
+    solution."""
+    sw = _mid_solve(*BUILDERS[num_dim](1, True), num_dim)
+    X = torch.randn(4, 1, sw.fiber_length, generator=torch.Generator().manual_seed(4))
+    Kp, srcp, XSp, _ = sw.galerkin_scattering([X], spatial_basis=True)
+    Kd, srcd, XSd, _ = sw.galerkin_scattering([X])
+    assert _rel(Kp[:, 0, 0], Kd) < 1e-13
+    assert _rel(srcp, srcd) < 1e-13 and _rel(XSp, XSd) < 1e-13
+    Lp, Lamp, _ = sw.galerkin_angular([X], spatial_basis=True)
+    Ld, Lamd, _ = sw.galerkin_angular([X])
+    assert _rel(Lp, Ld) < 1e-12 and _rel(Lamp, Lamd) < 1e-12
+
+
+def test_pair_rejects_bad_shapes():
+    sw = _mid_solve(*BUILDERS[2](G, False), 2)
+    X = _random_basis(sw, [0], rank=3)
+    M = sw.harmonics.shape[1]
+    with pytest.raises(RuntimeError, match="F must be"):
+        sw.galerkin_angular([X], F=torch.zeros(M, 3), spatial_basis=True)

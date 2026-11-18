@@ -1,34 +1,20 @@
 """The SweepConfig knobs shared by the sampled transport solves (CROSS, GALERKIN) are
-sampling_*; the old cross_* names are deprecated aliases (attributes and keyword
-arguments) that warn and forward."""
+sampling_*; the old cross_* aliases are gone (attributes and keyword arguments)."""
 
 import pytest
 
 from ttnte.sweep import SweepConfig
 
-ALIASES = [
-    ("cross_inner_factor", "sampling_inner_factor", 0.25),
-    ("cross_relax", "sampling_relax", False),
-    ("cross_max_tol", "sampling_max_tol", 3e-3),
-    ("cross_threads", "sampling_threads", 3),
-]
+REMOVED = ["cross_inner_factor", "cross_relax", "cross_max_tol", "cross_threads"]
 
 
-@pytest.mark.parametrize("old, new, value", ALIASES)
-def test_alias_forwards_and_warns(old, new, value):
+@pytest.mark.parametrize("old", REMOVED)
+def test_old_names_removed(old):
     cfg = SweepConfig()
-    with pytest.warns(FutureWarning, match=new):
-        setattr(cfg, old, value)
-    assert getattr(cfg, new) == value
-    with pytest.warns(FutureWarning, match=new):
-        assert getattr(cfg, old) == value
-
-
-@pytest.mark.parametrize("old, new, value", ALIASES)
-def test_alias_keyword(old, new, value):
-    with pytest.warns(FutureWarning, match=new):
-        cfg = SweepConfig(**{old: value})
-    assert getattr(cfg, new) == value
+    with pytest.raises(AttributeError):
+        getattr(cfg, old)
+    with pytest.raises((TypeError, AttributeError, ValueError, RuntimeError)):
+        SweepConfig(**{old: 1})
 
 
 def test_defaults_unchanged():

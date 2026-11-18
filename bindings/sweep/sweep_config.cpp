@@ -5,37 +5,6 @@
 
 namespace py = pybind11;
 
-namespace {
-
-/// Deprecated alias `old_name` of the SweepConfig attribute `new_name` (also
-/// accepted as a keyword argument): reads and writes forward, with a
-/// FutureWarning.
-template<typename T>
-void deprecated_alias(py::class_<ttnte::sweep::SweepConfig>& cls,
-  const char* old_name, const char* new_name,
-  T ttnte::sweep::SweepConfig::* member)
-{
-  using ttnte::sweep::SweepConfig;
-  const std::string message = std::string("SweepConfig.") + old_name +
-                              " is deprecated; use " + new_name +
-                              " (shared by CROSS and GALERKIN)";
-  cls.def_property(
-    old_name,
-    [member, message](const SweepConfig& c) {
-      if (PyErr_WarnEx(PyExc_FutureWarning, message.c_str(), 1) < 0)
-        throw py::error_already_set();
-      return c.*member;
-    },
-    [member, message](SweepConfig& c, T value) {
-      if (PyErr_WarnEx(PyExc_FutureWarning, message.c_str(), 1) < 0)
-        throw py::error_already_set();
-      c.*member = value;
-    },
-    ("Deprecated alias of " + std::string(new_name) + ".").c_str());
-}
-
-} // namespace
-
 void register_SweepConfig(py::module_& m)
 {
   using namespace ttnte::sweep;
@@ -139,15 +108,4 @@ void register_SweepConfig(py::module_& m)
     .def_readwrite("local_max_iter", &SweepConfig::local_max_iter)
     .def_readwrite("cross", &SweepConfig::cross)
     .def_readwrite("galerkin", &SweepConfig::galerkin);
-
-  // TODO: remove the cross_* aliases once the scripts (ttnte-vnv, studies)
-  // use the sampling_* names
-  deprecated_alias(config, "cross_inner_factor", "sampling_inner_factor",
-    &SweepConfig::sampling_inner_factor);
-  deprecated_alias(
-    config, "cross_relax", "sampling_relax", &SweepConfig::sampling_relax);
-  deprecated_alias(config, "cross_max_tol", "sampling_max_tol",
-    &SweepConfig::sampling_max_tol);
-  deprecated_alias(config, "cross_threads", "sampling_threads",
-    &SweepConfig::sampling_threads);
 }

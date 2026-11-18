@@ -6,8 +6,8 @@
 
 namespace ttnte::bindings {
 
-/// @brief A cross run's half-sweeps as a list of dicts (LayoutCross.history,
-/// CrossRun.history and the deprecated SweepDriver.cross_histories).
+/// @brief A cross run's half-sweeps as a list of dicts (LayoutCross.history
+/// and CrossRun.history).
 pybind11::list sweep_history(
   const std::vector<cross::LayoutCross::SweepRecord>& history);
 

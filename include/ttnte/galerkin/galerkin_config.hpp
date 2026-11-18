@@ -89,8 +89,15 @@ enum class DeimSelect : uint8_t {
 ///    from that solution and I reselected. As in the paper ("set phi^(n+1) =
 ///    phi^(n+1,l)") the run's flux stays the interpolant: the update only
 ///    supplies V and I for the next inner iterations. The run is settled
-///    when its flux changed by at most the run's tolerance from the previous
-///    update's (Sec. 3.2 (iv)); the sweep solver stops only on settled runs.
+///    when its flux changed by at most the solver's stop tolerance
+///    (eps_phi, its within-set tolerance) from the previous outer iterate
+///    (the previous update's, or the greedy one of the switch: Sec. 3.2
+///    (iv)); the sweep solver stops only on settled runs.
+/// With sample = PAIR (ours, a labelled ablation of the pair sampling) the
+/// stage works on the (direction, group) units instead: V has a row per
+/// pair (eq. 3.5 weights w_d e_g^2), DEIM picks pairs, the angular update
+/// couples the groups through the within-set transfer blocks
+/// K_l(g, g') on the spatial basis.
 /// Two labelled additions (ours, off by default):
 ///  - galerkin_flux: the update's run holds the Galerkin solution X L
 ///    instead of the interpolant (the solver's next source and the outer
@@ -190,8 +197,9 @@ struct GalerkinConfig {
   /// an empty basis. No direction counts as swept at the start (its fiber
   /// belonged to the previous sources).
   bool carry_basis = false;
-  /// Han et al.'s DEIM stage after the greedy one (source iteration only,
-  /// direction sampling; svd_tol does not compress DEIM-stage fluxes).
+  /// Han et al.'s DEIM stage after the greedy one (source iteration only;
+  /// over pairs with sample = PAIR, ours; svd_tol does not compress
+  /// DEIM-stage fluxes).
   DeimConfig deim;
 };
 

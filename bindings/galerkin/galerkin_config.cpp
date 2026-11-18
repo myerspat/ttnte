@@ -44,7 +44,8 @@ void register_GalerkinConfig(py::module_& m)
 
   py::class_<DeimConfig>(m, "DeimConfig",
     "Han et al. (2026)'s DEIM source iteration after the greedy stage "
-    "(RICHARDSON inner solver, direction sampling).")
+    "(RICHARDSON inner solver; with sample = PAIR over the (direction, "
+    "group) pairs, ours).")
     .def(ttnte::bindings::kwargs_init<DeimConfig>())
     .def_readwrite("enabled", &DeimConfig::enabled)
     .def_readwrite("switch_tol", &DeimConfig::switch_tol,

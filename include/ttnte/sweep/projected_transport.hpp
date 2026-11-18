@@ -105,8 +105,10 @@ public:
     /// Also project the within-set scattering, K_l = X^T S_l X per Legendre
     /// order (bordered with the volume terms in extend()), for
     /// project_scattering() and angular_galerkin() (Han et al. 2026's
-    /// angular update). Off: extend() costs as before. Direction sampling
-    /// only.
+    /// angular update). With spatial_basis one block per order and pair of
+    /// the set's groups, K_l(g, g') = X^T sigma_{s,l}(g <- g') M X
+    /// (symmetric: sigma is constant on a unit; blocks whose transfer is
+    /// zero everywhere are skipped). Off: extend() costs as before.
     bool scattering = false;
   };
 
@@ -262,14 +264,16 @@ protected:
   std::vector<std::vector<std::pair<size_t, size_t>>> buffered_;
   /// Options::scattering: Legendre orders L (the solver's), the order of
   /// each moment, per local unit the within-set transfer (U, L, G, G)
-  /// (rows the destination group, the set's groups only), whether every
-  /// unit's is symmetric (then S_l is, and K_l needs no new rows), and the
-  /// projections K_l (r, r).
+  /// (rows the destination group, the set's groups only), the
+  /// groups of a scattering block (1, or G with spatial_basis), and the
+  /// projections, (r, r) each: K_l, or with spatial_basis the blocks
+  /// K_l(g, g') at scatter_index(l, g, g') with whether each is nonzero.
   int64_t num_orders_ = 0;
   std::vector<int64_t> moment_order_;
   torch::Tensor scatter_xs_;
-  bool scatter_symmetric_ = true;
+  int64_t scatter_groups_ = 1;
   std::vector<Growing> scatter_;
+  std::vector<char> scatter_active_;
 
   // =================================================================
   // Protected constructors
@@ -308,6 +312,17 @@ protected:
     return options_.spatial_basis ? (capital ? "Unit" : "unit")
                                   : (capital ? "Direction" : "direction");
   }
+  /// @return The index of block K_l(g, g') in scatter_ (g = g' = 0
+  /// without spatial_basis).
+  int64_t scatter_index(int64_t l, int64_t g, int64_t gp) const noexcept
+  {
+    return (l * scatter_groups_ + g) * scatter_groups_ + gp;
+  }
+  /// @brief Add one block of the within-set transfer to out (Ns): out +=
+  /// sigma_{s,l,u}(g <- g') y per unit, y (Ns) already multiplied by the
+  /// mass matrix (spatial_basis).
+  void add_block_transfer(
+    const double* y, int64_t l, int64_t g, int64_t gp, double* out) const;
   /// @brief Add the within-set transfer of order l to out (G, Ns), dof by
   /// dof: out_g += sum_g' sigma_{s,l,u}(g <- g') y_g' (transpose: sigma(g'
   /// <- g)), y already multiplied by the mass matrix (sigma is constant on a
@@ -397,18 +412,21 @@ public:
   torch::Tensor solver_moments() const;
 
   /// @brief X^T s_m, the projected source moments of the running transport
-  /// solve (scattering included), (M, r). Direction sampling.
+  /// solve (scattering included): (M, r), or with spatial_basis (M G, r),
+  /// row m G + g the group's X^T s_{m,g}.
   torch::Tensor source_projection() const;
 
   /// @brief Projected within-set scattering of a flux: row m is X^T S_{l(m)}
-  /// phi_m (zero for l(m) >= L). Options::scattering.
+  /// phi_m (zero for l(m) >= L); with spatial_basis row m G + g is X^T
+  /// (S_{l(m)} phi_m)_g = sum_g' K_l(g, g') coordinates. Options::scattering.
   /// @param phi (M, G, Ns) moments at the set's groups, fiber layout.
-  /// @return (M, r).
+  /// @return (M, r), or (M G, r) with spatial_basis.
   /// @throws std::runtime_error Without Options::scattering, or on a wrong
   /// shape.
   torch::Tensor project_scattering(const torch::Tensor& phi) const;
 
-  /// @return (r, r) K_l = X^T S_l X. Options::scattering.
+  /// @return (r, r) K_l = X^T S_l X, or with spatial_basis (G, G, r, r)
+  /// the blocks K_l(g, g') (zero where the transfer is). Options::scattering.
   /// @throws std::runtime_error Without it, or if l is out of range.
   torch::Tensor scattering(int64_t l) const;
 
@@ -422,14 +440,19 @@ public:
   ///   (I - T) Lam = sum_d w_d Y(d) (x) A_d^{-1} f_d,
   ///   T_{m,m'} = [sum_d w_d Y_m(d) Y_m'(d) A_d^{-1}] K_{l(m')},
   /// one (M r)-system; then L_d = A_d^{-1} (f_d + sum_m Y_m(d) K_{l(m)}
-  /// Lam_m). One LU per direction (the first pass, which also forms
-  /// A_d^{-1}, keeps the factors: D r^2 doubles), the second pass only
-  /// solves with them; in parallel over directions in fixed blocks, so the
-  /// result does not depend on the thread count.
+  /// Lam_m). With spatial_basis (pairs, ours) per unit u = (d, g), the
+  /// groups coupled by the transfer blocks,
+  ///   A_u L_u - sum_m Y_m(d) sum_g' K_{l(m)}(g, g') Lam_{m,g'} = f_u,
+  ///   Lam_{m,g} = sum_d w_d Y_m(d) L_{d,g},
+  /// one (M G r)-system, T_{(m,g),(m',g')} = [sum_d w_d Y_m Y_m'
+  /// A_{d,g}^{-1}] K_{l(m')}(g, g'). One LU per unit (the first pass, which
+  /// also forms A_u^{-1}, keeps the factors: U r^2 doubles), the second
+  /// pass only solves with them; in parallel over units in fixed blocks, so
+  /// the result does not depend on the thread count.
   /// @param F (M, r) the fixed source moments, projected: X^T of the source
   /// without the within-set scattering (e.g. source_projection() -
-  /// project_scattering(solver_moments())).
-  /// @return L (D, r) and Lam (M, r).
+  /// project_scattering(solver_moments())); (M G, r) with spatial_basis.
+  /// @return L (U, r) and Lam (M, r), or (M G, r) with spatial_basis.
   /// @throws std::runtime_error Without Options::scattering, on a wrong
   /// shape, or a singular system.
   std::pair<torch::Tensor, torch::Tensor> angular_galerkin(
@@ -438,7 +461,7 @@ public:
   /// @brief source_projection() - project_scattering(solver_moments()): the
   /// projected source without its within-set scattering, during a
   /// Richardson transport solve (Options::scattering).
-  /// @return (M, r).
+  /// @return (M, r), or (M G, r) with spatial_basis.
   torch::Tensor fixed_source() const override final
   {
     return source_projection() - project_scattering(solver_moments());
