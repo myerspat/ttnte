@@ -33,6 +33,9 @@ FiberStore::FiberStore(SamplingProblem problem, Weighting weighting)
       throw utils::runtime_error(ctx("FiberStore"),
         "patch_offsets must start at 0 with one shape per patch");
     }
+    if (!P.mass_bands.empty() && P.mass_bands.size() != P.patch_offsets.size())
+      throw utils::runtime_error(
+        ctx("FiberStore"), "mass_bands must have one band per patch");
     for (size_t q = 0; q < P.patch_offsets.size(); q++) {
       const int64_t end =
         q + 1 < P.patch_offsets.size() ? P.patch_offsets[q + 1] : P.num_space;
@@ -58,6 +61,9 @@ FiberStore::FiberStore(SamplingProblem problem, Weighting weighting)
   energy_weight_.assign(num_groups_, 1.0);
   weighting_.angle = weighting.angle;
   if (weighting.angle) {
+    if (P.weights.dim() != 1 || P.weights.numel() != num_directions_)
+      throw utils::runtime_error(
+        ctx("FiberStore"), "weights must have one entry per direction");
     auto w = P.weights.to(torch::kFloat64).contiguous();
     const double* wp = w.data_ptr<double>();
     for (int64_t d = 0; d < num_directions_; d++)
@@ -187,7 +193,7 @@ void FiberStore::ensure(std::vector<int64_t> pairs, const char* phase)
     const auto w0 = Clock::now();
     // Small calls come from the sweep's worker threads (one task family's
     // rows): serial there, rather than an OpenMP team per worker
-    const int64_t grain = n < SERIAL_ROWS ? n : row_grain(n);
+    const int64_t grain = loop_grain(n);
     at::parallel_for(0, n, grain, [&](int64_t b0, int64_t b1) {
       apply_mass(block + (r0 + b0) * Ns, b1 - b0, false);
       for (int64_t i = b0; i < b1; i++) {
@@ -299,7 +305,7 @@ torch::Tensor FiberStore::residual_norms(
   double* data = work.data_ptr<double>();
   const int64_t rows = D * G;
   std::vector<double> sq(static_cast<size_t>(rows), 0.0);
-  const int64_t grain = rows < SERIAL_ROWS ? rows : row_grain(rows);
+  const int64_t grain = loop_grain(rows);
   at::parallel_for(0, rows, grain, [&](int64_t r0, int64_t r1) {
     apply_dual_mass(data + r0 * Ns, r1 - r0);
     for (int64_t i = r0; i < r1; i++) {
@@ -344,8 +350,7 @@ torch::Tensor FiberStore::pair_residual_norms(
   double* data = work.data_ptr<double>();
   auto norms = torch::empty({U}, torch::kFloat64);
   double* out = norms.data_ptr<double>();
-  const int64_t grain =
-    U < SERIAL_ROWS ? std::max<int64_t>(U, 1) : row_grain(U);
+  const int64_t grain = loop_grain(U);
   at::parallel_for(0, U, grain, [&](int64_t r0, int64_t r1) {
     apply_dual_mass(data + r0 * Ns, r1 - r0);
     for (int64_t i = r0; i < r1; i++) {

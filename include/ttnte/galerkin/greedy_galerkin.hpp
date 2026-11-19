@@ -54,12 +54,6 @@ public:
   // Public types
   using Ptr = std::shared_ptr<GreedyGalerkin>;
 
-  /// @brief One greedy iteration: the rank and fibers after its sweep, the
-  /// residual test's ratio max_j ||r_j||* / RMS_j ||b_j||* over its
-  /// candidates (NaN when every direction is swept), and the relative
-  /// scalar-flux change of its full solve (NaN when the residual test
-  /// failed, or when there was no phi_old to compare with: the first full
-  /// solve of a WITHIN_RUN run).
   /// @brief What a run did.
   enum class RunStage : uint8_t {
     /// The greedy sampling (Guo & Peng).
@@ -71,6 +65,12 @@ public:
     DEIM_UPDATE,
   };
 
+  /// @brief One greedy iteration at its residual test: the rank and fibers
+  /// scored (before the iteration's own sweep), the residual test's ratio
+  /// max_j ||r_j||* / RMS_j ||b_j||* over its candidates (NaN when every
+  /// direction is swept), and the relative scalar-flux change of its full
+  /// solve (NaN when the residual test failed, or when there was no phi_old
+  /// to compare with: the first full solve of a WITHIN_RUN run).
   struct IterationRecord {
     int64_t rank = 0;
     int64_t fibers = 0;
@@ -115,7 +115,6 @@ protected:
   // =================================================================
   // Protected data
   GalerkinConfig config_;
-  sampling::FiberStore::Ptr store_;
   ReducedOperator::Ptr op_;
   int64_t num_directions_ = 0;
   int64_t num_groups_ = 0;
@@ -127,6 +126,12 @@ protected:
   /// (N_Omega) quadrature weights and (N_Omega, M) harmonics.
   torch::Tensor weights_;
   torch::Tensor harmonics_;
+  /// Fixed weights: (num_units) the weight of each unit's coefficients in
+  /// the fibers' norm, a_d (directions; X~ carries e_g) or a_d e_g (pairs;
+  /// X~ is spatial); (G) e_g; (N_Omega) w_d Y_0(d).
+  torch::Tensor unit_weights_;
+  torch::Tensor energy_weights_;
+  torch::Tensor scalar_weights_;
   std::vector<int64_t> initial_directions_;
   std::mt19937_64 rng_;
 
@@ -159,7 +164,7 @@ protected:
   /// carried across runs under PREVIOUS_RUN (phi^(n-1) of the paper's
   /// first comparison), reset at each run under WITHIN_RUN.
   torch::Tensor phi_old_;
-  /// Per direction its right-hand side's norm ||b_d||* in the current run
+  /// Per unit its right-hand side's norm ||b_u||* in the current run
   /// (NaN: not computed yet), the residual test's pooled scale.
   std::vector<double> rhs_norm_;
 
@@ -172,6 +177,10 @@ protected:
   std::vector<int64_t> deim_rows_;
   torch::Tensor deim_interp_;
   double lebesgue_ = std::numeric_limits<double>::quiet_NaN();
+  /// The Lebesgue constant of the selection the last run interpolated with
+  /// (NaN for a greedy run), and the switch's flux norm (divergence test).
+  double run_lebesgue_ = std::numeric_limits<double>::quiet_NaN();
+  double switch_norm_ = 0.0;
   torch::Tensor last_flux_;
   torch::Tensor update_flux_;
   RunStage run_stage_ = RunStage::GREEDY;
@@ -186,15 +195,11 @@ protected:
   double inner_change_ = std::numeric_limits<double>::infinity();
   bool inner_diverged_ = false;
 
-  double error_ = 0.0;
-  bool converged_ = false;
   /// Over every run, and in the last run.
   int64_t orthogonality_failures_ = 0;
   int64_t dropped_ = 0;
   int64_t run_failures_ = 0;
   int64_t run_dropped_ = 0;
-  double seconds_ = 0.0;
-  std::map<std::string, double> timings_;
   std::vector<IterationRecord> history_;
 
   // =================================================================
@@ -247,7 +252,13 @@ protected:
   /// flux).
   void reset();
   /// @brief The greedy stage's run (Guo & Peng, Alg. 3.1).
-  void run_greedy();
+  /// @return The run's weighted scalar flux (its final full solve).
+  torch::Tensor run_greedy();
+  /// @return The units not swept in this run, in order.
+  std::vector<int64_t> unswept() const;
+  /// @return The store's fibers of `units`: a direction's every group, or
+  /// a pair itself.
+  std::vector<int64_t> fiber_indices(const std::vector<int64_t>& units) const;
   /// @brief A DEIM-stage run: sweep I, interpolate, and update the angle
   /// once the inner iteration converged.
   void run_deim();
@@ -258,6 +269,14 @@ protected:
   /// quadrature-weighted orthonormalized (eq. 3.5, deim_weights()), then
   /// DEIM or Q-DEIM.
   void select_directions(const torch::Tensor& V);
+  /// @brief The angular modes of coefficients C (num_units, r): the left
+  /// singular vectors of a C (a = unit_weights_), cut at eps_SVD with `cut`
+  /// (svd_cut()), and without numerically zero modes (DEIM_ZERO_MODE_TOL,
+  /// at least max(m, n) eps of the largest).
+  /// @return (num_units, k) V with the weights divided out, and k (0: C is
+  /// numerically zero).
+  std::pair<torch::Tensor, int64_t> angular_modes(
+    const torch::Tensor& C, bool cut) const;
   /// @return (|units|, G, Ns) the stored fibers of directions, or (|units|,
   /// 1, Ns) of pairs, unweighted.
   torch::Tensor unweighted_fibers(const std::vector<int64_t>& units) const;
@@ -269,10 +288,6 @@ protected:
   torch::Tensor weighted_scalar_flux() const;
   /// @return Up to n distinct unswept directions, uniformly at random.
   std::vector<int64_t> draw(int64_t n);
-  /// @return (num_units) the weight of each unit's coefficients in the
-  /// fibers' norm: a_d (directions; X~ carries e_g) or a_d e_g (pairs; X~
-  /// is spatial).
-  torch::Tensor unit_weights() const;
   /// @return Whether a unit is a (direction, group) pair.
   bool pairs() const noexcept { return config_.sample == GalerkinSample::PAIR; }
 
@@ -286,6 +301,7 @@ public:
   }
 
   void run() override final;
+  void restart() override final;
   void set_tolerance(double tol) override final { config_.tol = tol; }
   torch::Tensor moments() const override final;
   torch::Tensor evaluate(const std::vector<int64_t>& directions,
@@ -309,33 +325,12 @@ public:
   {
     return config_.keep_angular_flux;
   }
-  int64_t num_fibers() const noexcept override final
-  {
-    return store_->num_swept();
-  }
   std::vector<int64_t> ranks() const override final { return {rank_}; }
-  /// @return The last residual test's ratio max_j ||r_j||* / RMS_j ||b_j||*
-  /// (0 when the run ended with every direction swept).
-  double error() const noexcept override final { return error_; }
-  bool converged() const noexcept override final { return converged_; }
-  double seconds() const noexcept override final { return seconds_; }
-  double sweep_seconds() const noexcept override final
-  {
-    return store_->sweep_seconds();
-  }
-  std::map<std::string, double> timings() const override final;
-  const std::vector<sampling::FiberStore::SweepCall>& sweep_calls()
-    const noexcept override final
-  {
-    return store_->sweep_calls();
-  }
+  // error() (the base's): a greedy run's last residual test ratio max_j
+  // ||r_j||* / RMS_j ||b_j||* (0 when the run ended with every direction
+  // swept); a DEIM run's inner change.
   /// @return The options in effect (phi_old resolved, tol the last set).
   const GalerkinConfig& config() const noexcept { return config_; }
-  /// @return The factors in effect (asked for, with the data to apply them).
-  const sampling::Weighting& weighting() const noexcept
-  {
-    return store_->weighting();
-  }
   const std::vector<IterationRecord>& history() const noexcept
   {
     return history_;
@@ -357,6 +352,9 @@ public:
   int64_t truncated_rank() const noexcept { return truncated_rank_; }
   /// @return Basis vectors the last run started from (carry_basis).
   int64_t carried_rank() const noexcept { return carried_rank_; }
+  /// @return (G Ns) the weighted scalar flux (3.9) compares the next full
+  /// solve with (phi^(n-1): the last full solve's), or undefined if none yet.
+  const torch::Tensor& phi_old() const noexcept { return phi_old_; }
   /// @return Whether the runs are in the DEIM stage (GalerkinConfig::deim).
   bool in_deim_stage() const noexcept { return deim_; }
   /// @return The DEIM directions of the next run.

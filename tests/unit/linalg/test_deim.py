@@ -1,9 +1,10 @@
-"""DEIM / Q-DEIM row selection and the quadrature-weighted orthonormal basis of Han et
-al.
+"""DEIM / Q-DEIM row selection and the quadrature-weighted orthonormal basis.
 
-(2026), against the Python reference of the earlier comparison (ttnte-
-studies/sweep-cross/han.py, reproduced here) on random bases.
+Han et al. (2026)'s pieces, against the Python reference of the earlier
+comparison (ttnte-studies/sweep-cross/han.py, reproduced here) on random bases.
 """
+
+import math
 
 import numpy as np
 import pytest
@@ -26,9 +27,9 @@ def _basis(n, r, seed):
 
 
 def _deim_ref(V):
-    """han.py's deim (Han et al.
+    """han.py's deim, the paper's DEIM selection.
 
-    Alg. B.1).
+    Algorithm B.1 of Han et al. (2026).
     """
     I = [int(np.argmax(np.abs(V[:, 0])))]
     for j in range(1, V.shape[1]):
@@ -71,9 +72,9 @@ def test_interpolation_is_exact_on_the_span(select):
 
 
 def test_weighted_orthonormal():
-    """L = V R with V^T diag(w) V = I (Han et al.
+    """L = V R with V^T diag(w) V = I and R upper triangular.
 
-    eq. 3.5), R upper triangular.
+    The weighted orthonormality of eq. 3.5 in Han et al. (2026).
     """
     gen = torch.Generator().manual_seed(5)
     L = torch.randn(50, 7, dtype=torch.float64, generator=gen)
@@ -87,15 +88,19 @@ def test_weighted_orthonormal():
 
 
 def test_lebesgue_constant():
-    """||V_o(I,:)^+||_2 as han.py computes it, and at least 1."""
-    V = _basis(60, 6, 6) @ torch.randn(
-        6, 6, dtype=torch.float64, generator=torch.Generator().manual_seed(7)
+    """The 2-norm of the interpolation projector P g = V V(I, :)^{-1} g(I), formed
+    explicitly (not the orthonormal-basis formula the function uses), and at least
+    1."""
+    n, r = 60, 6
+    V = _basis(n, r, 6) @ torch.randn(
+        r, r, dtype=torch.float64, generator=torch.Generator().manual_seed(7)
     )
     I = deim_select(V)
-    Vo = np.linalg.qr(V.numpy())[0]
-    ref = float(np.linalg.norm(np.linalg.pinv(Vo[I]), 2))
+    P = torch.zeros(n, n, dtype=torch.float64)
+    P[:, I] = V @ torch.linalg.inv(V[I])
+    ref = torch.linalg.matrix_norm(P, 2).item()
     value = lebesgue_constant(V, I)
-    assert value == pytest.approx(ref, rel=1e-12) and value >= 1.0
+    assert value == pytest.approx(ref, rel=1e-10) and value >= 1.0
 
 
 def test_weighted_lebesgue_constant():
@@ -117,10 +122,53 @@ def test_weighted_lebesgue_constant():
     )
 
 
+def _dependent_columns():
+    """V = [e0, e1, e0 + e1] (5 x 3): its third column is in the span of the first
+    two."""
+    V = torch.zeros(5, 3, dtype=torch.float64)
+    V[0, 0] = V[1, 1] = V[0, 2] = V[1, 2] = 1.0
+    return V
+
+
+def test_deim_rejects_rank_deficient_basis():
+    """The dependent column's interpolation residual vanishes off the rows chosen
+    so far: rejected, instead of a chosen row picked again (V(I, :) singular)."""
+    with pytest.raises(RuntimeError, match="rank deficient"):
+        deim_select(_dependent_columns())
+
+
+def test_deim_rows_are_distinct():
+    """Every selection is r distinct rows, also when the residual is flat."""
+    V = torch.linalg.qr(torch.ones(6, 3, dtype=torch.float64) + torch.eye(6, 3))[0]
+    rows = deim_select(V)
+    assert len(rows) == 3 and len(set(rows)) == 3
+
+
+def test_lebesgue_constant_of_rank_deficient_basis_is_infinite():
+    """A rank-deficient V has no interpolation at r rows: unbounded, whatever I."""
+    V = _dependent_columns()
+    assert lebesgue_constant(V, [0, 1, 2]) == math.inf
+    assert lebesgue_constant(V, qdeim_select(V)) == math.inf
+
+
 @pytest.mark.parametrize(
     "call, match",
     [
         (lambda: deim_select(torch.zeros(3, 5, dtype=torch.float64)), "1 <= r <= n"),
+        (
+            lambda: deim_select(torch.zeros(5, 2, dtype=torch.float64)),
+            "rank deficient",
+        ),
+        (
+            lambda: weighted_orthonormal(
+                torch.ones(2, 3, dtype=torch.float64), torch.ones(2)
+            ),
+            "r <= n",
+        ),
+        (
+            lambda: lebesgue_constant(torch.eye(4, 2, dtype=torch.float64), [0, 1, 2]),
+            "I hold r rows",
+        ),
         (lambda: qdeim_select(torch.zeros(4, dtype=torch.float64)), "1 <= r <= n"),
         (
             lambda: weighted_orthonormal(

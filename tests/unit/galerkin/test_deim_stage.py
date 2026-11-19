@@ -28,12 +28,25 @@ from ttnte.galerkin import (
 )
 from ttnte.sweep import InnerSolver, SweepConfig, TransportSolve
 
-from ..sweep.problems import BUILDERS, driver, quadrature, quarter_circle
+from ..sweep.problems import BUILDERS, driver, quadrature, quarter_circle, rel
 
 G = 3
 
 
+# EXACT references, solved once per problem and settings (read only by the tests)
+_EXACT = {}
+
+
 def _solve(num_dim, n, transport, eigenvalue=False, **kw):
+    if transport == TransportSolve.EXACT:
+        key = (num_dim, n, eigenvalue, tuple(sorted(kw.items())))
+        if key not in _EXACT:
+            _EXACT[key] = _run(num_dim, n, transport, eigenvalue, **kw)
+        return _EXACT[key]
+    return _run(num_dim, n, transport, eigenvalue, **kw)
+
+
+def _run(num_dim, n, transport, eigenvalue=False, **kw):
     mesh, xs = BUILDERS[num_dim](G, True, fissile=eigenvalue)
     sw = driver(num_dim, mesh, xs)
     cfg = SweepConfig(
@@ -64,16 +77,14 @@ def _deim(select=DeimSelect.DEIM, **kw):
 OURS = dict(galerkin_flux=True, update_on_growth=True, inner_tol=0.0)
 
 
-def _rel(a, b):
-    return ((a - b).norm() / b.norm()).item()
-
-
 def _check_records(sw, set_size, pairs=False):
     """The records tell the stages apart: greedy runs first, then DEIM runs that sweep
     exactly their DEIM directions (fewer than all), settled only after an update within
     the solver's stop tolerance (Han et al.'s eps_phi) of the previous outer iterate
     (for the first update, the greedy iterate of the switch); the last run of the
-    solve is settled. With pairs a DEIM unit is one (direction, group) fiber."""
+    solve is settled. With pairs a DEIM unit is one (direction, group) fiber. A DEIM
+    run reports the finite Lebesgue constant of the selection it interpolated with
+    (greedy runs none), so with one group set it changes only after an update."""
     D = sw.ordinates.shape[0] * (G if pairs else 1)
     recs = sw.sampling_records
     stages = [r.stage for r in recs]
@@ -83,10 +94,17 @@ def _check_records(sw, set_size, pairs=False):
     sets = (
         [G] if not set_size else [min(set_size, G - k) for k in range(0, G, set_size)]
     )
+    previous = None
     for r in recs:
         if r.stage == GalerkinStage.GREEDY:
             assert r.settled and r.deim_directions == 0
+            assert math.isnan(r.lebesgue)
             continue
+        assert math.isfinite(r.lebesgue)
+        if not set_size and previous is not None:
+            if previous.stage == GalerkinStage.DEIM_INNER:
+                assert r.lebesgue == previous.lebesgue
+        previous = r
         assert 1 <= r.deim_directions <= D
         if pairs:
             assert r.fibers == r.deim_directions
@@ -118,7 +136,7 @@ def test_ours_matches_exact(num_dim, n, set_size):
     exact, _ = _solve(num_dim, n, TransportSolve.EXACT, **kw)
     phi, sw = _solve(num_dim, n, TransportSolve.GALERKIN, galerkin=_deim(**OURS), **kw)
     assert sw.converged
-    assert _rel(phi, exact) < 1e-5
+    assert rel(phi, exact) < 1e-5
     _check_records(sw, set_size)
 
 
@@ -129,17 +147,17 @@ def test_paper_matches_exact(num_dim, n):
     exact, _ = _solve(num_dim, n, TransportSolve.EXACT)
     phi, sw = _solve(num_dim, n, TransportSolve.GALERKIN, galerkin=_deim())
     assert sw.converged
-    assert _rel(phi, exact) < 1e-5
+    assert rel(phi, exact) < 1e-5
     _check_records(sw, 0)
 
 
 def test_paper_diverges_in_3d():
-    """Without DSA (Han et al.
+    """Without DSA the paper's interpolated source iteration diverges in 3-D.
 
-    have it inside the inner iterations) the paper's interpolated source
-    iteration diverges on the 3-D octant at switch_tol 1e-4 (|I| = 81 of 128,
-    Lebesgue constants 7-27): the flux grows until its norm overflows, reported
-    as such.
+    Han et al. have DSA inside the inner iterations; without it, on the 3-D
+    octant at switch_tol 1e-4 (|I| = 81 of 128, Lebesgue constants 7-27), the
+    flux grows until the divergence test reports it (DEIM_DIVERGENCE_GROWTH
+    times its norm at the switch).
     """
     with pytest.raises(RuntimeError, match="DEIM source iteration diverged"):
         _solve(3, 4, TransportSolve.GALERKIN, galerkin=_deim())
@@ -149,7 +167,7 @@ def test_paper_later_switch_in_3d():
     """Switching later (switch_tol 1e-7) the same problem converges."""
     exact, _ = _solve(3, 4, TransportSolve.EXACT)
     phi, sw = _solve(3, 4, TransportSolve.GALERKIN, galerkin=_deim(switch_tol=1e-7))
-    assert sw.converged and _rel(phi, exact) < 1e-5
+    assert sw.converged and rel(phi, exact) < 1e-5
     _check_records(sw, 0)
 
 
@@ -170,7 +188,7 @@ def test_galerkin_flux_changes_the_iterate():
         )
     assert not torch.equal(phi0, phi1)
     for phi, sw in [(phi0, sw0), (phi1, sw1)]:
-        assert sw.converged and _rel(phi, exact) < 1e-5
+        assert sw.converged and rel(phi, exact) < 1e-5
 
 
 def test_update_on_growth():
@@ -192,7 +210,7 @@ def test_update_on_growth():
         galerkin=_deim(inner_tol=0.0, update_on_growth=True),
         **kw,
     )
-    assert sw.converged and _rel(phi, exact) < 1e-5
+    assert sw.converged and rel(phi, exact) < 1e-5
     grown = [r for r in sw.sampling_records if r.inner_diverged]
     assert grown and all(r.stage == GalerkinStage.DEIM_UPDATE for r in grown)
 
@@ -215,7 +233,7 @@ def test_qdeim_matches_exact():
     phi, sw = _solve(
         2, 6, TransportSolve.GALERKIN, galerkin=_deim(DeimSelect.QDEIM, **OURS)
     )
-    assert sw.converged and _rel(phi, exact) < 1e-5
+    assert sw.converged and rel(phi, exact) < 1e-5
     _check_records(sw, 0)
 
 
@@ -227,7 +245,7 @@ def test_eigenvalue_matches_exact(deim):
     )
     assert sw.converged
     assert abs(sw.k_eff - ex.k_eff) < 1e-6
-    assert _rel(phi / phi.norm(), exact / exact.norm()) < 1e-5
+    assert rel(phi / phi.norm(), exact / exact.norm()) < 1e-5
     _check_records(sw, 0)
 
 
@@ -306,7 +324,7 @@ def test_pairs_ours_matches_exact(num_dim, n, set_size):
         num_dim, n, TransportSolve.GALERKIN, galerkin=_pair_deim(**OURS), **kw
     )
     assert sw.converged
-    assert _rel(phi, exact) < 1e-5
+    assert rel(phi, exact) < 1e-5
     recs = _check_records(sw, set_size, pairs=True)
     units = sw.ordinates.shape[0] * (set_size or G)
     assert max(r.deim_directions for r in recs) < units // 2
@@ -329,7 +347,7 @@ def test_pairs_paper_matches_exact(num_dim, n, set_size, switch_tol):
         **kw,
     )
     assert sw.converged
-    assert _rel(phi, exact) < 1e-5
+    assert rel(phi, exact) < 1e-5
     _check_records(sw, set_size, pairs=True)
 
 
@@ -359,7 +377,7 @@ def test_one_group_pairs_equal_directions(deim):
     (phi_d, rec_d), (phi_p, rec_p) = out.values()
     assert rec_d == rec_p
     assert any(stage == GalerkinStage.DEIM_UPDATE for stage, _, _ in rec_d)
-    assert _rel(phi_p, phi_d) < 1e-10
+    assert rel(phi_p, phi_d) < 1e-10
 
 
 def test_pairs_truncated_spatial_basis():
@@ -390,6 +408,49 @@ def test_pairs_truncated_spatial_basis():
         )
     (exact, _), (phi, sw) = out.values()
     assert sw.converged
-    assert _rel(phi, exact) < 1e-5
+    assert rel(phi, exact) < 1e-5
     recs = _check_records(sw, 0, pairs=True)
     assert 0 < max(r.deim_directions for r in recs) < sw.fiber_length
+
+
+def test_zero_flux_stays_greedy(monkeypatch):
+    """A set whose flux is zero (here: no source at all) never switches to DEIM.
+
+    It has nothing to interpolate, and its zero run change is no sign of a
+    settled iteration (it used to enter the stage on rank-0 coefficients and
+    fail).
+    """
+    from ..sweep import problems
+
+    monkeypatch.setattr(
+        problems,
+        "_source",
+        lambda G_: problems.FixedSource(
+            isotropic_strength=torch.zeros(G_, dtype=torch.float64)
+        ),
+    )
+    phi, sw = _solve(
+        1, 16, TransportSolve.GALERKIN, galerkin=_deim(), sampling_relax=False
+    )
+    assert sw.converged and phi.abs().max() == 0.0
+    assert all(r.stage == GalerkinStage.GREEDY for r in sw.sampling_records)
+
+
+def test_thread_count_does_not_change_the_solve():
+    """One thread or four, the hybrid takes the same runs (stages and fibers: no thread-
+    dependent selection; the reduced assembly runs on one MKL thread) and the same flux
+    to rounding (the sampler's own products use its threads, and even EXACT differs in
+    the last bits, about 1e-15, between thread counts)."""
+    out = []
+    for threads in (1, 4):
+        phi, sw = _solve(
+            2,
+            6,
+            TransportSolve.GALERKIN,
+            galerkin=_deim(**OURS),
+            num_threads=threads,
+            sampling_threads=threads,
+        )
+        out.append((phi, [(r.stage, r.fibers) for r in sw.sampling_records]))
+    assert out[0][1] == out[1][1]
+    assert rel(out[0][0], out[1][0]) < 1e-13

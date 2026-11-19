@@ -262,6 +262,12 @@ void SweepSolver::build_range_dag()
 
 void SweepSolver::reset_state(bool unit_scalar_flux)
 {
+  // A new solve: the samplers start over (no stage, warm start or reference
+  // carried from the last solve), and no within-set tolerance is set yet
+  for (auto& sampler : samplers_)
+    sampler->restart();
+  sampling_tol_ = 0.0;
+  stop_tol_ = 0.0;
   sampling_records_.clear();
   sampling_seconds_ = 0.0;
   sampling_sweep_seconds_ = 0.0;

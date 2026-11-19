@@ -45,6 +45,13 @@ inline int64_t row_grain(int64_t n)
           1, TTNTE_ROW_CHUNKS_PER_THREAD * at::get_num_threads()));
 }
 
+/// Grain of a parallel loop over n fiber rows: one chunk (serial) below
+/// SERIAL_ROWS, else row_grain(n).
+inline int64_t loop_grain(int64_t n)
+{
+  return n < SERIAL_ROWS ? std::max<int64_t>(n, 1) : row_grain(n);
+}
+
 inline double elapsed(Clock::time_point t0)
 {
   return std::chrono::duration<double>(Clock::now() - t0).count();

@@ -309,8 +309,8 @@ private:
   int64_t dag_nanoseconds_ = 0;
   /// Fibers swept by sweep_fibers().
   int64_t num_fibers_ = 0;
-  /// Sampled transport solves (TransportSolve::CROSS): one sampler per
-  /// group set, the tolerance of the next transport solve, and per-solve
+  /// Sampled transport solves (TransportSolve::CROSS, GALERKIN): one sampler
+  /// per group set, the tolerance of the next transport solve, and per-solve
   /// records (tolerance, fibers, largest rank, error).
   std::vector<sampling::SampledTransport::Ptr> samplers_;
   double sampling_tol_ = 0.0;
@@ -542,7 +542,8 @@ private:
   }
 
   /// @brief One transport solve of group set `s` with the current sources
-  /// and lagged traces: an exact sweep or a cross.
+  /// and lagged traces: an exact sweep or the set's sampler (CROSS,
+  /// GALERKIN).
   void transport_group_set(size_t s);
 
   /// Which moments feed the within-group-set scattering term.

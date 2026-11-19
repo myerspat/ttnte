@@ -1,7 +1,7 @@
-"""linalg.mgs2a: Gram-Schmidt with reorthogonalization and adaptive cleanups (MGS2-A,
-Guo & Peng Alg.
+"""linalg.mgs2a: Gram-Schmidt of one vector against an orthonormal basis.
 
-3.2) of one vector against an orthonormal basis.
+With reorthogonalization and adaptive cleanups: MGS2-A, Algorithm 3.2 of Guo &
+Peng.
 """
 
 import pytest

@@ -9,19 +9,9 @@ import torch
 from ttnte.sweep import LocalSolverType, SweepConfig
 
 from . import test_nonconforming as nc
-from .problems import BUILDERS, boxes, driver, quadrature, quarter_circle
+from .problems import BUILDERS, boxes, driver, mid_solve, quadrature, quarter_circle
 
 G = 3
-
-
-def _setup(mesh, xs, num_dim, **kw):
-    """A sweeper mid-solve: a few source iterations, so the sources and lagged traces
-    are nonzero and not converged."""
-    sw = driver(num_dim, mesh, xs)
-    cfg = SweepConfig(tol=1e-14, max_iter=3, verbose=False, **kw)
-    sw.setup(quadrature(num_dim), cfg)
-    sw.solve_fixed_source()
-    return sw
 
 
 def _relative_residuals(sw, groups):
@@ -46,7 +36,7 @@ def test_swept_fibers_have_no_residual(num_dim, reflective):
     """Curved meshes (quarter circle, octant sphere split into elements), vacuum and
     reflective."""
     mesh, xs = BUILDERS[num_dim](G, reflective)
-    sw = _setup(mesh, xs, num_dim)
+    sw = mid_solve(mesh, xs, num_dim)
     assert max(_relative_residuals(sw, list(range(G)))) < 1e-12
 
 
@@ -70,7 +60,7 @@ def test_cartesian_kronecker(num_dim, reflective):
     """Axis-aligned boxes, solved by the Kronecker-sum solver (SYLVESTER) the residual
     does not use: the pair-list operator is the same one."""
     mesh, xs = boxes(num_dim, G, reflective)
-    sw = _setup(mesh, xs, num_dim)
+    sw = mid_solve(mesh, xs, num_dim)
     assert sw.num_kronecker_units > 0
     assert max(_relative_residuals(sw, list(range(G)))) < 1e-12
 
@@ -85,7 +75,7 @@ def test_local_solvers(solver, cache):
     earlier sweeps (no operator assembled), the residual always assembles L: the two
     must agree."""
     mesh, xs = BUILDERS[2](G, True)
-    sw = _setup(mesh, xs, 2, local_solver=solver, cache_factorizations=cache)
+    sw = mid_solve(mesh, xs, 2, local_solver=solver, cache_factorizations=cache)
     if cache and solver != LocalSolverType.SYLVESTER:
         assert sw.factorization_bytes > 0
     assert max(_relative_residuals(sw, list(range(G)))) < 1e-12
@@ -105,14 +95,14 @@ def test_nonconforming_interfaces(surfaces, num_dim):
     """Inflow across a non-conforming interface goes through its coupling pairs."""
     fills, xs = nc.absorber()
     mesh = nc.build(surfaces(), fills)
-    sw = _setup(mesh, xs, num_dim)
+    sw = mid_solve(mesh, xs, num_dim)
     assert max(_relative_residuals(sw, list(range(nc.G)))) < 1e-12
 
 
 def test_group_subset_and_order():
     """Any groups, in any order: each group's residual is its own."""
     mesh, xs = BUILDERS[2](G, True)
-    sw = _setup(mesh, xs, 2)
+    sw = mid_solve(mesh, xs, 2)
     assert max(_relative_residuals(sw, [2, 0])) < 1e-12
     nd = sw.ordinates.shape[0]
     psi = torch.randn(G, sw.fiber_length, generator=torch.Generator().manual_seed(0))
@@ -126,7 +116,7 @@ def test_residual_is_affine_and_sees_perturbations():
     """r(x) = b - A x: r(x + y) + r(0) = r(x) + r(y), and perturbing one patch of a swept
     fiber gives a residual of the perturbation's size."""
     mesh, xs = BUILDERS[2](G, False)
-    sw = _setup(mesh, xs, 2)
+    sw = mid_solve(mesh, xs, 2)
     groups = list(range(G))
     gen = torch.Generator().manual_seed(1)
     x = torch.randn(G, sw.fiber_length, generator=gen)
@@ -146,7 +136,7 @@ def test_residual_is_affine_and_sees_perturbations():
 
 def test_rejects_bad_arguments():
     mesh, xs = BUILDERS[1](G, False)
-    sw = _setup(mesh, xs, 1)
+    sw = mid_solve(mesh, xs, 1)
     nd = sw.ordinates.shape[0]
     psi = torch.zeros(2, sw.fiber_length)
     with pytest.raises(RuntimeError, match="Direction out of range"):

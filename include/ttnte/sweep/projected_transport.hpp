@@ -122,8 +122,13 @@ protected:
     int64_t rows = 0;
     int64_t cols = 0;
     void resize(int64_t num_rows, int64_t num_cols);
+    /// @return The (rows, cols) block (zeros before any storage, e.g. at
+    /// rank 0).
     torch::Tensor view() const
     {
+      if (!storage.defined())
+        return torch::zeros(
+          {rows, cols}, torch::TensorOptions().dtype(torch::kFloat64));
       return storage.narrow(0, 0, rows).narrow(1, 0, cols);
     }
   };
@@ -292,9 +297,16 @@ protected:
   /// @brief Gather the sources at the set's groups (source_all_) if not
   /// yet done in this transport solve.
   void gather_sources() const;
-  /// @brief Add unit u's buffered inflow (lagged edges, reflective faces:
-  /// data, not unknown) to out (basis_groups, num_space), assembled by the
-  /// sweep kernel's buffered_inflow() as a sweep adds it.
+  /// @brief Unit u's buffered inflow (lagged edges, reflective faces: data,
+  /// not unknown) face by face, assembled by the sweep kernel's
+  /// buffered_inflow() as a sweep adds it: fn(p, f, bg, v) per buffered face
+  /// f of local unit p with inflow for u's direction and per basis group bg,
+  /// v (the face's dofs) the inflow there. Shared by add_buffered_inflow()
+  /// and buffered_rhs().
+  void for_each_buffered_face(int64_t u,
+    const std::function<void(size_t, size_t, int64_t, const double*)>& fn)
+    const;
+  /// @brief Add unit u's buffered inflow to out (basis_groups, num_space).
   void add_buffered_inflow(int64_t u, double* out) const;
   /// @return Unit u's direction, and its group (index into groups_; -1:
   /// every group of the set, direction sampling).
@@ -446,9 +458,12 @@ public:
   ///   Lam_{m,g} = sum_d w_d Y_m(d) L_{d,g},
   /// one (M G r)-system, T_{(m,g),(m',g')} = [sum_d w_d Y_m Y_m'
   /// A_{d,g}^{-1}] K_{l(m')}(g, g'). One LU per unit (the first pass, which
-  /// also forms A_u^{-1}, keeps the factors: U r^2 doubles), the second
-  /// pass only solves with them; in parallel over units in fixed blocks, so
-  /// the result does not depend on the thread count.
+  /// also forms A_u^{-1}, keeps the factors: U r^2 doubles, U = D |set| with
+  /// spatial_basis, while that is at most TTNTE_ANGULAR_FACTOR_MB; past it
+  /// the second pass assembles and factors again), the second pass only
+  /// solves with them; in parallel over units in fixed blocks, so the result
+  /// does not depend on the thread count. The coupled system is dense, n^2
+  /// doubles for n = M r (M |set| r with spatial_basis).
   /// @param F (M, r) the fixed source moments, projected: X^T of the source
   /// without the within-set scattering (e.g. source_projection() -
   /// project_scattering(solver_moments())); (M G, r) with spatial_basis.

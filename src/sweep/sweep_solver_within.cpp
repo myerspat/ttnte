@@ -500,6 +500,13 @@ int64_t SweepSolver::inner_solve(size_t s, bool jacobi)
   const double tol_min = config_.sampling_inner_factor * tol;
   sampling_tol_ = tol_min;
   stop_tol_ = tol;
+  // Outside this solve no within-set tolerance applies: transport solves
+  // elsewhere (sweep(), certify()) take the samplers' config tolerance
+  struct ClearTolerances {
+    double& sampling;
+    double& stop;
+    ~ClearTolerances() { sampling = stop = 0.0; }
+  } clear_tolerances {sampling_tol_, stop_tol_};
 
   // Richardson (source iteration): sweep with the latest moments, commit,
   // stop when the set's moments change by less than tol (relative)
@@ -513,6 +520,7 @@ int64_t SweepSolver::inner_solve(size_t s, bool jacobi)
     // unrelaxed one) and at most sampling_max_tol (the first sweep, no change
     // yet). Only sampled transport reads sampling_tol_
     double change = std::numeric_limits<double>::infinity();
+    bool stopped = false;
     for (int64_t it = 0; it < config_.inner_max_iter; it++) {
       double num = 0.0, den = 0.0;
       sampling_tol_ =
@@ -540,10 +548,19 @@ int64_t SweepSolver::inner_solve(size_t s, bool jacobi)
       // A sampler iterating on a representation the moments do not show
       // (Han et al.'s DEIM inner loop) holds the stop until it is settled
       if (den == 0.0 ||
-          (change < tol && samplers_settled(static_cast<int64_t>(s))))
+          (change < tol && samplers_settled(static_cast<int64_t>(s)))) {
+        stopped = true;
         break;
+      }
     }
-    sampling_tol_ = tol_min;
+    // Out of inner iterations with the moments within tolerance: only an
+    // unsettled sampler (a DEIM stage awaiting its angular update) held the
+    // stop, which a failed solve would otherwise not show
+    if (!stopped && change < tol && config_.verbose && comm_.rank() == 0)
+      std::cout << "-- warning: within-group-set Richardson (set " << s
+                << ") reached inner_max_iter (" << config_.inner_max_iter
+                << ") with the change within tolerance but a sampler not "
+                   "settled (a DEIM stage without its angular update)\n";
     return group_set_sweeps_ - start;
   }
 

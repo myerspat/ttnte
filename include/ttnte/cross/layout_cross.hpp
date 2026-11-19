@@ -169,9 +169,6 @@ private:
   /// Cores (r_l, n_k, r_r), weighted while running and unweighted after.
   std::vector<torch::Tensor> cores_;
 
-  /// Swept fibers, weighted by sqrt(w_d), 1 / sqrt(du_g) and R_P as
-  /// CrossConfig::weighting enables (see FiberStore).
-  sampling::FiberStore::Ptr store_;
   /// Pairs the fit has used (superblocks, init): never out of sample.
   std::vector<uint8_t> fitted_;
   /// RMS norm of the hold-out pool at the last check.
@@ -194,17 +191,12 @@ private:
   /// Form every block Gram in factored form (testing aid).
   bool factored_grams_ = false;
 
-  /// Results of the last run.
-  double holdout_error_ = 0.0;
-  bool converged_ = false;
+  /// Results of the last run (the error, convergence and seconds are the
+  /// base's; error_ is the hold-out error).
   bool stalled_ = false;
   std::vector<SweepRecord> history_;
   int64_t sweeps_done_ = 0;
   int64_t total_fibers_ = 0;
-  double seconds_ = 0.0;
-  /// Seconds per phase of run() outside the oracle, accumulated over every
-  /// run (the oracle's "sweep" and "weight_cpu" are the store's).
-  std::map<std::string, double> timings_;
   /// Concatenated Gaussian sketches of the initial directions, by (number of
   /// initial directions, sketch rows): they depend on nothing else (the
   /// initial directions are fixed), so they are made once.
@@ -380,6 +372,7 @@ public:
   /// @brief Run the cross for the current state of the oracle (one
   /// transport solve).
   void run() override final;
+  void restart() override final;
 
   /// @brief Contract the TT over every mode with a selector.
   /// @param select One selector per mode (MU, GA, S, E). Angle modes must be
@@ -419,53 +412,30 @@ public:
   const tensor::Layout& layout() const noexcept { return layout_; }
   const tensor::Layout& user_layout() const noexcept { return user_layout_; }
   std::vector<int64_t> ranks() const override final;
-  int64_t num_fibers() const noexcept override final
-  {
-    return store_->num_swept();
-  }
-  /// @return The weighting factors in effect: those CrossConfig::weighting
-  /// enables that the problem has the data for.
-  const sampling::Weighting& weighting() const noexcept
-  {
-    return store_->weighting();
-  }
   int64_t total_fibers() const noexcept { return total_fibers_; }
   /// @return The error the last run's final check was accepted or rejected
   /// on: the pool's, or the global estimate when the pool failed and
   /// global_holdout is set.
-  double holdout_error() const noexcept { return holdout_error_; }
-  /// @return holdout_error().
-  double error() const noexcept override final { return holdout_error_; }
+  /// error() is the same.
+  double holdout_error() const noexcept { return error_; }
   /// @return Estimated global relative error at the last check, NaN if the
   /// pool alone accepted it.
   double global_error() const noexcept { return global_error_; }
   /// @return One record per half-sweep of the last run.
   const std::vector<SweepRecord>& history() const noexcept { return history_; }
   sampling::RunRecord::Ptr record() const override final;
-  bool converged() const noexcept override final { return converged_; }
   /// @return Whether the last run stopped on stalled passes (see
   /// CrossConfig::stall_passes).
   bool stalled() const noexcept { return stalled_; }
   int64_t sweeps_done() const noexcept { return sweeps_done_; }
-  double sweep_seconds() const noexcept override final
-  {
-    return store_->sweep_seconds();
-  }
-  double seconds() const noexcept override final { return seconds_; }
-  /// @return Seconds per phase of run(), accumulated over every run and
-  /// disjoint except weight_cpu: sweep (the oracle, including the weighting
-  /// of finished fibers that runs inside it), weight_cpu (seconds in the
-  /// weighting callbacks summed over the threads running them, a CPU time
-  /// overlapping sweep, not a phase of its own), gather (copying
-  /// fibers into superblocks), project (B^+ and C^+ on superblocks), svd
-  /// (truncations and end-core fits), select, basis (the left inverses of the
-  /// new bases), init and check (both without their sweeps), unweight.
-  std::map<std::string, double> timings() const override final;
-  /// @return Every sweep request of every run (see SweepCall).
-  const std::vector<SweepCall>& sweep_calls() const noexcept override final
-  {
-    return store_->sweep_calls();
-  }
+  // timings() (the base's): seconds per phase of run(), accumulated over
+  // every run and disjoint except weight_cpu: sweep (the oracle, including
+  // the weighting of finished fibers that runs inside it), weight_cpu
+  // (seconds in the weighting callbacks summed over the threads running
+  // them, a CPU time overlapping sweep, not a phase of its own), gather
+  // (copying fibers into superblocks), project (B^+ and C^+ on superblocks),
+  // svd (truncations and end-core fits), select, basis (the left inverses of
+  // the new bases), init and check (both without their sweeps), unweight.
   const CrossConfig& config() const noexcept { return config_; }
 
   // =================================================================

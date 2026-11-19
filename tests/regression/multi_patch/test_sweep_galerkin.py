@@ -10,7 +10,7 @@ import mpi4py.MPI
 import pytest
 import torch
 
-from tests.unit.sweep.problems import BUILDERS, driver, quadrature
+from tests.unit.sweep.problems import BUILDERS, driver, quadrature, rel
 from ttnte import mpi_context
 from ttnte.galerkin import (
     DeimConfig,
@@ -38,12 +38,26 @@ def _config(transport, galerkin=None, **kw):
     )
 
 
+# EXACT references, solved once per problem and settings (read only by the tests)
+_EXACT = {}
+
+
 def _solve(num_dim, reflective, transport, fissile=False, n=3, **kw):
     # GALERKIN is serial in space (SweepSolver::build_samplers throws on more
-    # than one rank, see test_rejects_multiple_ranks). Skip on every rank alike,
-    # before any collective.
-    if transport == TransportSolve.GALERKIN and mpi_context.world_size > 1:
+    # than one rank, see test_rejects_multiple_ranks), and every test using
+    # this compares against it: skip on every rank alike, before any solve
+    # (and collective), the EXACT reference included.
+    if mpi_context.world_size > 1:
         pytest.skip("GALERKIN transport solves are serial in space for now")
+    if transport == TransportSolve.EXACT:
+        key = (num_dim, reflective, fissile, n, tuple(sorted(kw.items())))
+        if key not in _EXACT:
+            _EXACT[key] = _run(num_dim, reflective, transport, fissile, n, **kw)
+        return _EXACT[key]
+    return _run(num_dim, reflective, transport, fissile, n, **kw)
+
+
+def _run(num_dim, reflective, transport, fissile=False, n=3, **kw):
     mesh, xs = BUILDERS[num_dim](G, reflective, fissile)
     sw = driver(num_dim, mesh, xs)
     sw.setup(quadrature(num_dim, n), _config(transport, **kw))
@@ -58,10 +72,6 @@ def _solve(num_dim, reflective, transport, fissile=False, n=3, **kw):
 def _scalar_flux(sw):
     parts = [sw.get_moments(gid)[0].flatten() for gid in sw.local_gids]
     return torch.cat(parts) if parts else torch.zeros(0, dtype=torch.float64)
-
-
-def _rel(a, b):
-    return ((a - b).norm() / b.norm()).item()
 
 
 def _flux_rel(sw, ref):
@@ -188,7 +198,7 @@ def test_deim_source_iteration(num_dim, reflective, variant, fissile):
             assert len(rec.history) > 0 and rec.deim_directions == 0
         else:
             assert rec.fibers == rec.deim_directions * (1 if pairs else G)
-            assert rec.lebesgue >= 1.0 - 1e-12
+            assert math.isfinite(rec.lebesgue) and rec.lebesgue >= 1.0 - 1e-12
 
 
 @pytest.mark.mpi(min_size=1)
@@ -226,8 +236,8 @@ def test_angular_flux_stored_kept_and_released():
     plain = _solve(2, True, TransportSolve.GALERKIN)
     for gid in exact.local_gids:
         ref = exact.get_angular_flux(gid)
-        assert _rel(stored.get_angular_flux(gid), ref) < 1e-4
-        assert _rel(kept.get_angular_flux(gid), ref) < 1e-4
+        assert rel(stored.get_angular_flux(gid), ref) < 1e-4
+        assert rel(kept.get_angular_flux(gid), ref) < 1e-4
     assert kept.get_galerkin(0).holds_flux
     assert not plain.get_galerkin(0).holds_flux
     with pytest.raises(RuntimeError, match="galerkin.keep_angular_flux"):

@@ -20,7 +20,7 @@ from ttnte.galerkin import (
 )
 from ttnte.sweep import InnerSolver, SweepConfig, TransportSolve
 
-from ..sweep.problems import BUILDERS, driver, quadrature, quarter_circle
+from ..sweep.problems import BUILDERS, driver, quadrature, quarter_circle, rel
 
 G = 3
 
@@ -29,9 +29,8 @@ def _sampler(build, num_dim, n, sweep=None, **galerkin):
     """A GALERKIN solver mid-solve (nonzero, unconverged sources and traces), its
     sampler, and the exact moments and fibers of the current state.
 
-    The few
-    iterations reaching that state run at a loose tolerance: at a tight one every
-    transport solve would sweep (nearly) every direction.
+    The few iterations reaching that state run at a loose tolerance: at a tight
+    one every transport solve would sweep (nearly) every direction.
     """
     mesh, xs = build()
     sw = driver(num_dim, mesh, xs)
@@ -51,20 +50,32 @@ def _sampler(build, num_dim, n, sweep=None, **galerkin):
     return sw, sw.get_galerkin(0), moments, fibers
 
 
-def _rel(a, b):
-    return ((a - b).norm() / b.norm()).item()
-
-
 def _all(sw):
     D = sw.ordinates.shape[0]
     return list(range(D)), list(range(G)), list(range(sw.fiber_length))
 
 
+def _fresh(state):
+    """A module-scoped sampler as each test should see it: restarted (no reference,
+    random state or carried basis from earlier tests) at its first tolerance, so the
+    tests sharing it do not depend on their order."""
+    sw, g, ref, fibers, tol = state
+    g.restart()
+    g.set_tolerance(tol)
+    return sw, g, ref, fibers
+
+
 @pytest.fixture(scope="module")
-def circle():
+def _circle():
+    state = _sampler(lambda: quarter_circle(G, True, factor=4), 2, 8)
+    return (*state, state[1].tolerance)
+
+
+@pytest.fixture
+def circle(_circle):
     """The reflective quarter circle, 4 x 4 refined, 256 directions: low rank in angle
     relative to the directions and the space."""
-    return _sampler(lambda: quarter_circle(G, True, factor=4), 2, 8)
+    return _fresh(_circle)
 
 
 def test_error_tracks_tolerance(circle):
@@ -76,7 +87,7 @@ def test_error_tracks_tolerance(circle):
         g.set_tolerance(tol)
         g.run()
         assert g.converged
-        assert _rel(g.moments(), ref) <= tol
+        assert rel(g.moments(), ref) <= tol
         assert g.history[-1].residual <= tol and g.history[-1].phi_change <= tol
         fibers.append(g.num_fibers)
     D = sw.ordinates.shape[0]
@@ -91,7 +102,7 @@ def test_moments_match_evaluate(circle):
     g.run()
     psi = g.evaluate(*_all(sw))
     ref = torch.einsum("dm,d,dgl->mgl", sw.harmonics, sw.weights, psi)
-    assert _rel(g.moments(), ref) < 1e-13
+    assert rel(g.moments(), ref) < 1e-13
 
 
 def test_swept_directions_are_exact(circle):
@@ -101,7 +112,7 @@ def test_swept_directions_are_exact(circle):
     g.run()
     swept = [d for d, s in enumerate(g.swept) if s]
     psi = g.evaluate(swept, list(range(G)), list(range(sw.fiber_length)))
-    assert _rel(psi, fibers[swept]) < 1e-11
+    assert rel(psi, fibers[swept]) < 1e-11
 
 
 def test_exact_once_every_direction_is_swept():
@@ -111,8 +122,8 @@ def test_exact_once_every_direction_is_swept():
     g.set_tolerance(1e-14)
     g.run()
     assert all(g.swept) and g.converged and g.error == 0.0
-    assert _rel(g.evaluate(*_all(sw)), fibers) < 1e-13
-    assert _rel(g.moments(), ref) < 1e-13
+    assert rel(g.evaluate(*_all(sw)), fibers) < 1e-13
+    assert rel(g.moments(), ref) < 1e-13
 
 
 def test_saturated_basis():
@@ -124,7 +135,7 @@ def test_saturated_basis():
     g.run()
     assert g.ranks == [G * sw.fiber_length]
     assert g.dropped_snapshots > 0 and not all(g.swept)
-    assert _rel(g.moments(), ref) < 1e-12
+    assert rel(g.moments(), ref) < 1e-12
 
 
 def test_seed_is_deterministic():
@@ -186,7 +197,7 @@ def test_max_iter_still_returns_a_flux():
     g.run()
     assert len(g.history) == 3 and not g.converged
     assert g.holds_flux and torch.isfinite(g.moments()).all()
-    assert _rel(g.moments(), ref) < 1.0
+    assert rel(g.moments(), ref) < 1.0
 
 
 def test_weighting_defaults_and_paper_setting():
@@ -202,7 +213,7 @@ def test_weighting_defaults_and_paper_setting():
     assert not g.weighting.angle and g.weighting.space and not g.weighting.energy
     g.set_tolerance(1e-3)
     g.run()
-    assert g.converged and _rel(g.moments(), ref) <= 1e-3
+    assert g.converged and rel(g.moments(), ref) <= 1e-3
 
 
 @pytest.mark.parametrize(
@@ -249,7 +260,7 @@ def test_phi_old_reference(phi_old):
     g.set_tolerance(1e-3)
     for _ in range(2):
         g.run()
-        assert g.converged and _rel(g.moments(), ref) <= 1e-3
+        assert g.converged and rel(g.moments(), ref) <= 1e-3
         fills = _fills(g)
         assert fills[-1].phi_change <= 1e-3
     first = fills[0].phi_change
@@ -289,8 +300,8 @@ def test_svd_truncation(norm):
 
     _, exact = run(svd_tol=1e-15)
     assert exact.ranks == [r] and exact.truncated_rank <= r
-    assert _rel(exact.evaluate(*_all(sw)), psi) < 1e-12
-    assert _rel(exact.moments(), full.moments()) < 1e-13
+    assert rel(exact.evaluate(*_all(sw)), psi) < 1e-12
+    assert rel(exact.moments(), full.moments()) < 1e-13
 
     ranks = []
     for svd_tol in (1e-3, 1e-2):
@@ -299,15 +310,15 @@ def test_svd_truncation(norm):
         assert cut.record.truncated_rank == k and cut.ranks == [r]
         assert 0 < k < r
         # The held flux is rank k; the moments are the untruncated ones
-        assert _rel(cut.evaluate(*_all(sw)), psi) < 10 * svd_tol * r**0.5
-        assert _rel(cut.moments(), full.moments()) < 1e-13
+        assert rel(cut.evaluate(*_all(sw)), psi) < 10 * svd_tol * r**0.5
+        assert rel(cut.moments(), full.moments()) < 1e-13
         ranks.append(k)
     assert ranks[1] < ranks[0]
 
     # Without keep_angular_flux: the rank only, the held flux untruncated
     _, rank_only = run(svd_tol=1e-3, keep_angular_flux=False)
     assert rank_only.truncated_rank == ranks[0]
-    assert _rel(rank_only.evaluate(*_all(sw)), psi) < 1e-13
+    assert rel(rank_only.evaluate(*_all(sw)), psi) < 1e-13
 
 
 def test_svd_truncation_leaves_the_solve_unchanged():
@@ -327,7 +338,7 @@ def test_svd_truncation_leaves_the_solve_unchanged():
         phi = torch.cat([sw.get_scalar_flux(i).reshape(-1) for i in sw.local_gids])
         solves.append((phi, [r.truncated_rank for r in sw.sampling_records], sw))
     (phi0, ranks0, _), (phi1, ranks1, sw1) = solves
-    assert _rel(phi1, phi0) < 1e-13
+    assert rel(phi1, phi0) < 1e-13
     assert set(ranks0) == {-1} and all(0 < k for k in ranks1)
     assert all(k <= max(r.ranks) for k, r in zip(ranks1, sw1.sampling_records)) and any(
         k < max(r.ranks) for k, r in zip(ranks1, sw1.sampling_records)
@@ -361,7 +372,20 @@ def test_rejects_bad_config(kw, match):
 # Whole solves
 
 
+# EXACT references, solved once per problem and settings (read only by the tests)
+_EXACT = {}
+
+
 def _phi(num_dim, transport, n=4, **kw):
+    if transport == TransportSolve.EXACT:
+        key = (num_dim, n, tuple(sorted(kw.items())))
+        if key not in _EXACT:
+            _EXACT[key] = _solve_phi(num_dim, transport, n, **kw)
+        return _EXACT[key]
+    return _solve_phi(num_dim, transport, n, **kw)
+
+
+def _solve_phi(num_dim, transport, n=4, **kw):
     mesh, xs = BUILDERS[num_dim](G, True)
     sw = driver(num_dim, mesh, xs)
     cfg = SweepConfig(tol=1e-6, max_iter=500, verbose=False, transport=transport, **kw)
@@ -377,7 +401,7 @@ def test_fixed_source_richardson_matches_exact():
     exact, _ = _phi(1, TransportSolve.EXACT, **kw)
     phi, sw = _phi(1, TransportSolve.GALERKIN, **kw)
     assert sw.converged
-    assert _rel(phi, exact) < 1e-4
+    assert rel(phi, exact) < 1e-4
 
 
 @pytest.mark.parametrize("num_dim", [1, 2, 3])
@@ -389,7 +413,7 @@ def test_fixed_source_matches_exact(num_dim, set_size):
     exact, _ = _phi(num_dim, TransportSolve.EXACT, group_set_size=set_size)
     phi, sw = _phi(num_dim, TransportSolve.GALERKIN, group_set_size=set_size)
     assert sw.converged
-    assert _rel(phi, exact) < 1e-4
+    assert rel(phi, exact) < 1e-4
     assert len(sw.sampling_records) > 0
 
 
@@ -413,7 +437,7 @@ def test_carry_basis_matches_exact(num_dim, inner):
         **kw,
     )
     assert sw.converged
-    assert _rel(phi, exact) < 1e-4
+    assert rel(phi, exact) < 1e-4
     records = sw.sampling_records
     carried = [r.carried_rank for r in records]
     assert carried[0] == 0 and all(k > 0 for k in carried[1:])
@@ -435,7 +459,7 @@ def test_richardson_relaxes_sampled_tolerance(relax):
     kw = dict(inner_solver=InnerSolver.RICHARDSON, sampling_relax=relax)
     exact, _ = _phi(2, TransportSolve.EXACT, **kw)
     phi, sw = _phi(2, TransportSolve.GALERKIN, **kw)
-    assert sw.converged and _rel(phi, exact) < 1e-4
+    assert sw.converged and rel(phi, exact) < 1e-4
     tols = [r.tolerance for r in sw.sampling_records]
     tol_min = sw.config.sampling_inner_factor * 0.1 * sw.config.tol
     if relax:
@@ -472,8 +496,14 @@ PAIR = dict(sample=GalerkinSample.PAIR)
 
 
 @pytest.fixture(scope="module")
-def circle_pairs():
-    return _sampler(lambda: quarter_circle(G, True, factor=4), 2, 8, **PAIR)
+def _circle_pairs():
+    state = _sampler(lambda: quarter_circle(G, True, factor=4), 2, 8, **PAIR)
+    return (*state, state[1].tolerance)
+
+
+@pytest.fixture
+def circle_pairs(_circle_pairs):
+    return _fresh(_circle_pairs)
 
 
 def test_pairs_error_tracks_tolerance(circle_pairs):
@@ -485,7 +515,7 @@ def test_pairs_error_tracks_tolerance(circle_pairs):
         g.set_tolerance(tol)
         g.run()
         assert g.converged
-        assert _rel(g.moments(), ref) <= tol
+        assert rel(g.moments(), ref) <= tol
         fibers.append(g.num_fibers)
     assert fibers[0] < fibers[1] < fibers[2] < sw.ordinates.shape[0] * G
     assert len(g.swept) == sw.ordinates.shape[0] * G
@@ -501,10 +531,10 @@ def test_pairs_swept_are_exact_and_moments_match(circle_pairs):
     space = list(range(sw.fiber_length))
     for u in swept:
         d, k = divmod(u, G)
-        assert _rel(g.evaluate([d], [k], space)[0, 0], fibers[d, k]) < 1e-11
+        assert rel(g.evaluate([d], [k], space)[0, 0], fibers[d, k]) < 1e-11
     psi = g.evaluate(*_all(sw))
     ref = torch.einsum("dm,d,dgl->mgl", sw.harmonics, sw.weights, psi)
-    assert _rel(g.moments(), ref) < 1e-13
+    assert rel(g.moments(), ref) < 1e-13
 
 
 def test_pairs_exact_once_every_pair_is_swept():
@@ -514,8 +544,8 @@ def test_pairs_exact_once_every_pair_is_swept():
     g.set_tolerance(1e-14)
     g.run()
     assert all(g.swept) and g.converged and g.error == 0.0
-    assert _rel(g.evaluate(*_all(sw)), fibers) < 1e-13
-    assert _rel(g.moments(), ref) < 1e-13
+    assert rel(g.evaluate(*_all(sw)), fibers) < 1e-13
+    assert rel(g.moments(), ref) < 1e-13
 
 
 @pytest.mark.parametrize("inner", [InnerSolver.GMRES, InnerSolver.RICHARDSON])
@@ -526,7 +556,7 @@ def test_pairs_fixed_source_matches_exact(inner, set_size):
     exact, _ = _phi(2, TransportSolve.EXACT, **kw)
     phi, sw = _phi(2, TransportSolve.GALERKIN, galerkin=GalerkinConfig(**PAIR), **kw)
     assert sw.converged
-    assert _rel(phi, exact) < 1e-4
+    assert rel(phi, exact) < 1e-4
 
 
 def test_one_group_pairs_equal_directions():
@@ -548,4 +578,46 @@ def test_one_group_pairs_equal_directions():
         out[sample] = (phi, [r.fibers for r in sw.sampling_records])
     (phi_d, fib_d), (phi_p, fib_p) = out.values()
     assert fib_d == fib_p
-    assert _rel(phi_p, phi_d) < 1e-12
+    assert rel(phi_p, phi_d) < 1e-12
+
+
+NO_WEIGHTS = Weighting(angle=False, energy=False, space=False)
+
+
+@pytest.mark.parametrize("ending", ["every unit swept", "max_iter"])
+def test_phi_old_is_the_last_full_solve(ending):
+    """PREVIOUS_RUN: (3.9)'s phi_old for the next run is this run's final full solve,
+    whatever ended the run (the residual test, every unit swept, or max_iter). Without
+    weighting the weighted scalar flux is the scalar flux itself."""
+    kw = dict(weighting=NO_WEIGHTS, phi_old=GalerkinPhiOld.PREVIOUS_RUN)
+    if ending == "every unit swept":
+        _, g, _, _ = _sampler(lambda: quarter_circle(G, True), 2, 2, **kw)
+    else:
+        _, g, _, _ = _sampler(
+            lambda: quarter_circle(G, True, factor=4), 2, 8, max_iter=2, **kw
+        )
+    g.set_tolerance(1e-14)  # the residual test never passes
+    g.run()
+    if ending == "every unit swept":
+        assert all(g.swept)
+    else:
+        assert len(g.history) == 2 and not g.converged
+    phi = g.moments()[0].reshape(-1)
+    assert g.phi_old is not None
+    assert rel(g.phi_old, phi) < 1e-12
+
+
+def test_restart_reproduces_the_run(circle):
+    """After restart() a run is the one a restarted sampler made before, whatever ran in
+    between (what the shared fixtures rely on)."""
+    _, g, _, _ = circle
+    g.set_tolerance(1e-3)
+    g.run()
+    first = (g.moments(), [h.fibers for h in g.history])
+    g.set_tolerance(1e-2)
+    g.run()
+    g.restart()
+    g.set_tolerance(1e-3)
+    g.run()
+    assert [h.fibers for h in g.history] == first[1]
+    assert torch.equal(g.moments(), first[0])

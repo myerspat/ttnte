@@ -1,10 +1,13 @@
-"""ProjectedTransport as a galerkin::ReducedOperator: the reduced solves (an LU per
-direction, in parallel over directions), the residuals b_d - A_d X c_d (batched, matrix-free; equal to the sweep
-kernel's), and their error-weighted dual norms (FiberStore: R_P^{-T} in space, times the
-angle and energy weights). Checked
-against dense solves of the projected systems, Galerkin orthogonality, the step-3
-residual of the reconstructed flux, single- against multi-threaded runs, and dense
-mass-matrix references of every weighting factor."""
+"""ProjectedTransport as a galerkin::ReducedOperator.
+
+The reduced solves (an LU per direction, in parallel over directions), the
+residuals b_d - A_d X c_d (batched, matrix-free; equal to the sweep kernel's),
+and their error-weighted dual norms (FiberStore: R_P^{-T} in space, times the
+angle and energy weights). Checked against dense solves of the projected
+systems, Galerkin orthogonality, the step-3 residual of the reconstructed flux,
+single- against multi-threaded runs, and dense mass-matrix references of every
+weighting factor.
+"""
 
 import itertools
 import math
@@ -13,47 +16,23 @@ import pytest
 import torch
 
 from ttnte.sampling import Weighting
-from ttnte.sweep import LocalSolverType, SweepConfig
+from ttnte.sweep import LocalSolverType
 
 from . import test_nonconforming as nc
-from .problems import BUILDERS, boxes, driver, quadrature, quarter_circle
+from .problems import BUILDERS, boxes, mid_solve, mixed_basis, quarter_circle, rel
 
 G = 3
 
 
-def _setup(mesh, xs, num_dim, n=2, **kw):
-    """Mid-solve state: nonzero, unconverged sources and lagged traces."""
-    sw = driver(num_dim, mesh, xs)
-    sw.setup(
-        quadrature(num_dim, n), SweepConfig(tol=1e-14, max_iter=3, verbose=False, **kw)
-    )
-    sw.solve_fixed_source()
-    return sw
-
-
-def _basis(sw, groups, rank=5, seed=0):
-    """Two swept fibers and random vectors (every dof exercised)."""
-    nd = sw.ordinates.shape[0]
-    dirs = list(range(0, nd, max(1, nd // 3)))[:2]
-    fibers = sw.sweep_fibers([(dirs, groups)]).reshape(len(dirs), len(groups), -1)
-    gen = torch.Generator().manual_seed(seed)
-    noise = torch.randn(rank - len(dirs), len(groups), sw.fiber_length, generator=gen)
-    return torch.cat([fibers, noise])
-
-
-def _rel(a, b):
-    return ((a - b).norm() / b.norm()).item()
-
-
 CASES = {
-    "slab-reflective": lambda: (_setup(*BUILDERS[1](G, True), 1), 1),
-    "quarter-circle": lambda: (_setup(*BUILDERS[2](G, False), 2), 2),
-    "octant-reflective": lambda: (_setup(*BUILDERS[3](G, True), 3), 3),
+    "slab-reflective": lambda: (mid_solve(*BUILDERS[1](G, True), 1), 1),
+    "quarter-circle": lambda: (mid_solve(*BUILDERS[2](G, False), 2), 2),
+    "octant-reflective": lambda: (mid_solve(*BUILDERS[3](G, True), 3), 3),
     "cycles-reflective": lambda: (
-        _setup(*quarter_circle(G, True, split=True), 2, n=4),
+        mid_solve(*quarter_circle(G, True, split=True), 2, n=4),
         2,
     ),
-    "boxes-3d": lambda: (_setup(*boxes(3, G, True), 3), 3),
+    "boxes-3d": lambda: (mid_solve(*boxes(3, G, True), 3), 3),
 }
 
 
@@ -61,7 +40,7 @@ CASES = {
 def case(request):
     sw, _ = CASES[request.param]()
     groups = list(range(G))
-    X = _basis(sw, groups)
+    X = mixed_basis(sw, groups)
     dirs = list(range(sw.ordinates.shape[0]))
     return sw, groups, X, dirs
 
@@ -74,7 +53,7 @@ def test_solve_matches_dense_solve(case):
     C = sw.galerkin_solve(dirs, [X])
     ref = torch.linalg.solve(A, b)
     assert C.shape == (len(dirs), X.shape[0])
-    assert _rel(C, ref) < 1e-12
+    assert rel(C, ref) < 1e-12
 
 
 def test_galerkin_orthogonality(case):
@@ -99,7 +78,7 @@ def test_residuals_match_transport_residual(case):
     for i, d in enumerate(dirs):
         psi = torch.einsum("j,jgn->gn", C[i], X)
         ref = sw.transport_residual(d, groups, psi)
-        assert _rel(R[i], ref) < 1e-13
+        assert rel(R[i], ref) < 1e-13
 
 
 @pytest.mark.parametrize(
@@ -111,15 +90,15 @@ def test_residuals_match_transport_residual_nonconforming(surfaces):
     """Across non-conforming interfaces the upwind traces come from the coupling
     bases: residuals() still equals the kernel's residual."""
     fills, xs = nc.absorber()
-    sw = _setup(nc.build(surfaces(), fills), xs, 2)
+    sw = mid_solve(nc.build(surfaces(), fills), xs, 2)
     groups = list(range(nc.G))
-    X = _basis(sw, groups)
+    X = mixed_basis(sw, groups)
     dirs = list(range(sw.ordinates.shape[0]))
     C = torch.randn(len(dirs), X.shape[0], generator=torch.Generator().manual_seed(3))
     R = sw.galerkin_residuals(dirs, [X], C)
     for i, d in enumerate(dirs):
         psi = torch.einsum("j,jgn->gn", C[i], X)
-        assert _rel(R[i], sw.transport_residual(d, groups, psi)) < 1e-13
+        assert rel(R[i], sw.transport_residual(d, groups, psi)) < 1e-13
 
 
 def test_parallel_matches_serial(case):
@@ -144,11 +123,11 @@ def test_spanned_flux_has_no_residual():
     """With the exact fiber of d in the basis, the reduced solution is that fiber and
     its residual is at rounding level."""
     mesh, xs = BUILDERS[2](G, True)
-    sw = _setup(mesh, xs, 2)
+    sw = mid_solve(mesh, xs, 2)
     groups = list(range(G))
     d = 3  # not among _basis's swept fibers (0 and 5): those would repeat it
     fiber = sw.sweep_fibers([([d], groups)]).reshape(1, G, -1)
-    X = torch.cat([fiber, _basis(sw, groups, rank=4, seed=3)])
+    X = torch.cat([fiber, mixed_basis(sw, groups, rank=4, seed=3)])
     C = sw.galerkin_solve([d], [X])
     R = sw.galerkin_residuals([d], [X], C)
     r0 = sw.transport_residual(d, groups, torch.zeros_like(fiber[0]))
@@ -157,8 +136,8 @@ def test_spanned_flux_has_no_residual():
 
 def test_singular_and_bad_arguments():
     mesh, xs = BUILDERS[2](G, False)
-    sw = _setup(mesh, xs, 2)
-    X = _basis(sw, list(range(G)), rank=3)
+    sw = mid_solve(mesh, xs, 2)
+    X = mixed_basis(sw, list(range(G)), rank=3)
     nd = sw.ordinates.shape[0]
     with pytest.raises(RuntimeError, match="direction 1 is singular"):
         sw.galerkin_solve([1], [torch.cat([X, X[:1]])])
@@ -183,7 +162,7 @@ def _bounded(set_size=0):
     """The reflective quarter circle with energy group boundaries (lethargy widths)."""
     mesh, xs = BUILDERS[2](G, True)
     xs.group_bounds = BOUNDS
-    return _setup(mesh, xs, 2, group_set_size=set_size)
+    return mid_solve(mesh, xs, 2, group_set_size=set_size)
 
 
 def _reference_norms(sw, dirs, R, groups, weighting):
@@ -242,9 +221,9 @@ def test_residual_norms_every_factor(weighting):
         weighting.space,
     )
     ref = _reference_norms(sw, dirs, R, list(range(G)), weighting)
-    assert _rel(norms, ref) < 1e-12
+    assert rel(norms, ref) < 1e-12
     if not (weighting.angle or weighting.energy or weighting.space):
-        assert _rel(norms, R.flatten(1).norm(dim=1)) < 1e-14
+        assert rel(norms, R.flatten(1).norm(dim=1)) < 1e-14
 
 
 def test_residual_norms_group_sets():
@@ -261,7 +240,7 @@ def test_residual_norms_group_sets():
         )
         norms, _ = sw.residual_norms(dirs, R, s, full)
         ref = _reference_norms(sw, dirs, R, groups, full)
-        assert _rel(norms, ref) < 1e-12
+        assert rel(norms, ref) < 1e-12
 
 
 def test_residual_norms_banded_path():
@@ -287,7 +266,9 @@ def test_residual_norms_banded_path():
         mesh.add_block(patch)
     xs.group_bounds = BOUNDS
     # BANDED_LU: SYLVESTER's setup on patches this large takes minutes
-    sw = _setup(_finish(mesh, 1, True), xs, 1, local_solver=LocalSolverType.BANDED_LU)
+    sw = mid_solve(
+        _finish(mesh, 1, True), xs, 1, local_solver=LocalSolverType.BANDED_LU
+    )
     assert min(sw.get_discretization(g).num_dofs for g in sw.local_gids) > 3000
     dirs = [0, 1]
     R = torch.randn(
@@ -295,7 +276,7 @@ def test_residual_norms_banded_path():
     )
     norms, _ = sw.residual_norms(dirs, R, 0, Weighting())
     ref = _reference_norms(sw, dirs, R, list(range(G)), Weighting())
-    assert _rel(norms, ref) < 1e-11
+    assert rel(norms, ref) < 1e-11
 
 
 def test_residual_norms_reject_bad_input():
@@ -341,7 +322,7 @@ def test_pairs_match_transport_residual(case):
     for i, u in enumerate(units):
         d, g = divmod(u, G)
         psi = torch.einsum("j,jn->n", C[i], X[:, 0]).unsqueeze(0)
-        assert _rel(R[i], sw.transport_residual(d, [g], psi)) < 1e-13
+        assert rel(R[i], sw.transport_residual(d, [g], psi)) < 1e-13
 
 
 def test_pairs_solve_matches_dense_solve(case):
@@ -353,7 +334,7 @@ def test_pairs_solve_matches_dense_solve(case):
     A, b, _, _, _ = sw.projected_system(units, [X], spatial_basis=True)
     C = sw.galerkin_solve(units, [X[:2], X[2:]], spatial_basis=True)
     assert C.shape == (len(units), X.shape[0])
-    assert _rel(C, torch.linalg.solve(A, b)) < 1e-12
+    assert rel(C, torch.linalg.solve(A, b)) < 1e-12
     R = sw.galerkin_residuals(units, [X], C, spatial_basis=True)
     XtR = torch.einsum("jn,un->uj", X[:, 0], R[:, 0])
     assert (XtR.norm() / b.norm()).item() < 1e-11

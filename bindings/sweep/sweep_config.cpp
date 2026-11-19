@@ -55,8 +55,7 @@ void register_SweepConfig(py::module_& m)
       "Peng) and fill the rest by reduced Galerkin solves")
     .export_values();
 
-  auto config = py::class_<SweepConfig>(m, "SweepConfig");
-  config
+  py::class_<SweepConfig>(m, "SweepConfig")
     // Keyword arguments only, each an attribute below; defaults from C++
     .def(ttnte::bindings::kwargs_init<SweepConfig>())
     .def_readwrite("local_solver", &SweepConfig::local_solver)
@@ -101,8 +100,10 @@ void register_SweepConfig(py::module_& m)
       "Within-set tolerances relative to the whole scalar flux: multiplied by "
       "||phi|| / ||phi_s||, capped at GLOBAL_TOLERANCE_CAP (sweep_config.hpp).")
     .def_readwrite("certify", &SweepConfig::certify,
-      "CROSS: certify the converged solve with one exact transport solve of "
-      "every group set (see SweepDriver.certification_error).")
+      "CROSS, GALERKIN: certify the converged solve with one exact transport "
+      "solve of every group set (see SweepDriver.certification_error). The "
+      "angular flux follows it only with store_angular_flux; a kept low-rank "
+      "flux (keep_angular_flux) is the one from before it.")
     .def_readwrite("local_tol", &SweepConfig::local_tol)
     .def_readwrite("local_restart", &SweepConfig::local_restart)
     .def_readwrite("local_max_iter", &SweepConfig::local_max_iter)

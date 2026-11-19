@@ -107,8 +107,12 @@ static void register_SweepDriver_impl(
         bool spatial_basis) {
         using ttnte::sweep::ProjectedTransport;
         auto pt = ProjectedTransport::create(self, group_set,
-          ProjectedTransport::Options {flat_faces, implicit_lagged, sign_split,
-            max_face_classes, max_class_ratio, spatial_basis});
+          ProjectedTransport::Options {.flat_faces = flat_faces,
+            .implicit_lagged = implicit_lagged,
+            .sign_split = sign_split,
+            .max_face_classes = max_face_classes,
+            .max_class_ratio = max_class_ratio,
+            .spatial_basis = spatial_basis});
         // An earlier basis, every direction assembled on it, then dropped:
         // what a sampler does between transport solves
         if (!previous.empty()) {

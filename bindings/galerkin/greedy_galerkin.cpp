@@ -1,11 +1,12 @@
 #include "ttnte/galerkin/greedy_galerkin.hpp"
+#include <optional>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <torch/extension.h>
 
 namespace py = pybind11;
 
-void register_GreedyGalerkin(py::module_& m)
+void register_GalerkinIteration(py::module_& m)
 {
   using namespace ttnte::galerkin;
 
@@ -16,6 +17,11 @@ void register_GreedyGalerkin(py::module_& m)
     .def_readonly("fibers", &GreedyGalerkin::IterationRecord::fibers)
     .def_readonly("residual", &GreedyGalerkin::IterationRecord::residual)
     .def_readonly("phi_change", &GreedyGalerkin::IterationRecord::phi_change);
+}
+
+void register_GalerkinStage(py::module_& m)
+{
+  using namespace ttnte::galerkin;
 
   py::enum_<GreedyGalerkin::RunStage>(m, "GalerkinStage")
     .value("GREEDY", GreedyGalerkin::RunStage::GREEDY)
@@ -23,6 +29,11 @@ void register_GreedyGalerkin(py::module_& m)
       "DEIM units (directions, or pairs) swept, the rest interpolated")
     .value("DEIM_UPDATE", GreedyGalerkin::RunStage::DEIM_UPDATE,
       "An inner iteration followed by the angular update");
+}
+
+void register_GalerkinRun(py::module_& m)
+{
+  using namespace ttnte::galerkin;
 
   py::class_<GreedyGalerkin::RunRecord, ttnte::sampling::RunRecord,
     std::shared_ptr<GreedyGalerkin::RunRecord>>(m, "GalerkinRun",
@@ -61,11 +72,20 @@ void register_GreedyGalerkin(py::module_& m)
     .def_readonly("inner_diverged", &GreedyGalerkin::RunRecord::inner_diverged,
       "The DEIM inner change grew, so the update came early (our safeguard, "
       "not Han et al.'s).");
+}
+
+void register_GreedyGalerkin(py::module_& m)
+{
+  using namespace ttnte::galerkin;
 
   // Built by the sweep solver (TransportSolve.GALERKIN): it needs the
   // solver's projected transport operator
   py::class_<GreedyGalerkin, GreedyGalerkin::Ptr>(m, "GreedyGalerkin")
     .def("run", &GreedyGalerkin::run)
+    .def("restart", &GreedyGalerkin::restart,
+      "Start a new sequence of runs as a newly built sampler would (what a "
+      "new solve does): no stage, reference, carried basis or random state "
+      "kept.")
     .def("set_tolerance", &GreedyGalerkin::set_tolerance, py::arg("tol"))
     .def("moments", &GreedyGalerkin::moments,
       "(num_moments, G, num_space) flux moments of the last run.")
@@ -78,14 +98,23 @@ void register_GreedyGalerkin(py::module_& m)
       "and traces; the moments stay the untruncated ones).")
     .def_property_readonly("tolerance", &GreedyGalerkin::tolerance)
     .def_property_readonly("holds_flux", &GreedyGalerkin::holds_flux)
-    .def_property_readonly("num_fibers", &GreedyGalerkin::num_fibers)
+    .def_property_readonly("num_fibers",
+      [](const GreedyGalerkin& s) -> decltype(auto) { return s.num_fibers(); })
     .def_property_readonly("ranks", &GreedyGalerkin::ranks)
-    .def_property_readonly("error", &GreedyGalerkin::error)
-    .def_property_readonly("converged", &GreedyGalerkin::converged)
-    .def_property_readonly("seconds", &GreedyGalerkin::seconds)
-    .def_property_readonly("sweep_seconds", &GreedyGalerkin::sweep_seconds)
-    .def_property_readonly("timings", &GreedyGalerkin::timings)
-    .def_property_readonly("weighting", &GreedyGalerkin::weighting)
+    .def_property_readonly("error",
+      [](const GreedyGalerkin& s) -> decltype(auto) { return s.error(); })
+    .def_property_readonly("converged",
+      [](const GreedyGalerkin& s) -> decltype(auto) { return s.converged(); })
+    .def_property_readonly("seconds",
+      [](const GreedyGalerkin& s) -> decltype(auto) { return s.seconds(); })
+    .def_property_readonly("sweep_seconds",
+      [](const GreedyGalerkin& s) -> decltype(auto) {
+        return s.sweep_seconds();
+      })
+    .def_property_readonly("timings",
+      [](const GreedyGalerkin& s) -> decltype(auto) { return s.timings(); })
+    .def_property_readonly("weighting",
+      [](const GreedyGalerkin& s) -> decltype(auto) { return s.weighting(); })
     .def_property_readonly("config", &GreedyGalerkin::config,
       "The options in effect (phi_old resolved).")
     .def_property_readonly("history", &GreedyGalerkin::history)
@@ -96,6 +125,15 @@ void register_GreedyGalerkin(py::module_& m)
     .def_property_readonly("swept", &GreedyGalerkin::swept)
     .def_property_readonly("truncated_rank", &GreedyGalerkin::truncated_rank)
     .def_property_readonly("carried_rank", &GreedyGalerkin::carried_rank)
+    .def_property_readonly(
+      "phi_old",
+      [](const GreedyGalerkin& g) -> std::optional<torch::Tensor> {
+        if (!g.phi_old().defined())
+          return std::nullopt;
+        return g.phi_old();
+      },
+      "(G Ns) the weighted scalar flux the next run's (3.9) test compares "
+      "with (the last full solve's), or None.")
     .def_property_readonly("in_deim_stage", &GreedyGalerkin::in_deim_stage)
     .def_property_readonly("deim_directions", &GreedyGalerkin::deim_directions,
       "DEIM units (directions, or pairs) of the next run.")

@@ -212,14 +212,17 @@ struct SweepConfig {
   /// (<= 0: num_threads). Its matrices are small (ranks times the fiber
   /// length), so many threads cost more in synchronization than they save:
   /// 64 threads made a Big Ten cross about 40 times slower than 16.
-  /// (The sampling_* knobs were cross_* before GALERKIN; Python keeps the
-  /// old names as deprecated aliases.)
+  /// (The sampling_* knobs were cross_* before GALERKIN.)
   int64_t sampling_threads = 16;
-  /// TransportSolve::CROSS: after the outer iteration, one exact transport
-  /// solve of every group set at the converged sources (one full sweep). Its
-  /// moments and traces replace the cross's, and the scalar-flux change (and
-  /// the change in k) is reported as the certification error. The only check
-  /// that sees every (direction, group) pair; off by default.
+  /// Sampled transport (CROSS, GALERKIN): after the outer iteration, one
+  /// exact transport solve of every group set at the converged sources (one
+  /// full sweep). Its moments and traces replace the sampler's, and the
+  /// scalar-flux change (and the change in k) is reported as the
+  /// certification error. The only check that sees every (direction, group)
+  /// pair; off by default. The angular flux follows the certification only
+  /// with store_angular_flux: a sampler's kept low-rank flux
+  /// (keep_angular_flux) is the one from before it, so get_angular_flux()
+  /// from it differs from the certified moments by the certification error.
   bool certify = false;
 };
 

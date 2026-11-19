@@ -15,7 +15,15 @@ from ttnte.sweep import InnerSolver, SweepConfig
 from ttnte.xs import Material, Server
 
 from . import problems
-from .problems import BUILDERS, boxes, driver, quadrature, quarter_circle
+from .problems import (
+    BUILDERS,
+    boxes,
+    driver,
+    mid_solve,
+    quadrature,
+    quarter_circle,
+    rel,
+)
 
 G = 3
 
@@ -23,7 +31,7 @@ G = 3
 def _anisotropic_xs(num_groups, fissile=False):
     """problems.multigroup_xs (non-fissile) with a P1 transfer, 0.3 times P0: two
     Legendre orders."""
-    materials, _ = _isotropic_xs(num_groups)
+    materials, _ = problems.multigroup_xs(num_groups)
     server = Server()
     out = []
     for name, old in zip(["Fuel", "Moderator"], materials):
@@ -39,17 +47,10 @@ def _anisotropic_xs(num_groups, fissile=False):
     return out, server
 
 
-_isotropic_xs = problems.multigroup_xs
-
-
 def _build(builder, *args, anisotropic=False, **kw):
-    if not anisotropic:
-        return builder(*args, **kw)
-    problems.multigroup_xs = _anisotropic_xs
-    try:
-        return builder(*args, **kw)
-    finally:
-        problems.multigroup_xs = _isotropic_xs
+    if anisotropic:
+        kw["xs_factory"] = _anisotropic_xs
+    return builder(*args, **kw)
 
 
 def _setup(mesh, xs, num_dim, n=2, **kw):
@@ -57,11 +58,6 @@ def _setup(mesh, xs, num_dim, n=2, **kw):
     sw.setup(quadrature(num_dim, n), SweepConfig(verbose=False, **kw))
     sw.solve_fixed_source()
     return sw
-
-
-def _mid_solve(mesh, xs, num_dim, n=2, **kw):
-    """Nonzero, unconverged sources and lagged traces."""
-    return _setup(mesh, xs, num_dim, n, tol=1e-14, max_iter=3, **kw)
 
 
 def _converged(mesh, xs, num_dim, n=2, **kw):
@@ -81,25 +77,21 @@ def _random_basis(sw, groups, rank=5, seed=0):
     return torch.randn(rank, len(groups), sw.fiber_length, generator=gen)
 
 
-def _rel(a, b):
-    return ((a - b).norm() / b.norm()).item()
-
-
 CASES = {
-    "slab-reflective": lambda: (_mid_solve(*BUILDERS[1](G, True), 1), 1),
-    "quarter-circle": lambda: (_mid_solve(*BUILDERS[2](G, False), 2), 2),
+    "slab-reflective": lambda: (mid_solve(*BUILDERS[1](G, True), 1), 1),
+    "quarter-circle": lambda: (mid_solve(*BUILDERS[2](G, False), 2), 2),
     "cycles-reflective": lambda: (
-        _mid_solve(*quarter_circle(G, True, split=True), 2, n=4),
+        mid_solve(*quarter_circle(G, True, split=True), 2, n=4),
         2,
     ),
     "anisotropic": lambda: (
-        _mid_solve(*_build(BUILDERS[2], G, True, anisotropic=True), 2),
+        mid_solve(*_build(BUILDERS[2], G, True, anisotropic=True), 2),
         2,
     ),
-    "boxes-3d": lambda: (_mid_solve(*boxes(3, G, True), 3), 3),
+    "boxes-3d": lambda: (mid_solve(*boxes(3, G, True), 3), 3),
     # 144 directions: more than one block of 64 (pass 1's factors are kept
     # per direction across blocks for pass 2)
-    "many-directions": lambda: (_mid_solve(*BUILDERS[2](G, False), 2, n=6), 2),
+    "many-directions": lambda: (mid_solve(*BUILDERS[2](G, False), 2, n=6), 2),
 }
 
 
@@ -126,7 +118,7 @@ def test_bordered_scattering_matches_direct(case):
             for m, l in enumerate(sw.moment_order.tolist())
         ]
     )
-    assert _rel(XSphi, ref) < 1e-12
+    assert rel(XSphi, ref) < 1e-12
     assert K.norm() > 0
 
 
@@ -166,8 +158,8 @@ def test_angular_galerkin_matches_dense_solve(case):
                     Y[d, m] * wY[dp, m] * K[l]
                 )
     ref = torch.linalg.solve(big, rhs).reshape(D, r)
-    assert _rel(L, ref) < 1e-11
-    assert _rel(Lam, wY.t() @ ref) < 1e-11
+    assert rel(L, ref) < 1e-11
+    assert rel(Lam, wY.t() @ ref) < 1e-11
 
 
 def test_angular_galerkin_thread_independent(case):
@@ -226,16 +218,16 @@ def test_exact_basis_reproduces_flux(name):
     X = Vh[:k].reshape(k, len(groups), -1)
     L, Lam, F = sw.galerkin_angular([X], group_set=s)
     psi = torch.einsum("dj,jgn->dgn", L, X)
-    assert _rel(psi, fibers) < 1e-8
+    assert rel(psi, fibers) < 1e-8
     phi = torch.einsum("dm,dgn->mgn", sw.harmonics * sw.weights[:, None], fibers)
-    assert _rel(torch.einsum("mj,jgn->mgn", Lam, X), phi) < 1e-8
+    assert rel(torch.einsum("mj,jgn->mgn", Lam, X), phi) < 1e-8
     # the fixed source differs from the full one: there is scattering to remove
     _, src, XSphi, _ = sw.galerkin_scattering([X], group_set=s)
     assert XSphi.norm() > 1e-3 * src.norm()
 
 
 def test_rejects_bad_shapes():
-    sw = _mid_solve(*BUILDERS[2](G, False), 2)
+    sw = mid_solve(*BUILDERS[2](G, False), 2)
     X = _random_basis(sw, list(range(G)), rank=3)
     with pytest.raises(RuntimeError, match="F must be"):
         sw.galerkin_angular([X], F=torch.zeros(1, 2))
@@ -278,7 +270,7 @@ def test_pair_blocks_match_direction_projection(pair_case):
     assert torch.allclose(K, K1, rtol=0, atol=1e-13 * K1.abs().max())
     Kd, _, _, _ = sw.galerkin_scattering([_place(X, G)])
     ref = Kd.reshape(-1, r, G, r, G).permute(0, 2, 4, 1, 3)  # (L, g, g', r, r)
-    assert _rel(K, ref) < 1e-12
+    assert rel(K, ref) < 1e-12
     assert torch.allclose(K, K.transpose(3, 4), rtol=0, atol=1e-13 * K.abs().max())
     zero = K.flatten(3).norm(dim=3) == 0
     assert zero.any() and not zero.all()  # no upscatter beyond one group
@@ -295,8 +287,8 @@ def test_pair_projections_match_direction_projection(pair_case):
     _, src_d, XSphi_d, _ = sw.galerkin_scattering([_place(X, G)], phi=phi)
     # direction row m, column j G + g' -> pair row m G + g', column j
     to_pairs = lambda t: t.reshape(M, r, G).transpose(1, 2).reshape(M * G, r)
-    assert _rel(src, to_pairs(src_d)) < 1e-12
-    assert _rel(XSphi, to_pairs(XSphi_d)) < 1e-12
+    assert rel(src, to_pairs(src_d)) < 1e-12
+    assert rel(XSphi, to_pairs(XSphi_d)) < 1e-12
 
 
 def test_pair_angular_matches_dense_solve(pair_case):
@@ -332,9 +324,9 @@ def test_pair_angular_matches_dense_solve(pair_case):
                         Y[d, m] * wY[dp, m] * K[l, g, gp]
                     )
     ref = torch.linalg.solve(big, rhs).reshape(U, r)
-    assert _rel(L, ref) < 1e-11
+    assert rel(L, ref) < 1e-11
     lam = torch.einsum("dm,dgr->mgr", wY, ref.reshape(D, G, r)).reshape(M * G, r)
-    assert _rel(Lam, lam) < 1e-11
+    assert rel(Lam, lam) < 1e-11
 
 
 def test_pair_angular_thread_independent(pair_case):
@@ -364,31 +356,31 @@ def test_pair_exact_basis_reproduces_flux(name):
     k = int((S > 1e-10 * S[0]).sum())
     X = Vh[:k].reshape(k, 1, -1)
     L, Lam, _ = sw.galerkin_angular([X], group_set=s, spatial_basis=True)
-    assert _rel(L @ X[:, 0], fibers) < 1e-8
+    assert rel(L @ X[:, 0], fibers) < 1e-8
     phi = torch.einsum(
         "dm,dgn->mgn", sw.harmonics * sw.weights[:, None], fibers.reshape(D, ng, -1)
     )
     M = phi.shape[0]
-    assert _rel((Lam @ X[:, 0]).reshape(M, ng, -1), phi) < 1e-8
+    assert rel((Lam @ X[:, 0]).reshape(M, ng, -1), phi) < 1e-8
 
 
 @pytest.mark.parametrize("num_dim", [1, 2])
 def test_one_group_pairs_equal_directions(num_dim):
     """With one group a pair is a direction: the same K, projections and angular
     solution."""
-    sw = _mid_solve(*BUILDERS[num_dim](1, True), num_dim)
+    sw = mid_solve(*BUILDERS[num_dim](1, True), num_dim)
     X = torch.randn(4, 1, sw.fiber_length, generator=torch.Generator().manual_seed(4))
     Kp, srcp, XSp, _ = sw.galerkin_scattering([X], spatial_basis=True)
     Kd, srcd, XSd, _ = sw.galerkin_scattering([X])
-    assert _rel(Kp[:, 0, 0], Kd) < 1e-13
-    assert _rel(srcp, srcd) < 1e-13 and _rel(XSp, XSd) < 1e-13
+    assert rel(Kp[:, 0, 0], Kd) < 1e-13
+    assert rel(srcp, srcd) < 1e-13 and rel(XSp, XSd) < 1e-13
     Lp, Lamp, _ = sw.galerkin_angular([X], spatial_basis=True)
     Ld, Lamd, _ = sw.galerkin_angular([X])
-    assert _rel(Lp, Ld) < 1e-12 and _rel(Lamp, Lamd) < 1e-12
+    assert rel(Lp, Ld) < 1e-12 and rel(Lamp, Lamd) < 1e-12
 
 
 def test_pair_rejects_bad_shapes():
-    sw = _mid_solve(*BUILDERS[2](G, False), 2)
+    sw = mid_solve(*BUILDERS[2](G, False), 2)
     X = _random_basis(sw, [0], rank=3)
     M = sw.harmonics.shape[1]
     with pytest.raises(RuntimeError, match="F must be"):

@@ -64,6 +64,16 @@ namespace {
 /// flat faces share a normal).
 constexpr double FLAT_TOL = 1e-12;
 
+/// angular_galerkin() keeps every unit's LU for its second pass while they
+/// take at most this many bytes (U r^2 doubles); past it, the second pass
+/// assembles and factors again. CMake overrides it
+/// (TTNTE_ANGULAR_FACTOR_MB).
+#ifndef TTNTE_ANGULAR_FACTOR_MB
+#define TTNTE_ANGULAR_FACTOR_MB 2048
+#endif
+inline constexpr double ANGULAR_FACTOR_BYTES =
+  1048576.0 * TTNTE_ANGULAR_FACTOR_MB;
+
 const auto F64 = torch::TensorOptions().dtype(torch::kFloat64);
 
 } // namespace
@@ -74,19 +84,34 @@ const auto F64 = torch::TensorOptions().dtype(torch::kFloat64);
 
 // Resize the logical (rows, cols) view; the storage grows by doubling and
 // keeps the old block, so bordering never copies more than amortized O(1)
-// per element. New entries are zero.
+// per element. Entries outside the kept (rows, cols) block are zero: new
+// storage is, and within the capacity the newly exposed border is cleared
+// (after reset() it holds the last solve's values)
 void ProjectedTransport::Growing::resize(int64_t num_rows, int64_t num_cols)
 {
   const int64_t rcap = storage.defined() ? storage.size(0) : 0;
   const int64_t ccap = storage.defined() ? storage.size(1) : 0;
+  const int64_t keep_rows = std::min(rows, num_rows);
+  const int64_t keep_cols = std::min(cols, num_cols);
   if (num_rows > rcap || num_cols > ccap) {
     auto grown =
       torch::zeros({num_rows > rcap ? std::max(num_rows, 2 * rcap) : rcap,
                      num_cols > ccap ? std::max(num_cols, 2 * ccap) : ccap},
         F64);
-    if (rows > 0 && cols > 0)
-      grown.narrow(0, 0, rows).narrow(1, 0, cols).copy_(view());
+    if (keep_rows > 0 && keep_cols > 0)
+      grown.narrow(0, 0, keep_rows)
+        .narrow(1, 0, keep_cols)
+        .copy_(storage.narrow(0, 0, keep_rows).narrow(1, 0, keep_cols));
     storage = grown;
+  } else {
+    if (num_rows > keep_rows && num_cols > 0)
+      storage.narrow(0, keep_rows, num_rows - keep_rows)
+        .narrow(1, 0, num_cols)
+        .zero_();
+    if (num_cols > keep_cols && keep_rows > 0)
+      storage.narrow(0, 0, keep_rows)
+        .narrow(1, keep_cols, num_cols - keep_cols)
+        .zero_();
   }
   rows = num_rows;
   cols = num_cols;
@@ -149,7 +174,7 @@ ProjectedTransport::ProjectedTransport(
       // Vacuum faces need nothing (no inflow)
       // TODO: a reflective face is listed for every angle set, a superset
       // (angle sets group directions by internal edge states, not by inflow
-      // at reflective faces); add_buffered_inflow() filters per direction
+      // at reflective faces); for_each_buffered_face() filters per direction
       // but pays make_unit() and an O(N) clear first. Keep only the sets
       // with inflow at some point of the face, and test the direction's
       // inflow before the per-face work.
@@ -499,46 +524,66 @@ void ProjectedTransport::gather_sources() const
   }
 }
 
-// Unit u's buffered inflow as a full vector (added to `out`, (basis_groups,
-// Ns)): the part of b_u that residuals() needs unprojected. Same assembly as
-// buffered_rhs(), without the projection onto X.
-void ProjectedTransport::add_buffered_inflow(int64_t u_index, double* out) const
+// Unit u's buffered inflow (lagged edges, reflective faces: data, not
+// unknowns) face by face, assembled by the sweep kernel's buffered_inflow()
+// as a sweep adds it: fn(p, f, bg, v) per buffered face f of unit p with
+// inflow for u's direction and per basis group bg of the unit (every group
+// of the set, or the pair's own with spatial_basis: basis group 0), v the
+// inflow at the face's dofs (geom.dofs order).
+void ProjectedTransport::for_each_buffered_face(int64_t u_index,
+  const std::function<void(size_t, size_t, int64_t, const double*)>& fn) const
 {
   const auto& S = solver_;
   const int64_t d = unit_direction(u_index), g_unit = unit_group(u_index);
   const int64_t a = S.graph_->direction_set().template data_ptr<int64_t>()[d];
   if (buffered_[a].empty())
     return;
+  // A one-direction block over the set's groups, and per face the unit's
+  // sweep view in d's angle set: what the kernel reads the buffers through
   const auto& set = S.graph_->angle_sets()[a];
   const std::vector<int64_t> dirs {d};
   const auto block = S.make_block(dirs, groups_);
-  std::vector<double> c, b;
-  for (const auto& [u, f] : buffered_[a]) {
-    const auto& P = S.patches_[u];
-    const auto unit = S.make_unit(set, static_cast<int64_t>(u));
+  const int64_t g0 = g_unit < 0 ? 0 : g_unit;
+  const int64_t g1 = g_unit < 0 ? num_groups_ : g_unit + 1;
+  std::vector<double> c, b, v;
+  for (const auto& [p, f] : buffered_[a]) {
+    const auto& P = S.patches_[p];
+    const auto unit = S.make_unit(set, static_cast<int64_t>(p));
     const auto& geom = P.disc->faces()[f];
-    const int64_t N = P.disc->num_dofs();
     const int64_t Nf = geom.num_dofs();
     const int64_t* dofs = geom.dofs.template data_ptr<int64_t>();
-    const int64_t off = S.fiber_offsets_[u];
     c.resize(P.disc->view().max_face_points);
-    b.assign(N, 0.0);
-    // The unit's groups: all of the set's (written at bg Ns), or its own
-    // (spatial_basis, written at 0)
-    const int64_t g0 = g_unit < 0 ? 0 : g_unit;
-    const int64_t g1 = g_unit < 0 ? num_groups_ : g_unit + 1;
-    for (int64_t bg = g0; bg < g1; bg++) {
-      // A face that is outflow for d is skipped for every group
-      if (!buffered_inflow(unit, block, d, groups_[bg], f, c.data(), b.data()))
+    b.assign(P.disc->num_dofs(), 0.0);
+    v.resize(static_cast<size_t>(Nf));
+    for (int64_t g = g0; g < g1; g++) {
+      // Inflow or not depends on d only: a face that is outflow for d is
+      // skipped for every group
+      if (!buffered_inflow(unit, block, d, groups_[g], f, c.data(), b.data()))
         break;
-      // Only the face's entries of b are written: add them, clear them
-      double* o = out + (g_unit < 0 ? bg : 0) * num_space_ + off;
+      // Only the face's entries of b are written: gather them, clear them
+      // for the next group
       for (int64_t k = 0; k < Nf; k++) {
-        o[dofs[k]] += b[dofs[k]];
+        v[k] = b[dofs[k]];
         b[dofs[k]] = 0.0;
       }
+      fn(p, f, g_unit < 0 ? g : 0, v.data());
     }
   }
+}
+
+// Unit u's buffered inflow as a full vector (added to `out`, (basis_groups,
+// Ns)): the part of b_u that residuals() needs unprojected.
+void ProjectedTransport::add_buffered_inflow(int64_t u_index, double* out) const
+{
+  const auto& S = solver_;
+  for_each_buffered_face(
+    u_index, [&](size_t p, size_t f, int64_t bg, const double* v) {
+      const auto& geom = S.patches_[p].disc->faces()[f];
+      const int64_t* dofs = geom.dofs.template data_ptr<int64_t>();
+      double* o = out + bg * num_space_ + S.fiber_offsets_[p];
+      for (int64_t k = 0; k < geom.num_dofs(); k++)
+        o[dofs[k]] += v[k];
+    });
 }
 
 // =================================================================
@@ -728,7 +773,13 @@ void ProjectedTransport::extend(const torch::Tensor& X)
   // of M P dof by dof (add_transfer()).
   // With spatial_basis instead one vector per nonzero block (l, g, g'),
   // sigma_{s,l}(g <- g') M P (k0 + k), symmetric: no separate rows
+  // The stack's slots (each p vectors): collision, streaming, transposed
+  // streaming, then scattering from k0
+  const int64_t grad_slot = Gc, grad_t_slot = Gc + ndim_;
   const int64_t k0 = Gc + 2 * ndim_;
+  // Direction sampling's K_l (2 slots per order) or the pair blocks (one
+  // slot each)
+  const bool order_scattering = options_.scattering && !options_.spatial_basis;
   std::vector<int64_t> blocks; // spatial_basis: the scatter_ index of k0 + k
   if (options_.scattering && options_.spatial_basis)
     for (size_t i = 0; i < scatter_.size(); i++)
@@ -767,8 +818,8 @@ void ProjectedTransport::extend(const torch::Tensor& X)
           }
           for (int64_t i = 0; i < ndim_; i++) {
             const double gv = grad[i * P + p_];
-            st[((Gc + i) * p + j) * GN + g * Ns + a] += gv * y[b];
-            st[((Gc + ndim_ + i) * p + j) * GN + g * Ns + b] += gv * y[a];
+            st[((grad_slot + i) * p + j) * GN + g * Ns + a] += gv * y[b];
+            st[((grad_t_slot + i) * p + j) * GN + g * Ns + b] += gv * y[a];
           }
         }
       }
@@ -804,9 +855,9 @@ void ProjectedTransport::extend(const torch::Tensor& X)
   for (int64_t i = 0; i < ndim_; i++) {
     streaming_[i].resize(r1, r1);
     streaming_[i].view().index_put_(
-      {Slice(), J}, cols.narrow(1, (Gc + i) * p, p));
+      {Slice(), J}, cols.narrow(1, (grad_slot + i) * p, p));
     streaming_[i].view().index_put_(
-      {J, Slice()}, cols.narrow(1, (Gc + ndim_ + i) * p, p).t());
+      {J, Slice()}, cols.narrow(1, (grad_t_slot + i) * p, p).t());
   }
   // K_l: new columns X^T S_l P, new rows (S_l^T P)^T X; the pair blocks
   // K_l(g, g') are symmetric (rows = the columns transposed)
@@ -817,7 +868,7 @@ void ProjectedTransport::extend(const torch::Tensor& X)
     Kb.view().index_put_({Slice(), J}, col_K);
     Kb.view().index_put_({J, Slice()}, col_K.t());
   }
-  for (int64_t l = 0; l < (Ks > 0 && blocks.empty() ? num_orders_ : 0); l++) {
+  for (int64_t l = 0; l < (order_scattering ? num_orders_ : 0); l++) {
     const auto col_K = cols.narrow(1, (k0 + l) * p, p);
     const auto row_K = cols.narrow(1, (k0 + num_orders_ + l) * p, p);
     scatter_[l].resize(r1, r1);
@@ -868,9 +919,12 @@ void ProjectedTransport::extend(const torch::Tensor& X)
   // read once), and the K rows one product [W_a T P, ...]^T [T^nb X]
   for (size_t n = 0; n < normals_.size(); n++) {
     const auto [row0, count] = normal_rows_[n];
+    // K_{a,n} only where set a sweeps a face of this normal upwind first
+    // (its dependency measure): elsewhere it is zero and never stored
     outflow_[n].resize(r1, r1);
     for (int64_t a = 0; a < num_sets_; a++)
-      inflow_[a][n].resize(r1, r1);
+      if (dependency_measure_[a][n].defined())
+        inflow_[a][n].resize(r1, r1);
     if (count == 0)
       continue;
     // PX = T [X P] on this normal's rows, PXJ = T P; `sets` the angle sets
@@ -940,6 +994,8 @@ void ProjectedTransport::update_curved(int64_t d)
   const int64_t r0 = D.rows, r1 = rank_;
   if (r0 == r1)
     return; // up to date
+  // One MKL thread: D_d must not depend on the thread count
+  linalg::lapack::SingleThreaded single;
   const auto& S = solver_;
   const int64_t a = S.graph_->direction_set().template data_ptr<int64_t>()[d];
   const auto omega = S.omega_[d];
@@ -990,51 +1046,29 @@ torch::Tensor ProjectedTransport::buffered_rhs(int64_t u_index) const
     throw utils::runtime_error(
       ctx("buffered_rhs"), unit_name(true) + " out of range");
   const auto& S = solver_;
-  const int64_t d = unit_direction(u_index), g_unit = unit_group(u_index);
-  const int64_t a = S.graph_->direction_set().template data_ptr<int64_t>()[d];
   auto rhs = torch::zeros({rank_}, F64);
-  if (buffered_[a].empty() || rank_ == 0)
+  if (rank_ == 0)
     return rhs;
-  // A one-direction block over the set's groups, and per face the unit's
-  // sweep view in d's angle set: what the kernel reads the buffers through
-  const auto& set = S.graph_->angle_sets()[a];
-  const std::vector<int64_t> dirs {d};
-  const auto block = S.make_block(dirs, groups_);
+  // X_bg^T v on each face's dofs, the basis on the face (r, basis_groups,
+  // Nf) gathered once per face
   const auto X = basis();
-  std::vector<double> c, b;
-  for (const auto& [u, f] : buffered_[a]) {
-    const auto& P = S.patches_[u];
-    const auto unit = S.make_unit(set, static_cast<int64_t>(u));
-    const auto& geom = P.disc->faces()[f];
-    const int64_t N = P.disc->num_dofs();
-    const int64_t Nf = geom.num_dofs();
-    const int64_t* dofs = geom.dofs.template data_ptr<int64_t>();
-    c.resize(P.disc->view().max_face_points);
-    b.assign(N, 0.0);
-    auto load = torch::empty({Nf}, F64);
-    double* l = load.template data_ptr<double>();
-    // The basis on the face's dofs, (r, basis_groups, Nf); the unit's
-    // groups: every group of the set (basis group bg), or its own (basis
-    // group 0, spatial_basis)
-    const auto X_face =
-      X.narrow(2, S.fiber_offsets_[u], N).index_select(2, geom.dofs);
-    const int64_t g0 = g_unit < 0 ? 0 : g_unit;
-    const int64_t g1 = g_unit < 0 ? num_groups_ : g_unit + 1;
-    for (int64_t bg = g0; bg < g1; bg++) {
-      // Inflow or not depends on d only, so a face that is outflow for d is
-      // skipped for every group
-      if (!buffered_inflow(unit, block, d, groups_[bg], f, c.data(), b.data()))
-        break;
-      // Gather the face's entries of b (the only ones written) and clear
-      // them for the next group
-      for (int64_t k = 0; k < Nf; k++) {
-        l[k] = b[dofs[k]];
-        b[dofs[k]] = 0.0;
+  int64_t last_p = -1, last_f = -1;
+  torch::Tensor X_face;
+  for_each_buffered_face(
+    u_index, [&](size_t p, size_t f, int64_t bg, const double* v) {
+      const auto& P = S.patches_[p];
+      const auto& geom = P.disc->faces()[f];
+      if (static_cast<int64_t>(p) != last_p ||
+          static_cast<int64_t>(f) != last_f) {
+        X_face = X.narrow(2, S.fiber_offsets_[p], P.disc->num_dofs())
+                   .index_select(2, geom.dofs);
+        last_p = static_cast<int64_t>(p);
+        last_f = static_cast<int64_t>(f);
       }
-      // X_g^T b_g on the face's dofs
-      rhs += X_face.select(1, g_unit < 0 ? bg : 0).mv(load);
-    }
-  }
+      const auto load = torch::from_blob(const_cast<double*>(v),
+        {geom.num_dofs()}, torch::TensorOptions().dtype(torch::kFloat64));
+      rhs += X_face.select(1, bg).mv(load);
+    });
   return rhs;
 }
 
@@ -1056,6 +1090,9 @@ std::pair<torch::Tensor, torch::Tensor> ProjectedTransport::reduced_system(
   const int64_t a = S.graph_->direction_set().template data_ptr<int64_t>()[d];
   const auto omega = S.omega_[d];
   const double* w = omega.template data_ptr<double>();
+  // One MKL thread for the products below: the system must not depend on
+  // the thread count (nested in factor_units()' own guard)
+  linalg::lapack::SingleThreaded single;
 
   auto A = collision_[g < 0 ? 0 : g].view().clone();
   for (int64_t i = 0; i < ndim_; i++)
@@ -1064,13 +1101,15 @@ std::pair<torch::Tensor, torch::Tensor> ProjectedTransport::reduced_system(
     const double dot = normals_[n].dot(omega).template item<double>();
     if (dot > 0.0)
       A += dot * outflow_[n].view();
-    else if (dot < 0.0)
+    else if (dot < 0.0 && dependency_measure_[a][n].defined())
       A += dot * inflow_[a][n].view(); // -(Omega . n)_- K
   }
   // Curved faces per sign class: sum_i Omega_i (O_{c,i} + I_{c,i}), I
   // for the angle sets that sweep the face's neighbor first
   const int64_t r = rank_;
-  for (const auto& fc : (r > 0 ? classes_ : std::vector<FaceClasses> {})) {
+  for (const auto& fc : classes_) {
+    if (r == 0)
+      break;
     const int64_t c = fc.class_of[d];
     const auto& fp = faces_[fc.face];
     const bool inflow = fp.internal && fp.dependency[a];
@@ -1123,6 +1162,7 @@ void ProjectedTransport::factor_units(const std::vector<int64_t>& units,
         dirs.push_back(unit_direction(u));
     at::parallel_for(
       0, static_cast<int64_t>(dirs.size()), 1, [&](int64_t i0, int64_t i1) {
+        linalg::lapack::SingleThreaded single;
         for (int64_t i = i0; i < i1; i++)
           update_curved(dirs[i]);
       });
@@ -1130,6 +1170,10 @@ void ProjectedTransport::factor_units(const std::vector<int64_t>& units,
   // Per unit: assemble (r x r, row-major), LU in place, hand over
   std::vector<uint8_t> singular(static_cast<size_t>(D), 0);
   at::parallel_for(0, D, 1, [&](int64_t i0, int64_t i1) {
+    // The assembly's products and the LU on one MKL thread each: the result
+    // must not depend on the thread count (MKL's threaded kernels round
+    // differently), however parallel_for splits the units
+    linalg::lapack::SingleThreaded single;
     std::vector<int64_t> ipiv(static_cast<size_t>(r));
     for (int64_t i = i0; i < i1; i++) {
       auto [A, b] = reduced_system(units[i]);
@@ -1340,12 +1384,17 @@ std::pair<torch::Tensor, torch::Tensor> ProjectedTransport::angular_galerkin(
   constexpr int64_t BLOCK = 64;
   auto Gacc = torch::zeros({Mp * NG, r * r}, F64);
   auto Z = torch::zeros({U, r}, F64);
-  // Every unit's LU and pivots, kept for pass 2 (U r^2 doubles: no second
-  // assembly and factorization)
-  auto LU = torch::empty({U, r * r}, F64);
-  auto piv = torch::empty({U, r}, torch::kInt64);
-  double* lu = LU.data_ptr<double>();
-  int64_t* pv = piv.data_ptr<int64_t>();
+  // Every unit's LU and pivots, kept for pass 2 (U r^2 doubles, U = D |set|
+  // with spatial_basis: no second assembly and factorization) while they fit
+  // in ANGULAR_FACTOR_BYTES; otherwise pass 2 factors again
+  const bool keep_factors = 8.0 * static_cast<double>(U) *
+                              static_cast<double>(r) * static_cast<double>(r) <=
+                            ANGULAR_FACTOR_BYTES;
+  auto LU = keep_factors ? torch::empty({U, r * r}, F64) : torch::Tensor();
+  auto piv =
+    keep_factors ? torch::empty({U, r}, torch::kInt64) : torch::Tensor();
+  double* lu = keep_factors ? LU.data_ptr<double>() : nullptr;
+  int64_t* pv = keep_factors ? piv.data_ptr<int64_t>() : nullptr;
   const auto E1 = (F.to(F64) - src).view({M, NG, r}).contiguous();
   {
     auto inv = torch::empty({std::min(BLOCK, U), r * r}, F64);
@@ -1360,8 +1409,10 @@ std::pair<torch::Tensor, torch::Tensor> ProjectedTransport::angular_galerkin(
         [&](int64_t i, const double* a, const int64_t* ipiv,
           const torch::Tensor& b) {
           const int64_t u = u0 + i, d = u / NG, g = u % NG;
-          std::copy_n(a, r * r, lu + u * r * r);
-          std::copy_n(ipiv, r, pv + u * r);
+          if (keep_factors) {
+            std::copy_n(a, r * r, lu + u * r * r);
+            std::copy_n(ipiv, r, pv + u * r);
+          }
           const auto f = (b + Y[d].matmul(E1.select(1, g))).contiguous();
           std::copy_n(f.data_ptr<double>(), r, z + u * r);
           linalg::dense::lu_solve(a, r, ipiv, z + u * r);
@@ -1409,8 +1460,15 @@ std::pair<torch::Tensor, torch::Tensor> ProjectedTransport::angular_galerkin(
     }
   }
   const auto rhs = wY.t().mm(Z.view({D, NG * r})).reshape({n, 1});
-  const auto I = torch::eye(n, F64);
-  Lam = torch::linalg_solve(I - T, rhs).reshape({M, NG, r});
+  // I - T in place (one n x n matrix: n = M |set| r with spatial_basis)
+  T.neg_();
+  T.diagonal().add_(1.0);
+  try {
+    Lam = torch::linalg_solve(T, rhs).reshape({M, NG, r});
+  } catch (const c10::Error&) {
+    throw utils::runtime_error(ctx("angular_galerkin"),
+      "The angular Galerkin system (I - T) is singular");
+  }
   // Pass 2: L_u = A_u^{-1} (f_u + sum_m Y_m(d) sum_g' K(g, g') Lam_{m,g'})
   //            = z_u + A_u^{-1} (Y(d)^T dE_{:,g}), with the stored factors
   auto dE = torch::zeros({M, NG, r}, F64);
@@ -1421,10 +1479,24 @@ std::pair<torch::Tensor, torch::Tensor> ProjectedTransport::angular_galerkin(
           dE[m][g].add_(K->view().mv(Lam[m][gp]));
   auto Rhs = Y.to(F64).mm(dE.view({M, NG * r})).view({U, r}).contiguous();
   double* rp = Rhs.data_ptr<double>();
-  at::parallel_for(0, U, 1, [&](int64_t i0, int64_t i1) {
-    for (int64_t u = i0; u < i1; u++)
-      linalg::dense::lu_solve(lu + u * r * r, r, pv + u * r, rp + u * r);
-  });
+  if (keep_factors) {
+    at::parallel_for(0, U, 1, [&](int64_t i0, int64_t i1) {
+      for (int64_t u = i0; u < i1; u++)
+        linalg::dense::lu_solve(lu + u * r * r, r, pv + u * r, rp + u * r);
+    });
+  } else {
+    for (int64_t u0 = 0; u0 < U; u0 += BLOCK) {
+      const int64_t nb = std::min(BLOCK, U - u0);
+      std::vector<int64_t> units(static_cast<size_t>(nb));
+      for (int64_t i = 0; i < nb; i++)
+        units[i] = u0 + i;
+      factor_units(units, "angular_galerkin",
+        [&](int64_t i, const double* a, const int64_t* ipiv,
+          const torch::Tensor&) {
+          linalg::dense::lu_solve(a, r, ipiv, rp + (u0 + i) * r);
+        });
+    }
+  }
   L = (Z + Rhs).contiguous();
   return {L, Lam.view({M * NG, r})};
 }

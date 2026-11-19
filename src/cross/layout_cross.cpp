@@ -130,6 +130,15 @@ LayoutCross::LayoutCross(sampling::SamplingProblem problem, CrossConfig config)
   }
 }
 
+void LayoutCross::restart()
+{
+  // A fresh sequence of runs: no warm-start index sets, the random streams
+  // from their seeds (as constructed)
+  prior_right_.clear();
+  rng_.seed(config_.seed);
+  sample_rng_.seed(config_.seed ^ SAMPLE_SEED_MIX);
+}
+
 void LayoutCross::reset()
 {
   store_->clear();
@@ -515,7 +524,7 @@ void LayoutCross::run()
   }
 
   // Results of the run: the error the last check accepted or rejected on
-  holdout_error_ = err;
+  error_ = err;
   converged_ = err <= accept;
   if (config_.warm_start)
     prior_right_ = right_;
@@ -530,14 +539,6 @@ void LayoutCross::run()
   total_fibers_ += store_->num_swept();
   store_->release();
   seconds_ = elapsed(t0);
-}
-
-std::map<std::string, double> LayoutCross::timings() const
-{
-  auto out = timings_;
-  for (const auto& [phase, sec] : store_->timings())
-    out[phase] += sec;
-  return out;
 }
 
 // =================================================================

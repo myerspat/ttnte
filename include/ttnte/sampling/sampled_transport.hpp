@@ -23,7 +23,9 @@ namespace ttnte::sampling {
 /// lagged edges and, if stored, the angular flux. Groups are local to the
 /// set (0 ... G - 1), space is the fiber index (every patch, concatenated).
 /// Samplers differ in which fibers they request, what they fit and how they
-/// decide they are done; the records below are common to all of them.
+/// decide they are done; the records below are common to all of them, and so
+/// is the state behind them (the store, the last run's error, convergence and
+/// seconds, the phase timings), which this base holds for its subclasses.
 class SampledTransport {
 public:
   // =================================================================
@@ -61,6 +63,11 @@ public:
   /// this sampler's runs (its within-set tolerance), for settled(). Default:
   /// ignored.
   virtual void set_stop_tolerance(double /*tol*/) {}
+  /// @brief Start a new sequence of runs (a new solve): drop everything a
+  /// sampler carries from run to run (warm starts, references of its
+  /// stopping tests, a stage, its random streams), so that the sequence
+  /// runs as on a newly built sampler. Default: nothing carried.
+  virtual void restart() {}
 
   // =================================================================
   // Public getters
@@ -72,27 +79,53 @@ public:
   /// @return Whether the flux is to be kept after the solve that last ran
   /// it (for the solver's angular flux), instead of released.
   virtual bool keeps_flux() const = 0;
-  /// @return Fibers swept by the last run.
-  virtual int64_t num_fibers() const = 0;
   /// @return The ranks of the last run's approximation.
   virtual std::vector<int64_t> ranks() const = 0;
-  /// @return The relative error estimate of the last run's stopping test
-  /// (judged against the tolerance, or a multiple of it).
-  virtual double error() const = 0;
-  /// @return Whether the last run met its tolerance.
-  virtual bool converged() const = 0;
-  /// @return Wall seconds of the last run, and of its oracle requests.
-  virtual double seconds() const = 0;
-  virtual double sweep_seconds() const = 0;
-  /// @return Seconds per phase, accumulated over every run (the oracle's
-  /// "sweep" and "weight_cpu" among them).
-  virtual std::map<std::string, double> timings() const = 0;
-  /// @return Every oracle request of every run.
-  virtual const std::vector<FiberStore::SweepCall>& sweep_calls() const = 0;
   /// @return The last run's record (a sampler's own RunRecord subclass).
   virtual RunRecord::Ptr record() const = 0;
 
+  /// @return Fibers swept by the last run.
+  int64_t num_fibers() const noexcept { return store_->num_swept(); }
+  /// @return The relative error estimate of the last run's stopping test
+  /// (judged against the tolerance, or a multiple of it; each sampler
+  /// documents its own).
+  double error() const noexcept { return error_; }
+  /// @return Whether the last run met its tolerance.
+  bool converged() const noexcept { return converged_; }
+  /// @return Wall seconds of the last run, and of its oracle requests.
+  double seconds() const noexcept { return seconds_; }
+  double sweep_seconds() const noexcept { return store_->sweep_seconds(); }
+  /// @return Seconds per phase, accumulated over every run: the sampler's
+  /// own phases and the oracle's ("sweep", "weight_cpu", from the store).
+  std::map<std::string, double> timings() const
+  {
+    auto out = timings_;
+    for (const auto& [phase, sec] : store_->timings())
+      out[phase] += sec;
+    return out;
+  }
+  /// @return Every oracle request of every run.
+  const std::vector<FiberStore::SweepCall>& sweep_calls() const noexcept
+  {
+    return store_->sweep_calls();
+  }
+  /// @return The weighting factors in effect: those configured that the
+  /// problem has the data for.
+  const Weighting& weighting() const noexcept { return store_->weighting(); }
+
 protected:
+  // =================================================================
+  // Protected data
+  /// The swept fibers (created by the subclass's constructor).
+  FiberStore::Ptr store_;
+  /// The last run's error estimate, convergence and wall seconds.
+  double error_ = 0.0;
+  bool converged_ = false;
+  double seconds_ = 0.0;
+  /// Seconds per phase of run() outside the oracle, accumulated over every
+  /// run (the oracle's are the store's).
+  std::map<std::string, double> timings_;
+
   // =================================================================
   // Protected methods
   /// @brief Fill the fields every sampler reports from the getters above.

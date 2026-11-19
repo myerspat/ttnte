@@ -16,9 +16,12 @@ namespace ttnte::linalg {
 /// Alg. B.1): the first row maximizes |V(:, 0)|, each next one the
 /// interpolation residual of the next column on the rows chosen so far.
 /// @param V (n, r) basis, r <= n.
+/// Rows already chosen are excluded, so the rows are distinct.
 /// @return The r selected rows, in selection order.
-/// @throws std::runtime_error If V is not 2-D with 1 <= r <= n, or the
-/// interpolation matrix of the chosen rows becomes singular.
+/// @throws std::runtime_error If V is not 2-D with 1 <= r <= n, or V is
+/// (numerically) rank deficient: a column's largest interpolation residual is
+/// at rounding level (max(n, r) eps times its norm), which would make the
+/// interpolation matrix V(I, :) singular.
 std::vector<int64_t> deim_select(const torch::Tensor& V);
 
 /// @brief Q-DEIM row selection (Drmac & Gugercin 2016): the first r column
@@ -35,7 +38,8 @@ std::vector<int64_t> qdeim_select(const torch::Tensor& V);
 /// @param L (n, r) coefficients, row per quadrature point.
 /// @param w (n) positive weights.
 /// @return V (n, r) and R (r, r) (upper triangular).
-/// @throws std::runtime_error On mismatched shapes or a nonpositive weight.
+/// @throws std::runtime_error On mismatched shapes, r > n or a nonpositive
+/// weight.
 std::pair<torch::Tensor, torch::Tensor> weighted_orthonormal(
   const torch::Tensor& L, const torch::Tensor& w);
 
@@ -45,10 +49,11 @@ std::pair<torch::Tensor, torch::Tensor> weighted_orthonormal(
 /// ||V_o(I, :)^+||_2, V_o an orthonormal basis of span(V); with weights w it
 /// is measured in ||g||_w = ||diag(sqrt w) g||_2 (quadrature-weighted, as Han
 /// et al.'s V and the moments are) and V_o spans diag(sqrt w) V.
-/// @param V (n, r) basis.
-/// @param I Selected rows (at least r).
+/// @param V (n, r) basis, r <= n.
+/// @param I Selected rows, exactly r (the square interpolation of DEIM).
 /// @param w Optional (n) positive weights.
-/// @return The constant (infinite if V_o(I, :) is rank deficient).
+/// @return The constant (infinite if V is numerically rank deficient or
+/// V_o(I, :) is singular).
 /// @throws std::runtime_error On mismatched shapes or a nonpositive weight.
 double lebesgue_constant(const torch::Tensor& V, const std::vector<int64_t>& I,
   const std::optional<torch::Tensor>& w = std::nullopt);
