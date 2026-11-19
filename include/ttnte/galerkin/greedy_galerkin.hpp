@@ -362,6 +362,9 @@ public:
   {
     return deim_rows_;
   }
+  /// @return (units, |I|) the interpolation V V(I, :)^{-1} of the next run
+  /// (identity rows at the DEIM units), or undefined before the switch.
+  const torch::Tensor& deim_interp() const noexcept { return deim_interp_; }
   /// @return Angular updates so far.
   int64_t num_updates() const noexcept { return updates_; }
 };

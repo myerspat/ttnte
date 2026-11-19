@@ -3,11 +3,13 @@
 #include "ttnte/sampling/fiber_store.hpp"
 #include "sampling/sampling_detail.hpp"
 #include "ttnte/linalg/banded_cholesky.hpp"
+#include "ttnte/linalg/lapack.hpp"
 #include "ttnte/linalg/matrix_ops.hpp"
 #include "ttnte/utils/exception.hpp"
 #include <ATen/Parallel.h>
 #include <algorithm>
 #include <c10/core/CPUAllocator.h>
+#include <c10/util/ParallelGuard.h>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -265,6 +267,12 @@ void FiberStore::apply_dual_mass(double* rows, int64_t count) const
 {
   const int64_t Ns = num_space_;
   auto t = torch::from_blob(rows, {count, Ns}, torch::kFloat64);
+  // Serial, as documented, also when the caller's loop runs as one chunk on
+  // its own thread (the greedy's few candidates per iteration): otherwise
+  // MKL starts a thread team for each small triangular solve (Galerkin on 8
+  // threads: residual norms 5x slower than on 2)
+  linalg::lapack::SingleThreaded single;
+  c10::ParallelGuard serial(true);
   // Dense factors by group: rows are functionals f, R^{-T} f^T = (f
   // R^{-1})^T, solving R on the right
   for (const auto& grp : dense_groups_) {

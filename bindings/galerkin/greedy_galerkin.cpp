@@ -138,6 +138,15 @@ void register_GreedyGalerkin(py::module_& m)
     .def_property_readonly("deim_directions", &GreedyGalerkin::deim_directions,
       "DEIM units (directions, or pairs) of the next run.")
     .def_property_readonly(
+      "deim_interp",
+      [](const GreedyGalerkin& g) -> std::optional<torch::Tensor> {
+        if (!g.deim_interp().defined())
+          return std::nullopt;
+        return g.deim_interp();
+      },
+      "(units, |I|) the interpolation V V(I, :)^{-1} of the next run "
+      "(identity rows at deim_directions), or None before the switch.")
+    .def_property_readonly(
       "num_updates", &GreedyGalerkin::num_updates, "Angular updates so far.")
     .def_property_readonly("settled", &GreedyGalerkin::settled)
     .def_property_readonly("record", &GreedyGalerkin::record,
