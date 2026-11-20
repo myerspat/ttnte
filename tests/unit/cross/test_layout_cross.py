@@ -4,7 +4,10 @@ whose fibers are returned exactly, so every error is the cross's own."""
 import pytest
 import torch
 
+import itertools
+
 from ttnte.cross import CrossConfig, LayoutCross
+from ttnte.sampling import Weighting
 
 torch.set_default_dtype(torch.float64)
 
@@ -30,6 +33,7 @@ Y = torch.stack(
     [torch.ones(NM * NG), torch.linspace(-1, 1, NM).repeat_interleave(NG)], 1
 )
 REF = PSI.reshape(NM * NG, NS, G).permute(0, 2, 1)  # (Nd, G, NS)
+UNWEIGHTED = Weighting(angle=False, energy=False, space=False)
 
 
 def _sweep(blocks):
@@ -139,8 +143,8 @@ def test_patch_tts_in_user_layout(layout, order):
         assert _rel(dense, ref) < 50 * 1e-7
 
 
-def test_weighting_options_agree():
-    # A tridiagonal SPD mass matrix per patch, and lethargy widths
+def _bands():
+    """A tridiagonal SPD mass matrix per patch."""
     bands = []
     for shape in SHAPES:
         n = shape[0] * shape[1]
@@ -148,8 +152,13 @@ def test_weighting_options_agree():
         band[:, 0] = 4.0
         band[:-1, 1] = 1.0
         bands.append(band)
+    return bands
+
+
+def test_weighting_options_agree():
+    bands = _bands()
     du = torch.linspace(0.5, 2.0, G).tolist()
-    plain = _cross("polar|azimuthal|space|energy", weighted=False)
+    plain = _cross("polar|azimuthal|space|energy", weighting=UNWEIGHTED)
     plain.run()
     weighted = _cross(
         "polar|azimuthal|space|energy", lethargy_widths=du, mass_bands=bands
@@ -158,6 +167,52 @@ def test_weighting_options_agree():
     for c in (plain, weighted):
         full = c.evaluate(list(range(NM * NG)), list(range(G)), list(range(NS)))
         assert _rel(full, REF) < 20 * 1e-6
+
+
+def test_weighting_defaults():
+    """Every factor is on by default, and an attribute of the config's weighting can be
+    set in place."""
+    w = Weighting()
+    assert (w.angle, w.energy, w.space) == (True, True, True) and w.any()
+    assert not UNWEIGHTED.any()
+    cfg = CrossConfig()
+    assert (cfg.weighting.angle, cfg.weighting.energy, cfg.weighting.space) == (
+        True,
+        True,
+        True,
+    )
+    cfg.weighting.angle = False
+    assert not cfg.weighting.angle and cfg.weighting.energy
+    with pytest.raises(TypeError):
+        Weighting(time=True)
+
+
+@pytest.mark.parametrize(
+    "angle, energy, space", itertools.product([False, True], repeat=3)
+)
+def test_weighting_factors_independent(angle, energy, space):
+    """Each factor can be switched on alone: every combination reproduces the flux,
+    and the weights the run applied are exactly the ones asked for."""
+    du = torch.linspace(0.5, 2.0, G).tolist()
+    c = _cross(
+        "polar|azimuthal|space|energy",
+        weighting=Weighting(angle=angle, energy=energy, space=space),
+        mass_bands=_bands(),
+        lethargy_widths=du,
+    )
+    c.run()
+    full = c.evaluate(list(range(NM * NG)), list(range(G)), list(range(NS)))
+    assert _rel(full, REF) < 20 * 1e-6
+    applied = c.weighting
+    assert (applied.angle, applied.energy, applied.space) == (angle, energy, space)
+
+
+def test_weighting_needs_data():
+    """Energy and space weighting asked for without lethargy widths or mass bands leave
+    those indices unweighted."""
+    c = _cross("polar|azimuthal|space|energy")
+    applied = c.weighting
+    assert (applied.angle, applied.energy, applied.space) == (True, False, False)
 
 
 def test_deterministic():
@@ -296,7 +351,7 @@ def test_stall_exit(layout):
 def test_norm_diagnostics():
     """Backward records carry the RMS norms of the hold-out pool and of the swept fibers
     (unweighted here, so they lie within the fiber norms)."""
-    c = _cross("polar,azimuthal,space|energy", tol=1e-4, weighted=False)
+    c = _cross("polar,azimuthal,space|energy", tol=1e-4, weighting=UNWEIGHTED)
     c.run()
     norms = REF.norm(dim=2)
     lo, hi = norms.min().item(), norms.max().item()
@@ -314,7 +369,9 @@ def test_global_error_estimate(layout):
     """The recorded global estimate follows the true global relative error of the TT
     after every pass (within a factor of 5 here), and global_holdout accepts on it."""
     for passes in range(1, 5):
-        c = _cross(layout, tol=1e-8, weighted=False, max_sweeps=passes, stall_passes=0)
+        c = _cross(
+            layout, tol=1e-8, weighting=UNWEIGHTED, max_sweeps=passes, stall_passes=0
+        )
         c.run()
         full = c.evaluate(list(range(NM * NG)), list(range(G)), list(range(NS)))
         est = [h for h in c.history if h["phase"] == "backward"][-1]["global_error"]
@@ -454,8 +511,11 @@ def test_banded_mass_weighting():
     band[:-2, 2] = 0.5
     dirs = [0, NG - 1, NM * NG - 1, (NM - 1) * NG]
     for mass in ([], [band]):
+        on = bool(mass)
         cfg = CrossConfig(
-            layout="polar|azimuthal|space|energy", tol=1e-6, weighted=bool(mass)
+            layout="polar|azimuthal|space|energy",
+            tol=1e-6,
+            weighting=Weighting(angle=on, energy=on, space=on),
         )
         c = LayoutCross(2, NM, NG, G, ns, W, Y, dirs, sweep, cfg, [0], [shape], mass)
         c.run()

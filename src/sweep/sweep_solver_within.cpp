@@ -1,6 +1,8 @@
 // SweepSolver: Within-group-set solvers: Richardson, GMRES, correction form,
 // incremental transport.
 #include "ttnte/sweep/sweep_driver.hpp"
+#include <algorithm>
+#include <limits>
 
 namespace ttnte::sweep {
 
@@ -238,14 +240,15 @@ void SweepSolver::within_gmres(size_t s, bool jacobi,
     // Relaxed inexact Krylov: the next product may be as inaccurate as
     // tol_min / (current residual), since its error is damped by the
     // residual. Products start at tol_min and loosen as GMRES converges,
-    // capped at cross_max_tol. `scale` puts the residual on the norm the
+    // capped at sampling_max_tol. `scale` puts the residual on the norm the
     // tolerances are relative to (1, or ||r0|| / ||y0|| in correction
-    // form). Only CROSS transport reads cross_tol_; an exact sweep ignores
-    // it
+    // form). Only sampled (CROSS, GALERKIN) transport reads sampling_tol_; an
+    // exact sweep ignores it
     const double relative = residual * scale;
-    cross_tol_ = config_.cross_relax ? std::min(config_.cross_max_tol,
-                                         tol_min / std::max(relative, tol_min))
-                                     : tol_min;
+    sampling_tol_ = config_.sampling_relax
+                      ? std::min(config_.sampling_max_tol,
+                          tol_min / std::max(relative, tol_min))
+                      : tol_min;
   };
 
   // Restarted GMRES to tol (relative to the scaled norm), x warm-started by
@@ -256,7 +259,7 @@ void SweepSolver::within_gmres(size_t s, bool jacobi,
       tol / scale, config_.inner_max_iter, reducer, progress);
   });
   // Later transport solves (e.g. the caller's final one) at full accuracy
-  cross_tol_ = tol_min;
+  sampling_tol_ = tol_min;
   if (!result.converged && config_.verbose && comm_.rank() == 0) {
     std::cout << "-- warning: within-group-set GMRES (set " << s
               << ") stopped at relative residual "
@@ -275,7 +278,7 @@ void SweepSolver::correction_solve(size_t s, bool jacobi, double tol,
 
   // y0 = T(q + S x0) with the lagged traces of x0, at full accuracy
   std::vector<double> y(n), r0(n);
-  cross_tol_ = tol_min;
+  sampling_tol_ = tol_min;
   timed("unpack", [&] { unpack(s, x.data(), true); });
   timed("source", [&] { compute_source(s, Within::KRYLOV, true, jacobi); });
   if (!try_incremental_transport(s, x, tol_min, y, reducer)) {
@@ -300,7 +303,7 @@ void SweepSolver::correction_solve(size_t s, bool jacobi, double tol,
   std::vector<double> e(n, 0.0);
   if (rnorm > tol * ynorm)
     within_gmres(s, jacobi, r0, e, tol, tol_min, rnorm / ynorm, reducer);
-  cross_tol_ = tol_min;
+  sampling_tol_ = tol_min;
   if (rnorm > tol * ynorm) {
     for (int64_t i = 0; i < n; i++)
       x[i] += e[i];
@@ -312,8 +315,8 @@ void SweepSolver::correction_solve(size_t s, bool jacobi, double tol,
 
   // The stored angular flux and the kept TT come from the last transport
   // solve: redo it from the accepted iterate when they are wanted
-  const bool keep_angular_flux = config_.transport == TransportSolve::CROSS &&
-                                 config_.cross.keep_angular_flux;
+  const bool keep_angular_flux =
+    !samplers_.empty() && samplers_[s]->keeps_flux();
   if (config_.store_angular_flux || keep_angular_flux) {
     unpack(s, x.data(), true);
     compute_source(s, Within::KRYLOV, true, jacobi);
@@ -383,7 +386,8 @@ bool SweepSolver::try_incremental_transport(size_t s,
     return false;
   // Each increment may add tol_min = inner_factor tol of error to y0:
   // a full solve once the drift could reach the inner tolerance
-  if (static_cast<double>(anchor_steps_[s] + 1) * config_.cross_inner_factor >
+  if (static_cast<double>(anchor_steps_[s] + 1) *
+        config_.sampling_inner_factor >
       1.0)
     return false;
   const int64_t n = static_cast<int64_t>(x.size());
@@ -411,12 +415,12 @@ bool SweepSolver::try_incremental_transport(size_t s,
   // The change, solved to the absolute accuracy tol_min ||y||
   timed("source", [&] { swap_source(s, anchor_source_[s], true); });
   timed("unpack", [&] { unpack(s, dx.data(), true); });
-  cross_tol_ = dnorm > 0.0 ? std::min(config_.cross_max_tol,
-                               tol_min * std::sqrt(sums[2]) / dnorm)
-                           : config_.cross_max_tol;
+  sampling_tol_ = dnorm > 0.0 ? std::min(config_.sampling_max_tol,
+                                  tol_min * std::sqrt(sums[2]) / dnorm)
+                              : config_.sampling_max_tol;
   timed("transport", [&] { transport_group_set(s); });
   timed("pack", [&] { pack(s, true, true, y.data()); });
-  cross_tol_ = tol_min;
+  sampling_tol_ = tol_min;
   for (int64_t i = 0; i < n; i++)
     y[i] += ay[i];
   anchor_x_[s] = x;
@@ -491,16 +495,39 @@ int64_t SweepSolver::inner_solve(size_t s, bool jacobi)
   double tol = inner_tolerance();
   if (config_.global_inner_tolerance)
     tol = std::min(GLOBAL_TOLERANCE_CAP, tol * global_tolerance_scale(s));
-  // Cross accuracy: a fraction of the inner tolerance, relaxed in GMRES
-  const double tol_min = config_.cross_inner_factor * tol;
-  cross_tol_ = tol_min;
+  // Sampled (CROSS, GALERKIN) accuracy: a fraction of the inner tolerance,
+  // relaxed (sampling_relax) in GMRES and in Richardson alike
+  const double tol_min = config_.sampling_inner_factor * tol;
+  sampling_tol_ = tol_min;
+  stop_tol_ = tol;
+  // Outside this solve no within-set tolerance applies: transport solves
+  // elsewhere (sweep(), certify()) take the samplers' config tolerance
+  struct ClearTolerances {
+    double& sampling;
+    double& stop;
+    ~ClearTolerances() { sampling = stop = 0.0; }
+  } clear_tolerances {sampling_tol_, stop_tol_};
 
   // Richardson (source iteration): sweep with the latest moments, commit,
   // stop when the set's moments change by less than tol (relative)
   if (config_.inner_solver == InnerSolver::RICHARDSON) {
     const auto& groups = group_indices_[s];
+    // Relaxed inexact source iteration: an inexact transport solve's error
+    // is not damped as a GMRES product's is, but it only has to stay below
+    // what the iteration still changes. Each sweep asks for
+    // sampling_inner_factor times the last relative change, at least tol_min
+    // (reached as the change falls to tol: the converged accuracy is the
+    // unrelaxed one) and at most sampling_max_tol (the first sweep, no change
+    // yet). Only sampled transport reads sampling_tol_
+    double change = std::numeric_limits<double>::infinity();
+    bool stopped = false;
     for (int64_t it = 0; it < config_.inner_max_iter; it++) {
       double num = 0.0, den = 0.0;
+      sampling_tol_ =
+        config_.sampling_relax
+          ? std::min(config_.sampling_max_tol,
+              std::max(tol_min, config_.sampling_inner_factor * change))
+          : tol_min;
       compute_source(s, Within::MOMENTS, true, jacobi);
       transport_group_set(s);
       for (const auto& P : patches_) {
@@ -516,11 +543,24 @@ int64_t SweepSolver::inner_solve(size_t s, bool jacobi)
       commit_group_set(s);
       num = global_sum(num);
       den = global_sum(den);
-      report_progress(
-        s, it + 1, den == 0.0 ? 0.0 : std::sqrt(num / den), "Richardson");
-      if (den == 0.0 || std::sqrt(num / den) < tol)
+      change = den == 0.0 ? 0.0 : std::sqrt(num / den);
+      report_progress(s, it + 1, change, "Richardson");
+      // A sampler iterating on a representation the moments do not show
+      // (Han et al.'s DEIM inner loop) holds the stop until it is settled
+      if (den == 0.0 ||
+          (change < tol && samplers_settled(static_cast<int64_t>(s)))) {
+        stopped = true;
         break;
+      }
     }
+    // Out of inner iterations with the moments within tolerance: only an
+    // unsettled sampler (a DEIM stage awaiting its angular update) held the
+    // stop, which a failed solve would otherwise not show
+    if (!stopped && change < tol && config_.verbose && comm_.rank() == 0)
+      std::cout << "-- warning: within-group-set Richardson (set " << s
+                << ") reached inner_max_iter (" << config_.inner_max_iter
+                << ") with the change within tolerance but a sampler not "
+                   "settled (a DEIM stage without its angular update)\n";
     return group_set_sweeps_ - start;
   }
 

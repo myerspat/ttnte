@@ -73,6 +73,20 @@ void register_banded_cholesky(py::module_& m)
     "Solve L^T x = b with the factor of banded_cholesky_factor().",
     py::arg("factor"), py::arg("kd"), py::arg("b"));
 
+  m.def(
+    "banded_cholesky_solve_lower",
+    [](const torch::Tensor& factor, int64_t kd, const torch::Tensor& b) {
+      const char* where = "ttnte::linalg::banded_cholesky_solve_lower";
+      auto l = checked_band(factor, kd, where);
+      auto x = checked_vector(b, l.size(0), where);
+      banded::cholesky_solve_lower(
+        l.data_ptr<double>(), l.size(0), kd, x.data_ptr<double>());
+      return x;
+    },
+    "Solve L x = b with the factor of banded_cholesky_factor() (||x|| is "
+    "then the dual norm sqrt(b^T A^{-1} b)).",
+    py::arg("factor"), py::arg("kd"), py::arg("b"));
+
   m.def("symmetric_band_from_pairs", &banded::symmetric_band_from_pairs,
     "Lower band storage of a symmetric matrix from (row, column, value) "
     "pairs (pairs above the diagonal are ignored). Returns (ab, kd).",

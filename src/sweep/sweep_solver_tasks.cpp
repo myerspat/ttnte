@@ -83,17 +83,17 @@ SweepBlock SweepSolver::make_block(const std::vector<int64_t>& directions,
   return block;
 }
 
-torch::Tensor SweepSolver::cross_patch_psi(size_t s, size_t local) const
+torch::Tensor SweepSolver::sampled_patch_psi(size_t s, size_t local) const
 {
   std::vector<int64_t> dirs(omega_.size(0)), groups(group_indices_[s].size()),
     space(patches_[local].disc->num_dofs());
   std::iota(dirs.begin(), dirs.end(), 0);
   std::iota(groups.begin(), groups.end(), 0);
   std::iota(space.begin(), space.end(), fiber_offsets_[local]);
-  return crosses_[s]->evaluate(dirs, groups, space);
+  return samplers_[s]->evaluate(dirs, groups, space);
 }
 
-UnitSweep SweepSolver::make_unit(const AngleSet& set, int64_t local)
+UnitSweep SweepSolver::make_unit(const AngleSet& set, int64_t local) const
 {
   auto& P = patches_[local];
   UnitSweep unit;
@@ -174,45 +174,130 @@ void SweepSolver::run_fiber_chunk(size_t t, size_t c, double* out)
   }
 }
 
-void SweepSolver::cross_group_set(size_t s)
+void SweepSolver::transport_residual(int64_t direction,
+  const std::vector<int64_t>& groups, const double* x, double* r) const
 {
-  // The cross's stand-in for one transport sweep of group set s: build a
+  const int64_t num_directions = omega_.size(0);
+  if (direction < 0 || direction >= num_directions)
+    throw utils::runtime_error(
+      ctx("transport_residual"), "Direction out of range");
+  std::vector<uint8_t> seen(num_groups_, 0);
+  for (int64_t g : groups) {
+    if (g < 0 || g >= num_groups_ || seen[g]++)
+      throw utils::runtime_error(
+        ctx("transport_residual"), "Groups must be distinct and in range");
+  }
+  const int64_t ng = static_cast<int64_t>(groups.size());
+  const int64_t d = direction;
+  const auto& set =
+    graph_
+      ->angle_sets()[graph_->direction_set().template data_ptr<int64_t>()[d]];
+  const std::vector<int64_t> dirs {d};
+  const auto block = make_block(dirs, groups);
+  auto& ws = workspace();
+  thread_local std::vector<double> gathered;
+
+  for (size_t local = 0; local < patches_.size(); local++) {
+    const auto unit = make_unit(set, static_cast<int64_t>(local));
+    const auto upstream = gather_upwind(set, local, ng, x, gathered);
+    // The unit's slice of x and r; its groups stay fiber_length_ apart
+    unit_residual(unit, block, fiber_at(x, 0, local), fiber_length_, upstream,
+      fiber_at(r, 0, local), ws);
+  }
+}
+
+std::array<const double*, MAX_FACES> SweepSolver::gather_upwind(
+  const AngleSet& set, size_t local, int64_t ng, const double* x,
+  std::vector<double>& buffer) const
+{
+  // The DEPENDENCY faces, their upwind unit's face, and where its values go
+  struct Upwind {
+    size_t face;
+    const FaceGeometry* upwind_face;
+    int64_t neighbor;
+    size_t offset;
+  };
+  const auto& P = patches_[local];
+  std::vector<Upwind> faces;
+  size_t total = 0;
+  for (size_t f = 0; f < P.links.size(); f++) {
+    const auto& link = P.links[f];
+    if (link.type != physics::BoundaryType::INTERNAL)
+      continue;
+    const EdgeState state = link.is_first ? set.backward[link.interface]
+                                          : set.forward[link.interface];
+    if (state != EdgeState::DEPENDENCY)
+      continue;
+    if (link.remote_rank >= 0)
+      throw utils::runtime_error(
+        ctx("gather_upwind"), "An upwind neighbor is on another rank");
+    const auto& face =
+      patches_[link.neighbor].disc->faces()[link.neighbor_face];
+    faces.push_back({f, &face, link.neighbor, total});
+    total += static_cast<size_t>(ng * face.num_dofs());
+  }
+
+  // (ng, Nf) per face: the upwind unit's x at its face dofs, in the order
+  // its sweep writes them to the trace buffer
+  buffer.resize(total);
+  std::array<const double*, MAX_FACES> upstream {};
+  for (const auto& u : faces) {
+    const int64_t Nf = u.upwind_face->num_dofs();
+    const int64_t* dofs = u.upwind_face->dofs.template data_ptr<int64_t>();
+    double* dst = buffer.data() + u.offset;
+    for (int64_t bg = 0; bg < ng; bg++) {
+      const double* src = fiber_at(x, bg, u.neighbor);
+      for (int64_t k = 0; k < Nf; k++)
+        dst[bg * Nf + k] = src[dofs[k]];
+    }
+    upstream[u.face] = dst;
+  }
+  return upstream;
+}
+
+void SweepSolver::sampled_group_set(size_t s)
+{
+  // The sampler's stand-in for one transport sweep of group set s: build a
   // low-rank psi of the set's groups from sampled fibers (the sources and
   // traces were set by the caller), then produce from it everything an
   // exact sweep would leave behind: the moments, the lagged traces and,
-  // if stored, psi. Groups are local to the set inside the cross (0..ng-1)
-  // and global (groups[bg]) in the solver's buffers.
-  auto& cr = *crosses_[s];
+  // if stored, psi. Groups are local to the set inside the sampler
+  // (0..ng-1) and global (groups[bg]) in the solver's buffers.
+  auto& sampler = *samplers_[s];
   const auto& groups = group_indices_[s];
   const int64_t ng = static_cast<int64_t>(groups.size());
   const int64_t G = num_groups_;
 
-  // Tolerance: cross_tol_ when the within-set solver set one for this
-  // transport solve (relaxed inexact-Krylov products with cross_relax, the
-  // correction form's tol_min), else the fixed CrossConfig::tol
-  cr.set_tolerance(cross_tol_ > 0 ? cross_tol_ : config_.cross.tol);
-  // The cross's linear algebra runs on at most cross_threads threads (its
+  // Tolerance: sampling_tol_ when the within-set solver set one for this
+  // transport solve (relaxed inexact-Krylov products with sampling_relax, the
+  // correction form's tol_min), else the sampler's fixed config tol
+  const double fixed = config_.transport == TransportSolve::GALERKIN
+                         ? config_.galerkin.tol
+                         : config_.cross.tol;
+  sampler.set_tolerance(sampling_tol_ > 0 ? sampling_tol_ : fixed);
+  sampler.set_stop_tolerance(stop_tol_);
+  // The sampler's linear algebra runs on at most sampling_threads threads (its
   // matrices are small; more threads cost more in synchronization). The
   // fiber sweeps it requests still use the solver's task pool
   const int64_t solver_threads = std::max<int64_t>(1, config_.num_threads);
-  std::optional<ThreadCountGuard> threads(std::in_place,
-    config_.cross_threads > 0 ? std::min(config_.cross_threads, solver_threads)
-                              : solver_threads);
-  // Forward/backward passes until the hold-out check accepts; every fiber
-  // it needs is swept through the sweep callback (sweep_fibers)
-  cr.run();
+  std::optional<ThreadCountGuard> threads(
+    std::in_place, config_.sampling_threads > 0
+                     ? std::min(config_.sampling_threads, solver_threads)
+                     : solver_threads);
+  // Run until its stopping test accepts; every fiber it needs is swept
+  // through the sweep callback (sweep_fibers)
+  sampler.run();
 
   auto t0 = std::chrono::steady_clock::now();
   auto lap = [&](const char* phase) {
     const auto now = std::chrono::steady_clock::now();
-    cross_timings_[phase] += std::chrono::duration<double>(now - t0).count();
+    sampling_timings_[phase] += std::chrono::duration<double>(now - t0).count();
     t0 = now;
   };
-  // 1. Moments: (M, ng, fiber_length) from the TT (quadrature times
-  // harmonics contracted with the angle cores). Scatter each patch's
-  // segment of the fiber into its global groups of moments_next, which the
-  // within-set iteration reads as this transport solve's result
-  auto moments = cr.moments();
+  // 1. Moments: (M, ng, fiber_length) from the low-rank flux. Scatter each
+  // patch's segment of the fiber into its global groups of moments_next, which
+  // the within-set iteration reads as this transport solve's result
+  auto moments = sampler.moments();
   const int64_t M = moments.size(0);
   const double* mom = moments.template data_ptr<double>();
   std::vector<int64_t> local_groups(ng);
@@ -234,9 +319,9 @@ void SweepSolver::cross_group_set(size_t s)
   // (cycle breaks, reflective faces) from the trace buffers at all of the
   // edge's directions, but the fiber sweeps only wrote the pairs the cross
   // sampled. So each delayed block (unit, face, directions) is evaluated
-  // from the TT at the face's dofs and written into its current buffer,
-  // at the set's groups only (other sets' traces are left alone).
-  // One lagged block per task (each writes its own directions' rows); the
+  // from the low-rank flux at the face's dofs and written into its current
+  // buffer, at the set's groups only (other sets' traces are left alone). One
+  // lagged block per task (each writes its own directions' rows); the
   // contractions inside run serially, nested in the parallel region
   at::parallel_for(
     0, static_cast<int64_t>(delayed_.size()), 1, [&](int64_t b0, int64_t b1) {
@@ -247,7 +332,7 @@ void SweepSolver::cross_group_set(size_t s)
         auto dofs = (face.dofs + fiber_offsets_[blk.local]).contiguous();
         std::vector<int64_t> space(dofs.template data_ptr<int64_t>(),
           dofs.template data_ptr<int64_t>() + Nf);
-        auto values = cr.evaluate(blk.directions, local_groups, space);
+        auto values = sampler.evaluate(blk.directions, local_groups, space);
         const double* v = values.template data_ptr<double>();
         double* buf = delayed_buffer(blk, true).template data_ptr<double>();
         for (size_t i = 0; i < blk.directions.size(); i++)
@@ -257,39 +342,36 @@ void SweepSolver::cross_group_set(size_t s)
       }
     });
   lap("traces");
+  // The iteration has what it needs (moments, traces): the sampler may now
+  // compress the flux it keeps or stores (GALERKIN: svd_tol)
+  sampler.compress();
 
   // 3. Angular flux, if stored: each patch's psi at the set's groups,
-  // evaluated from the TT at every direction and dof
+  // evaluated from the low-rank flux at every direction and dof
   if (config_.store_angular_flux) {
     const auto group_index = torch::tensor(groups, torch::kInt64);
     for (size_t i = 0; i < patches_.size(); i++)
-      patches_[i].psi.index_copy_(1, group_index, cross_patch_psi(s, i));
+      patches_[i].psi.index_copy_(1, group_index, sampled_patch_psi(s, i));
     lap("angular_flux");
   }
   // Restore torch's thread count before the bookkeeping
   threads.reset();
 
-  // Per-transport-solve records (rank, fibers, hold-out error, history).
-  // A full sweep of this set would be Nd * ng fibers, so the solve counts
+  // Per-transport-solve record (the sampler's own record type). A full
+  // sweep of this set would be Nd * ng fibers, so the solve counts
   // fibers / (Nd * G) sweep equivalents of the whole problem
-  const auto ranks = cr.ranks();
-  cross_tolerances_.push_back(cr.config().tol);
-  cross_fibers_.push_back(cr.num_fibers());
-  cross_max_ranks_.push_back(*std::max_element(ranks.begin(), ranks.end()));
-  cross_errors_.push_back(cr.holdout_error());
-  cross_ranks_.push_back(ranks);
-  cross_histories_.push_back(cr.history());
-  cross_seconds_ += cr.seconds();
-  cross_sweep_seconds_ += cr.sweep_seconds();
+  sampling_records_.push_back(sampler.record());
+  sampling_seconds_ += sampler.seconds();
+  sampling_sweep_seconds_ += sampler.sweep_seconds();
   group_set_sweeps_++;
-  equivalent_sweeps_ += static_cast<double>(cr.num_fibers()) /
+  equivalent_sweeps_ += static_cast<double>(sampler.num_fibers()) /
                         static_cast<double>(omega_.size(0) * G);
 }
 
 void SweepSolver::transport_group_set(size_t s)
 {
-  if (config_.transport == TransportSolve::CROSS)
-    cross_group_set(s);
+  if (sampled_transport())
+    sampled_group_set(s);
   else
     sweep_group_set(s);
 }

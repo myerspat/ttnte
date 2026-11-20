@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ttnte/sampling/weighting.hpp"
 #include "ttnte/tensor/layout.hpp"
 #include <cstdint>
 #include <vector>
@@ -14,17 +15,18 @@ struct CrossConfig {
   /// per-patch output TTs. Empty: polar|azimuthal|space|energy (polar|space|
   /// energy in 1-D).
   tensor::Layout layout;
-  /// Relative accuracy of the approximation (L2-weighted when `weighted`).
+  /// Relative accuracy of the approximation (in the norm set by `weighting`).
   /// Inside the sweep solver it is set per transport solve instead (see
-  /// SweepConfig::cross_inner_factor and cross_relax).
+  /// SweepConfig::sampling_inner_factor and sampling_relax).
   double tol = 1e-4;
-  /// Approximate the L2-weighted angular flux sqrt(w_d) (R psi)/sqrt(du_g),
-  /// M = R^T R the patch mass matrices and du the lethargy widths, so that
-  /// pivots, truncation and the hold-out error are L2 quantities. The
-  /// lethargy widths are the problem's (CrossProblem::lethargy_widths); in
-  /// the sweep solver they come from the cross-section server's group
-  /// boundaries.
-  bool weighted = true;
+  /// Approximate the weighted angular flux sqrt(w_d) (R psi)/sqrt(du_g),
+  /// M = R^T R the patch mass matrices and du the lethargy widths, each
+  /// factor only where enabled, so that pivots, truncation and the hold-out
+  /// error are L2 quantities in the enabled indices (all by default). The
+  /// mass bands and lethargy widths are the problem's (SamplingProblem); in the
+  /// sweep solver they come from the patch discretizations and the
+  /// cross-section server's group boundaries.
+  sampling::Weighting weighting;
   /// Keep the TT of the angular flux after each transport solve.
   bool keep_angular_flux = false;
   /// Index selection adds blocks until the chosen rows have sigma_min /

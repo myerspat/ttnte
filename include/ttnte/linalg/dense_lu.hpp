@@ -27,6 +27,14 @@ int64_t lu_factor(double* a, int64_t n, int64_t* ipiv);
 /// overwritten with x.
 void lu_solve(const double* a, int64_t n, const int64_t* ipiv, double* b);
 
+/// @brief Solve A x_k = b_k for several right-hand sides with a matrix
+/// factored by lu_factor() (one LAPACK call).
+/// @param b Row-major (nrhs, n): row k is b_k, overwritten with x_k (the
+/// identity gives the rows of A^{-T}, i.e. the columns of A^{-1}).
+/// @param nrhs Number of right-hand sides.
+void lu_solve_many(
+  const double* a, int64_t n, const int64_t* ipiv, double* b, int64_t nrhs);
+
 /// @brief Factor a batch of matrices in place.
 /// @param a (batch, n, n) contiguous CPU float64 matrices.
 /// @return The (batch, n) int64 pivots.

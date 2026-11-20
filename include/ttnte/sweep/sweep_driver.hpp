@@ -4,6 +4,7 @@
 #include "ttnte/cad/patch.hpp"
 #include "ttnte/cross/layout_cross.hpp"
 #include "ttnte/driver/transport_solution.hpp"
+#include "ttnte/galerkin/greedy_galerkin.hpp"
 #include "ttnte/linalg/banded_cholesky.hpp"
 #include "ttnte/linalg/krylov.hpp"
 #include "ttnte/math/quadrature_set.hpp"
@@ -13,6 +14,7 @@
 #include "ttnte/parallel/load_balancer.hpp"
 #include "ttnte/parallel/parallel_context.hpp"
 #include "ttnte/physics/boundary_types.hpp"
+#include "ttnte/sampling/sampled_transport.hpp"
 #include "ttnte/sweep/angular_moments.hpp"
 #include "ttnte/sweep/fiber_block.hpp"
 #include "ttnte/sweep/patch_discretization.hpp"
@@ -45,6 +47,8 @@
 
 namespace ttnte::sweep {
 
+class ProjectedTransport;
+
 /// @brief Discrete-ordinates transport sweep solver for discontinuous
 /// multi-patch IGA (dimension a runtime value; see SweepDriver for the typed
 /// front end the bindings use).
@@ -73,6 +77,10 @@ namespace ttnte::sweep {
 /// mapping and scattering kernel), so the PDG sweeper converges to the same
 /// discrete solution.
 class SweepSolver {
+  /// Projects the operators, sources and traces of a group set onto a basis
+  /// (reads the patch states, links and angle sets directly).
+  friend class ProjectedTransport;
+
 public:
   // =================================================================
   // Public types
@@ -108,6 +116,11 @@ private:
     torch::Tensor coupling_a;
     torch::Tensor coupling_b;
     torch::Tensor coupling_val;
+    /// INTERNAL, non-conforming: (Q, A_nb) neighbor face basis values
+    /// R^nb_b(q) at this face's (shared) quadrature points and their
+    /// neighbor-face-local indices (the second factor of coupling_val).
+    torch::Tensor coupling_basis;
+    torch::Tensor coupling_index;
     /// INTERNAL: SweepInterface index and whether this patch is its first.
     int64_t interface = -1;
     bool is_first = false;
@@ -197,6 +210,10 @@ private:
   int64_t num_groups_ = 0;
 
   std::vector<PatchState> patches_;
+  /// Per local patch, the lower band (n_P, kd + 1) of its mass matrix,
+  /// built on the first sampling_problem() after setup and shared (read only)
+  /// by every group set's problem.
+  std::vector<torch::Tensor> mass_bands_;
   std::unordered_map<int64_t, size_t> gid_to_local_;
   SweepGraph::Ptr graph_;
   /// Directions of each angle set and groups of each group set as plain
@@ -292,11 +309,14 @@ private:
   int64_t dag_nanoseconds_ = 0;
   /// Fibers swept by sweep_fibers().
   int64_t num_fibers_ = 0;
-  /// TransportSolve::CROSS: one cross per group set, the tolerance of the
-  /// next transport solve, and per-solve history (tolerance, fibers, largest
-  /// rank, hold-out error).
-  std::vector<cross::LayoutCross::Ptr> crosses_;
-  double cross_tol_ = 0.0;
+  /// Sampled transport solves (TransportSolve::CROSS, GALERKIN): one sampler
+  /// per group set, the tolerance of the next transport solve, and per-solve
+  /// records (tolerance, fibers, largest rank, error).
+  std::vector<sampling::SampledTransport::Ptr> samplers_;
+  double sampling_tol_ = 0.0;
+  /// The within-set solver's stop tolerance of the current solve, for the
+  /// samplers' settled() (SampledTransport::set_stop_tolerance(); 0: none).
+  double stop_tol_ = 0.0;
   /// SweepConfig::correction_form: ||b|| / ||x|| of each group set from its
   /// last standard within-group-set solve (b the transport solve of the fixed
   /// sources, x the solution), which turns tolerances relative to ||b|| into
@@ -316,19 +336,15 @@ private:
   std::vector<int64_t> anchor_steps_;
   int64_t incremental_solves_ = 0;
   int64_t full_solves_ = 0;
-  std::vector<double> cross_tolerances_;
-  std::vector<int64_t> cross_fibers_;
-  std::vector<int64_t> cross_max_ranks_;
-  std::vector<double> cross_errors_;
-  /// Per transport solve: the ranks of the TT and the per-sweep history.
-  std::vector<std::vector<int64_t>> cross_ranks_;
-  std::vector<std::vector<cross::LayoutCross::SweepRecord>> cross_histories_;
-  /// Wall time of the crosses and of their fiber sweeps (last solve).
-  double cross_seconds_ = 0.0;
-  double cross_sweep_seconds_ = 0.0;
-  /// Seconds per phase of the cross transport solves outside LayoutCross::run
-  /// (moments, traces, angular flux).
-  std::map<std::string, double> cross_timings_;
+  /// Per sampled transport solve, its record (a sampler's RunRecord
+  /// subclass: a cross's half-sweeps, a Galerkin run's iterations).
+  std::vector<sampling::RunRecord::Ptr> sampling_records_;
+  /// Wall time of the samplers and of their fiber sweeps.
+  double sampling_seconds_ = 0.0;
+  double sampling_sweep_seconds_ = 0.0;
+  /// Seconds per phase of the sampled transport solves outside the
+  /// samplers' runs (moments, traces, angular flux).
+  std::map<std::string, double> sampling_timings_;
   /// Seconds per step of the within-group-set solves (see solve_timings()).
   std::map<std::string, double> solve_timings_;
 
@@ -408,8 +424,8 @@ private:
   typename Solution::Ptr make_solution(bool angular) const;
 
   /// @return (N_Omega, |group set s|, N) angular flux of unit `local` from
-  /// group set s's cross.
-  torch::Tensor cross_patch_psi(size_t s, size_t local) const;
+  /// group set s's sampler.
+  torch::Tensor sampled_patch_psi(size_t s, size_t local) const;
 
   /// @brief Sets the ATen intra-op thread count for a scope (0 leaves it)
   /// and restores it on exit, also when a task throws.
@@ -426,10 +442,32 @@ private:
     int previous;
   };
 
+  /// @return Group `bg`'s values of unit `local` in a fiber-layout array
+  /// (|groups|, fiber_length()).
+  template<typename T>
+  T* fiber_at(T* fibers, int64_t bg, size_t local) const noexcept
+  {
+    return fibers + bg * fiber_length_ + fiber_offsets_[local];
+  }
+
+  /// @brief The inflow transport_residual() takes from the candidate flux:
+  /// on each face of unit `local` whose edge is a DEPENDENCY for angle set
+  /// `set`, the upwind unit's x at the dofs of its face (what that unit's
+  /// sweep would write to the trace buffer), (ng, Nf_upwind) per face.
+  /// @param x (ng, fiber_length()) candidate flux.
+  /// @param buffer Storage for the values (resized; the result points into
+  /// it).
+  /// @return Per face, its values, or nullptr if the face is not a
+  /// DEPENDENCY.
+  /// @throws std::runtime_error If an upwind neighbor is on another rank.
+  std::array<const double*, MAX_FACES> gather_upwind(const AngleSet& set,
+    size_t local, int64_t ng, const double* x,
+    std::vector<double>& buffer) const;
+
   /// @return Unit `local` swept for angle set `set`: its operators, source,
   /// inflow and outgoing traces (outputs and factor cache left to the
   /// caller).
-  UnitSweep make_unit(const AngleSet& set, int64_t local);
+  UnitSweep make_unit(const AngleSet& set, int64_t local) const;
 
   /// @brief Point `unit` at patch P's factorization cache, if it has one.
   static void use_factor_cache(PatchState& P, UnitSweep& unit);
@@ -463,13 +501,23 @@ private:
   /// sign.
   std::vector<int64_t> initial_directions() const;
 
-  /// @brief One cross per group set (TransportSolve::CROSS).
-  void build_crosses();
+  /// @return Whether transport solves are sampled (one SampledTransport per
+  /// group set) rather than exact sweeps.
+  bool sampled_transport() const noexcept
+  {
+    return config_.transport == TransportSolve::CROSS ||
+           config_.transport == TransportSolve::GALERKIN;
+  }
 
-  /// @brief Transport solve of group set `s` by the cross: moments into
+  /// @brief One sampler per group set for a sampled transport solve (a
+  /// LayoutCross for TransportSolve::CROSS, a GreedyGalerkin on the set's
+  /// ProjectedTransport for TransportSolve::GALERKIN).
+  void build_samplers();
+
+  /// @brief Transport solve of group set `s` by its sampler: moments into
   /// moments_next, and the lagged and reflective traces (the delayed
   /// blocks) and the angular flux, if stored, from the low-rank flux.
-  void cross_group_set(size_t s);
+  void sampled_group_set(size_t s);
 
   /// @brief Run `fn` and add its wall time to solve_timings_[phase].
   template<typename Fn>
@@ -482,8 +530,20 @@ private:
         .count();
   }
 
+  /// @return Whether the samplers of group set `s` (every set: s < 0) let
+  /// the iteration stop (SampledTransport::settled(); true without
+  /// samplers).
+  bool samplers_settled(int64_t s = -1) const
+  {
+    for (size_t i = 0; i < samplers_.size(); i++)
+      if ((s < 0 || static_cast<size_t>(s) == i) && !samplers_[i]->settled())
+        return false;
+    return true;
+  }
+
   /// @brief One transport solve of group set `s` with the current sources
-  /// and lagged traces: an exact sweep or a cross.
+  /// and lagged traces: an exact sweep or the set's sampler (CROSS,
+  /// GALERKIN).
   void transport_group_set(size_t s);
 
   /// Which moments feed the within-group-set scattering term.
@@ -716,6 +776,36 @@ public:
   void sweep_fibers(const std::vector<FiberBlock>& blocks, double* out,
     const FiberDone& done = {});
 
+  /// @brief Transport residual of a candidate angular flux for one
+  /// direction, with the current source moments and lagged traces (those a
+  /// fiber sweep reads):
+  ///   r_g = sum_m Y_m(d) s_{m,g} + inflow_g - L_{d,g} x_g
+  /// on every local unit (see unit_residual()). Inflow across a face the
+  /// direction sweeps upwind first (a DEPENDENCY edge) is the upwind
+  /// unit's x; across a lagged edge or a reflective face it is the stored
+  /// trace, as in the sweep. So the fiber sweep_fibers() returns for
+  /// (direction, groups) has a residual at rounding level. Serial (one
+  /// direction per call; callers parallelize over directions), and only on
+  /// one rank.
+  /// @param direction The direction.
+  /// @param groups The groups (global indices, distinct).
+  /// @param x (|groups|, fiber_length()) candidate flux, fiber layout.
+  /// @param r (|groups|, fiber_length()) output.
+  /// @throws std::runtime_error On an index out of range, a repeated group
+  /// or a remote upwind neighbor.
+  void transport_residual(int64_t direction, const std::vector<int64_t>& groups,
+    const double* x, double* r) const;
+
+  /// @brief The sampled-transport problem of group set `s`: sizes, weights,
+  /// harmonics, initial directions, patch layout, the data of every
+  /// weighting factor (mass bands, the set's lethargy widths, if the cross
+  /// sections carry group boundaries) and the sweep oracle at the set's
+  /// groups (set-local indices). What each sampler and its FiberStore are
+  /// built from.
+  /// @throws std::runtime_error If `s` is out of range or the group
+  /// boundaries do not match the groups.
+  sampling::SamplingProblem sampling_problem(size_t s);
+
   /// @return Length of a fiber (dofs of every local unit).
   int64_t fiber_length() const noexcept { return fiber_length_; }
   /// @return Offset of each local unit's dofs in a fiber.
@@ -723,9 +813,17 @@ public:
   {
     return fiber_offsets_;
   }
+  /// @return The sampler of group set `s` (sampled transport solves),
+  /// holding the low-rank flux of the last transport solve.
+  sampling::SampledTransport::Ptr get_sampler(size_t s = 0) const;
   /// @return The cross of group set `s` (TransportSolve::CROSS), holding
   /// the TT of the last transport solve.
+  /// @throws std::runtime_error If group set `s` has no cross.
   cross::LayoutCross::Ptr get_cross(size_t s = 0) const;
+  /// @return The greedy Galerkin sampler of group set `s`
+  /// (TransportSolve::GALERKIN).
+  /// @throws std::runtime_error If there is none.
+  galerkin::GreedyGalerkin::Ptr get_galerkin(size_t s = 0) const;
   /// @return Cores of patch `gid`'s angular flux TT for group set `s` (last
   /// transport solve), in the configured layout.
   std::vector<torch::Tensor> get_patch_angular_flux_tt(
@@ -733,46 +831,30 @@ public:
   {
     return get_cross(s)->patch_tt(gid_to_local_.at(gid));
   }
-  const std::vector<double>& get_cross_tolerances() const noexcept
+  /// @return Per sampled transport solve, its record: the common fields
+  /// and the sampler's own (cross::LayoutCross::RunRecord,
+  /// galerkin::GreedyGalerkin::RunRecord).
+  const std::vector<sampling::RunRecord::Ptr>& get_sampling_records()
+    const noexcept
   {
-    return cross_tolerances_;
+    return sampling_records_;
   }
-  const std::vector<int64_t>& get_cross_fibers() const noexcept
+  /// @return Wall seconds of every sampler run, and of their fiber sweeps.
+  double get_sampling_seconds() const noexcept { return sampling_seconds_; }
+  double get_sampling_sweep_seconds() const noexcept
   {
-    return cross_fibers_;
+    return sampling_sweep_seconds_;
   }
-  const std::vector<int64_t>& get_cross_max_ranks() const noexcept
-  {
-    return cross_max_ranks_;
-  }
-  double get_cross_seconds() const noexcept { return cross_seconds_; }
-  /// @return Seconds per phase of the cross transport solves: the phases of
-  /// LayoutCross::run summed over the group sets' crosses (see
-  /// LayoutCross::timings()), and moments, traces and angular_flux.
-  std::map<std::string, double> get_cross_timings() const;
+  /// @return Seconds per phase of the sampled transport solves: the phases
+  /// of the samplers' runs summed over the group sets (see
+  /// SampledTransport::timings()), and moments, traces and angular_flux.
+  std::map<std::string, double> get_sampling_timings() const;
   /// @return Seconds per step of the within-group-set solves, accumulated:
   /// inner (whole within-group-set solves), gmres (the Krylov solves within
   /// them), and unpack, source, transport and pack per transport solve.
   const std::map<std::string, double>& get_solve_timings() const noexcept
   {
     return solve_timings_;
-  }
-  double get_cross_sweep_seconds() const noexcept
-  {
-    return cross_sweep_seconds_;
-  }
-  const std::vector<std::vector<int64_t>>& get_cross_ranks() const noexcept
-  {
-    return cross_ranks_;
-  }
-  const std::vector<std::vector<cross::LayoutCross::SweepRecord>>&
-  get_cross_histories() const noexcept
-  {
-    return cross_histories_;
-  }
-  const std::vector<double>& get_cross_errors() const noexcept
-  {
-    return cross_errors_;
   }
   /// @return GID of every local unit, in local (fiber) order.
   std::vector<int64_t> local_gids() const;
@@ -855,6 +937,11 @@ public:
     return patches_.at(gid_to_local_.at(gid)).disc;
   }
   const torch::Tensor& get_harmonics() const noexcept { return harmonics_; }
+  /// @return (num_moments) Legendre order of each moment.
+  const torch::Tensor& get_moment_order() const noexcept
+  {
+    return moment_order_;
+  }
   const torch::Tensor& get_ordinates() const noexcept { return omega_; }
   const torch::Tensor& get_weights() const noexcept { return weights_; }
   const std::vector<double>& get_errors() const noexcept { return errors_; }

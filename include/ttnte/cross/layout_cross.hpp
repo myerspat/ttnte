@@ -1,11 +1,12 @@
 #pragma once
 
 #include "ttnte/cross/cross_config.hpp"
-#include "ttnte/sweep/fiber_block.hpp"
+#include "ttnte/sampling/fiber_store.hpp"
+#include "ttnte/sampling/sampled_transport.hpp"
+#include "ttnte/sampling/sampling_problem.hpp"
 #include "ttnte/tensor/layout.hpp"
 #include <array>
 #include <cstdint>
-#include <functional>
 #include <map>
 #include <memory>
 #include <random>
@@ -15,44 +16,6 @@
 #include <vector>
 
 namespace ttnte::cross {
-
-/// @brief The discrete transport problem as seen by the cross: index sizes,
-/// angular data, the spatial blocks (patches) of a fiber and the oracle that
-/// sweeps fibers.
-struct CrossProblem {
-  /// Sweeps a request of fibers into a (num_fibers, num_space) buffer, block
-  /// by block, direction-major then group (see SweepDriver::sweep_fibers()),
-  /// calling `done` exactly once for every output row (in ranges, possibly
-  /// concurrently, as fibers finish).
-  using SweepFn =
-    std::function<void(const std::vector<sweep::FiberBlock>& blocks,
-      double* out, const sweep::FiberDone& done)>;
-
-  int64_t num_dim = 0;
-  int64_t num_polar = 0;
-  /// 1 in 1-D. Direction d = polar * num_azimuthal + azimuthal.
-  int64_t num_azimuthal = 1;
-  int64_t num_groups = 0;
-  /// Fiber length (dofs of every patch, concatenated).
-  int64_t num_space = 0;
-  /// (N_Omega) quadrature weights.
-  torch::Tensor weights;
-  /// (N_Omega, num_moments) harmonics; moments are sum_d w_d Y_m(d) psi_d.
-  torch::Tensor harmonics;
-  /// Directions swept over all groups to start the cross (one per
-  /// quadrant/octant); at least one, all in range.
-  std::vector<int64_t> initial_directions;
-  /// Offset of each patch in a fiber, and its control-point grid shape.
-  std::vector<int64_t> patch_offsets;
-  std::vector<std::vector<int64_t>> patch_shapes;
-  /// Per patch, the lower band (n_P, kd + 1) of its mass matrix (L2
-  /// weighting in space); empty for no spatial weighting.
-  std::vector<torch::Tensor> mass_bands;
-  /// (num_groups) lethargy widths ln(E_{g-1} / E_g), all positive, for the
-  /// energy weighting 1 / sqrt(du_g); empty for uniform weighting.
-  std::vector<double> lethargy_widths;
-  SweepFn sweep;
-};
 
 /// @brief Sweep-sampled TT-cross of one transport solve over a chosen layout
 /// of (polar, azimuthal, space, energy).
@@ -66,7 +29,7 @@ struct CrossProblem {
 /// hold-out set of out-of-sample fibers fits within holdout_factor * tol.
 /// The moments, traces and TTs are contracted from the (unweighted) cores;
 /// the angular flux is never formed.
-class LayoutCross {
+class LayoutCross : public sampling::SampledTransport {
 public:
   // =================================================================
   // Public types
@@ -96,16 +59,14 @@ public:
     int64_t forced = 0;
   };
 
-  /// @brief One request to the sweep oracle: the phase of run() that made it
-  /// (init, superblock, check), its new fibers, sweep blocks (a direction
-  /// list sharing one group list) and distinct directions, and its seconds.
-  struct SweepCall {
-    std::string phase;
-    int64_t fibers = 0;
-    int64_t blocks = 0;
-    int64_t directions = 0;
-    double seconds = 0.0;
+  /// @brief One run: the common record and its half-sweeps.
+  struct RunRecord : sampling::RunRecord {
+    std::vector<SweepRecord> history;
   };
+
+  /// @brief One request to the sweep oracle; its phase is the phase of run()
+  /// that made it (init, superblock, check).
+  using SweepCall = sampling::FiberStore::SweepCall;
 
   /// Modes of the sampled tensor.
   enum Mode : int { MU = 0, GA = 1, S = 2, E = 3 };
@@ -168,7 +129,7 @@ private:
 
   // =================================================================
   // Private data
-  CrossProblem problem_;
+  sampling::SamplingProblem problem_;
   CrossConfig config_;
   /// The layout as configured (x, y, z separate if asked), and the solver's
   /// view of it with the spatial indices merged into one mode S
@@ -186,15 +147,6 @@ private:
   std::array<int64_t, 4> size_ {};
   int64_t num_directions_ = 0;
 
-  /// Weights of the samples: sqrt(w_d) per direction, 1 / sqrt(du_g) per
-  /// group, and the Cholesky factors of the patch mass matrices.
-  std::vector<double> angle_weight_;
-  std::vector<double> energy_weight_;
-  std::vector<torch::Tensor> mass_factors_;
-  std::vector<int64_t> mass_kd_;
-  /// The same factors as dense upper triangular R_P for patches small enough
-  /// to apply them to batches of fibers with BLAS-3 (undefined otherwise).
-  std::vector<torch::Tensor> mass_dense_;
   /// Separable quadrature weights w_d = w_mu w_gamma.
   torch::Tensor polar_weight_;
   torch::Tensor azimuthal_weight_;
@@ -217,18 +169,9 @@ private:
   /// Cores (r_l, n_k, r_r), weighted while running and unweighted after.
   std::vector<torch::Tensor> cores_;
 
-  /// Swept fibers (weighted): one block per sweep request, never moved, and
-  /// each pair's fiber within it (null: not swept). Blocks come from
-  /// torch's CPU allocator, which puts large ones on huge pages when
-  /// THP_MEM_ALLOC_ENABLE=1.
-  std::vector<c10::DataPtr> fiber_blocks_;
-  std::vector<const double*> slot_;
   /// Pairs the fit has used (superblocks, init): never out of sample.
   std::vector<uint8_t> fitted_;
-  int64_t num_swept_ = 0;
-  /// Sum of squared norms of the swept (weighted) fibers, and the RMS norm
-  /// of the hold-out pool at the last check.
-  double swept_sq_ = 0.0;
+  /// RMS norm of the hold-out pool at the last check.
   double holdout_rms_ = 0.0;
   /// Pool and estimated global errors of the last check.
   double pool_error_ = 0.0;
@@ -248,19 +191,12 @@ private:
   /// Form every block Gram in factored form (testing aid).
   bool factored_grams_ = false;
 
-  /// Results of the last run.
-  double holdout_error_ = 0.0;
-  bool converged_ = false;
+  /// Results of the last run (the error, convergence and seconds are the
+  /// base's; error_ is the hold-out error).
   bool stalled_ = false;
   std::vector<SweepRecord> history_;
   int64_t sweeps_done_ = 0;
   int64_t total_fibers_ = 0;
-  double sweep_seconds_ = 0.0;
-  double seconds_ = 0.0;
-  /// Seconds per phase of run(), accumulated over every run.
-  std::map<std::string, double> timings_;
-  /// Every sweep request, over every run.
-  std::vector<SweepCall> sweep_calls_;
   /// Concatenated Gaussian sketches of the initial directions, by (number of
   /// initial directions, sketch rows): they depend on nothing else (the
   /// initial directions are fixed), so they are made once.
@@ -268,7 +204,7 @@ private:
 
   // =================================================================
   // Protected constructors
-  LayoutCross(CrossProblem problem, CrossConfig config);
+  LayoutCross(sampling::SamplingProblem problem, CrossConfig config);
 
   // =================================================================
   // Private methods
@@ -293,26 +229,26 @@ private:
   /// @return The fiber index d * G + g of complete components (mu, gamma,
   /// E; gamma -1 in 1-D), the index of the fiber store.
   int64_t pair_of(const int64_t* comp) const;
-  /// @brief Make every fiber of `pairs` (d * G + g) available: sweep those
-  /// not yet cached in one oracle request (directions sharing a group list
-  /// form one block), weight them as they finish (R_P, sqrt(w_d),
-  /// 1 / sqrt(du_g), inside the sweep's tasks), store them in a new block of
-  /// the fiber store, and record the request (SweepCall). Pairs requested by
-  /// any phase but "check" are marked fitted_ (in sample from then on).
+  /// @brief Make every fiber of `pairs` (d * G + g) available through the
+  /// fiber store (FiberStore::ensure()). Pairs requested by any phase but
+  /// "check" are marked fitted_ (in sample from then on).
   /// @param phase The phase of run() making the request: init, superblock,
   /// or check.
   void ensure(std::vector<int64_t> pairs, const char* phase);
   /// @return Whether fiber `pair` is in the store.
-  bool swept(int64_t pair) const { return slot_[pair] != nullptr; }
+  bool swept(int64_t pair) const { return store_->swept(pair); }
   /// @brief Core k's index as j = (outer * Ns + s) * inner + i, with s the
   /// space index: {outer, inner}, or {0, 0} if core k has no space mode.
   std::pair<int64_t, int64_t> space_split(size_t k) const;
   /// @brief Apply R_P (or R_P^{-1}) of every patch to `count` contiguous
   /// fibers at `rows`, serially (callers parallelize over rows).
-  void apply_mass(double* rows, int64_t count, bool inverse) const;
+  void apply_mass(double* rows, int64_t count, bool inverse) const
+  {
+    store_->apply_mass(rows, count, inverse);
+  }
   /// @return The stored (weighted) fiber of `pair`, num_space values; it
   /// must be swept.
-  const double* fiber(int64_t pair) const { return slot_[pair]; }
+  const double* fiber(int64_t pair) const { return store_->fiber(pair); }
 
   /// @brief Initial right index sets right_[K_ - 1] ... right_[1]:
   /// sweep every group of the initial directions D_0, choose the
@@ -435,7 +371,8 @@ public:
 
   /// @brief Run the cross for the current state of the oracle (one
   /// transport solve).
-  void run();
+  void run() override final;
+  void restart() override final;
 
   /// @brief Contract the TT over every mode with a selector.
   /// @param select One selector per mode (MU, GA, S, E). Angle modes must be
@@ -449,7 +386,7 @@ public:
     const torch::Tensor& angle_matrix = {}) const;
 
   /// @return (num_moments, G, num_space) flux moments.
-  torch::Tensor moments() const;
+  torch::Tensor moments() const override final;
   /// @return (|pairs|, num_space) fibers of the TT at (direction, group)
   /// pairs (d * G + g): each pair's left and right factors, and one product
   /// per slice of the space core, so no slice is copied per pair. For
@@ -459,7 +396,7 @@ public:
   /// @return (|directions|, |groups|, |space|) angular flux values.
   torch::Tensor evaluate(const std::vector<int64_t>& directions,
     const std::vector<int64_t>& groups,
-    const std::vector<int64_t>& space) const;
+    const std::vector<int64_t>& space) const override final;
   /// @return The TT of patch `p` in the configured layout (x/y/z split as
   /// requested), rounded at the tolerance: cores (r_l, n_k, r_r), n_k the
   /// product of the core's index sizes. The rounding acts on the unweighted
@@ -474,42 +411,31 @@ public:
   const std::vector<torch::Tensor>& cores() const noexcept { return cores_; }
   const tensor::Layout& layout() const noexcept { return layout_; }
   const tensor::Layout& user_layout() const noexcept { return user_layout_; }
-  std::vector<int64_t> ranks() const;
-  int64_t num_fibers() const noexcept { return num_swept_; }
+  std::vector<int64_t> ranks() const override final;
   int64_t total_fibers() const noexcept { return total_fibers_; }
   /// @return The error the last run's final check was accepted or rejected
   /// on: the pool's, or the global estimate when the pool failed and
   /// global_holdout is set.
-  double holdout_error() const noexcept { return holdout_error_; }
+  /// error() is the same.
+  double holdout_error() const noexcept { return error_; }
   /// @return Estimated global relative error at the last check, NaN if the
   /// pool alone accepted it.
   double global_error() const noexcept { return global_error_; }
   /// @return One record per half-sweep of the last run.
   const std::vector<SweepRecord>& history() const noexcept { return history_; }
-  bool converged() const noexcept { return converged_; }
+  sampling::RunRecord::Ptr record() const override final;
   /// @return Whether the last run stopped on stalled passes (see
   /// CrossConfig::stall_passes).
   bool stalled() const noexcept { return stalled_; }
   int64_t sweeps_done() const noexcept { return sweeps_done_; }
-  double sweep_seconds() const noexcept { return sweep_seconds_; }
-  double seconds() const noexcept { return seconds_; }
-  /// @return Seconds per phase of run(), accumulated over every run and
-  /// disjoint except weight_cpu: sweep (the oracle, including the weighting
-  /// of finished fibers that runs inside it), weight_cpu (seconds in the
-  /// weighting callbacks summed over the threads running them, a CPU time
-  /// overlapping sweep, not a phase of its own), gather (copying
-  /// fibers into superblocks), project (B^+ and C^+ on superblocks), svd
-  /// (truncations and end-core fits), select, basis (the left inverses of the
-  /// new bases), init and check (both without their sweeps), unweight.
-  const std::map<std::string, double>& timings() const noexcept
-  {
-    return timings_;
-  }
-  /// @return Every sweep request of every run (see SweepCall).
-  const std::vector<SweepCall>& sweep_calls() const noexcept
-  {
-    return sweep_calls_;
-  }
+  // timings() (the base's): seconds per phase of run(), accumulated over
+  // every run and disjoint except weight_cpu: sweep (the oracle, including
+  // the weighting of finished fibers that runs inside it), weight_cpu
+  // (seconds in the weighting callbacks summed over the threads running
+  // them, a CPU time overlapping sweep, not a phase of its own), gather
+  // (copying fibers into superblocks), project (B^+ and C^+ on superblocks),
+  // svd (truncations and end-core fits), select, basis (the left inverses of
+  // the new bases), init and check (both without their sweeps), unweight.
   const CrossConfig& config() const noexcept { return config_; }
 
   // =================================================================
@@ -560,15 +486,23 @@ public:
   std::vector<torch::Tensor> recorded_bases(int64_t i) const;
   /// @return index_set() after recorded half pass i.
   torch::Tensor recorded_index_set(int64_t i, bool left, int64_t k) const;
-  void set_tolerance(double tol) { config_.tol = tol; }
+  void set_tolerance(double tol) override final { config_.tol = tol; }
+  double tolerance() const noexcept override final { return config_.tol; }
   /// @brief Drop the cores of the last run (see
   /// CrossConfig::keep_angular_flux).
-  void release() { cores_.clear(); }
+  void release() override final { cores_.clear(); }
   /// @return Whether the cores of the last run are held.
   bool has_tt() const noexcept
   {
     return static_cast<int64_t>(cores_.size()) == K_ && K_ > 0 &&
            cores_[0].defined();
+  }
+  /// @return has_tt().
+  bool holds_flux() const noexcept override final { return has_tt(); }
+  /// @return CrossConfig::keep_angular_flux.
+  bool keeps_flux() const noexcept override final
+  {
+    return config_.keep_angular_flux;
   }
 };
 

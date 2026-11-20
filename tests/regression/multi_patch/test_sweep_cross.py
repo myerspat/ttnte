@@ -10,7 +10,7 @@ import torch
 
 from tests.unit.sweep.problems import BUILDERS, driver, quadrature
 from ttnte import mpi_context
-from ttnte.cross import CrossConfig
+from ttnte.cross import CrossConfig, CrossRun
 from ttnte.sweep import InnerSolver, SweepConfig, TransportSolve
 
 G = 6
@@ -18,7 +18,7 @@ TOL = 1e-6
 
 
 def _solve(num_dim, reflective, transport, fissile=False, n=3, **kw):
-    # CROSS is serial in space (SweepSolver::build_crosses throws on more than
+    # CROSS is serial in space (SweepSolver::build_samplers throws on more than
     # one rank). Skip on every rank alike, before any collective: a throw
     # partway through setup leaves the ranks out of step and hangs later tests.
     # (pytest-mpi has no max_size for the mpi marker.)
@@ -75,8 +75,11 @@ def test_fixed_source_matches_exact(num_dim, reflective):
     exact = _solve(num_dim, reflective, TransportSolve.EXACT)
     cross = _solve(num_dim, reflective, TransportSolve.CROSS)
     assert _flux_rel(cross, exact) < 10 * TOL
-    assert len(cross.cross_fibers) > 0
-    assert max(cross.cross_tolerances) <= SweepConfig().cross_max_tol
+    assert len(cross.sampling_records) > 0
+    assert all(isinstance(r, CrossRun) for r in cross.sampling_records)
+    assert max(r.tolerance for r in cross.sampling_records) <= (
+        SweepConfig().sampling_max_tol
+    )
 
 
 @pytest.mark.mpi(min_size=1)
@@ -188,6 +191,9 @@ def test_store_angular_flux_and_release():
     # keep_angular_flux is off: the TT is released after the solve
     with pytest.raises(RuntimeError):
         cross.get_patch_angular_flux_tt(cross.local_gids[0])
+    # An exact transport solve has no cross
+    with pytest.raises(RuntimeError, match="No cross"):
+        exact.get_cross()
 
 
 @pytest.mark.mpi(min_size=1)
@@ -202,12 +208,11 @@ def test_angular_flux_from_kept_tt_and_histories():
     for gid in cross.local_gids:
         field = solution.get_local_field(gid).as_tt().to_dense()
         assert _rel(field.reshape(-1), cross.get_angular_flux(gid).reshape(-1)) < 1e-12
-    assert len(cross.cross_ranks) == len(cross.cross_fibers)
-    history = cross.cross_histories
-    assert len(history) == len(cross.cross_fibers)
+    records = cross.sampling_records
+    history = [r.history for r in records]
     assert all(len(run) >= 1 for run in history)
     first = history[0]
-    assert first[-1]["ranks"] == cross.cross_ranks[0]
+    assert first[-1]["ranks"] == records[0].ranks
     assert [h["phase"] for h in first[:2]] == ["forward", "backward"]
     assert all(a["fibers"] <= b["fibers"] for a, b in zip(first, first[1:]))
 
@@ -239,7 +244,7 @@ def test_warm_start_eigenvalue(num_dim, reflective, correction_form):
     assert _flux_rel(warm, exact) < 1e-4
 
     def mean_sweeps(sw):
-        runs = sw.cross_histories
+        runs = [r.history for r in sw.sampling_records]
         return sum(len(run) for run in runs) / len(runs)
 
     assert mean_sweeps(warm) <= mean_sweeps(cold)

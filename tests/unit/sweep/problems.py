@@ -84,9 +84,9 @@ def _finish(mesh, num_dim, reflective):
     return mesh
 
 
-def slab(num_groups, reflective=False, fissile=False):
+def slab(num_groups, reflective=False, fissile=False, xs_factory=None):
     """Three patches on [0, 3]: fuel with a source, then moderator twice."""
-    fills, xs = multigroup_xs(num_groups, fissile)
+    fills, xs = (xs_factory or multigroup_xs)(num_groups, fissile)
     mesh = IGAMesh(mpi_context)
     for k, (x0, x1) in enumerate([(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]):
         patch = Patch.from_igakit(
@@ -101,9 +101,12 @@ def slab(num_groups, reflective=False, fissile=False):
     return _finish(mesh, 1, reflective), xs
 
 
-def quarter_circle(num_groups, reflective=False, fissile=False, factor=2):
-    """Four curved patches (the mc27 shielded quarter circle, multigroup)."""
-    fills, xs = multigroup_xs(num_groups, fissile)
+def quarter_circle(
+    num_groups, reflective=False, fissile=False, factor=2, split=False, xs_factory=None
+):
+    """Four curved patches (the mc27 shielded quarter circle, multigroup), optionally
+    split into their Bezier elements (FDG: the upwind graph has cycles)."""
+    fills, xs = (xs_factory or multigroup_xs)(num_groups, fissile)
     c0 = cad.circle(radius=5, angle=torch.pi / 2)
     c1, c2 = c0.slice(0, 0, 0.5), c0.slice(0, 0.5, 1)
     l0 = cad.line(p0=(0, 0), p1=(0, 0))
@@ -125,13 +128,16 @@ def quarter_circle(num_groups, reflective=False, fissile=False, factor=2):
         )
         if k < 2 and not fissile:
             patch.source = _source(num_groups)
-        mesh.add_block(patch)
+        for block in patch.split_elements() if split else [patch]:
+            mesh.add_block(block)
     return _finish(mesh, 2, reflective), xs
 
 
-def octant_sphere(num_groups, reflective=False, fissile=False, split=True):
+def octant_sphere(
+    num_groups, reflective=False, fissile=False, split=True, xs_factory=None
+):
     """A solid octant sphere, split into its Bezier elements (several units)."""
-    fills, xs = multigroup_xs(num_groups, fissile)
+    fills, xs = (xs_factory or multigroup_xs)(num_groups, fissile)
     patch = Patch.from_igakit(
         cad.refine(create_solid_octant_sphere(2.0), 1, 2),
         device=CPU,
@@ -146,14 +152,14 @@ def octant_sphere(num_groups, reflective=False, fissile=False, split=True):
     return _finish(mesh, 3, reflective), xs
 
 
-def boxes(num_dim, num_groups, reflective=False, fissile=False):
+def boxes(num_dim, num_groups, reflective=False, fissile=False, xs_factory=None):
     """Axis-aligned rectangular patches (Kronecker-sum operators): a fueled corner box
     and moderator boxes, 2 x 2 in 2-D and 2 x 1 x 2 in 3-D."""
     if num_dim == 1:
-        return slab(num_groups, reflective, fissile)
+        return slab(num_groups, reflective, fissile, xs_factory)
     import numpy as np
 
-    fills, xs = multigroup_xs(num_groups, fissile)
+    fills, xs = (xs_factory or multigroup_xs)(num_groups, fissile)
     mesh = IGAMesh(mpi_context)
     counts = [2, 2] if num_dim == 2 else [2, 1, 2]
     sizes = [1.0, 1.5, 1.2][:num_dim]
@@ -181,3 +187,42 @@ BUILDERS = {1: slab, 2: quarter_circle, 3: octant_sphere}
 
 def driver(num_dim, mesh, xs):
     return DRIVERS[num_dim](mesh, xs, mpi_context)
+
+
+# Every builder takes xs_factory(num_groups, fissile) -> (materials, server): the
+# cross sections in place of multigroup_xs (e.g. anisotropic scattering)
+
+
+def rel(a, b):
+    """Relative L2 error ||a - b|| / ||b||."""
+    return ((a - b).norm() / b.norm()).item()
+
+
+def mid_solve(mesh, xs, num_dim, n=2, **kw):
+    """A sweeper mid-solve: a few source iterations at an unreachable tolerance, so
+    the sources and lagged traces are nonzero and not converged."""
+    from ttnte.sweep import SweepConfig
+
+    sw = driver(num_dim, mesh, xs)
+    sw.setup(
+        quadrature(num_dim, n), SweepConfig(tol=1e-14, max_iter=3, verbose=False, **kw)
+    )
+    sw.solve_fixed_source()
+    return sw
+
+
+def mixed_basis(sw, groups, rank=5, seed=0):
+    """A basis of group-set fluxes: two swept fibers (realistic) and random vectors
+    (every dof exercised)."""
+    nd = sw.ordinates.shape[0]
+    dirs = list(range(0, nd, max(1, nd // 3)))[:2]
+    fibers = sw.sweep_fibers([(dirs, groups)]).reshape(len(dirs), len(groups), -1)
+    gen = torch.Generator().manual_seed(seed)
+    noise = torch.randn(rank - len(dirs), len(groups), sw.fiber_length, generator=gen)
+    return torch.cat([fibers, noise])
+
+
+def scalar_flux(sw):
+    """The local patches' scalar flux, concatenated."""
+    parts = [sw.get_scalar_flux(g).flatten() for g in sw.local_gids]
+    return torch.cat(parts) if parts else torch.zeros(0, dtype=torch.float64)

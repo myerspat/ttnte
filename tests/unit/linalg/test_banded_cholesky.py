@@ -8,6 +8,7 @@ import torch
 from ttnte.linalg import (
     banded_cholesky_apply_upper,
     banded_cholesky_factor,
+    banded_cholesky_solve_lower,
     banded_cholesky_solve_upper,
     symmetric_band_from_pairs,
 )
@@ -70,6 +71,21 @@ def test_apply_and_solve_upper(n, kd):
     y = banded_cholesky_solve_upper(factor, kd, x)
     assert ((y - ref).norm() / ref.norm()).item() < 1e-12
     assert torch.allclose(banded_cholesky_apply_upper(factor, kd, y), x, rtol=1e-12)
+
+
+@pytest.mark.parametrize("n, kd", CASES)
+def test_solve_lower_is_the_dual_norm(n, kd):
+    """solve_lower is b -> L^{-1} b, so ||L^{-1} b||^2 = b^T A^{-1} b (the dual norm of
+    a residual against the mass matrix)."""
+    a = _spd_band(n, kd, seed=4)
+    factor = banded_cholesky_factor(_to_lower_band(a, kd), kd)
+    L = torch.linalg.cholesky(a)
+    b = torch.randn(n, dtype=torch.float64, generator=torch.Generator().manual_seed(5))
+    y = banded_cholesky_solve_lower(factor, kd, b)
+    ref = torch.linalg.solve_triangular(L, b.unsqueeze(-1), upper=False).squeeze(-1)
+    assert ((y - ref).norm() / ref.norm()).item() < 1e-12
+    dual = (b @ torch.linalg.solve(a, b)).sqrt()
+    assert abs((y.norm() - dual) / dual).item() < 1e-12
 
 
 def test_not_positive_definite_raises():

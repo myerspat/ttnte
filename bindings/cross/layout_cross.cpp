@@ -1,4 +1,5 @@
 #include "ttnte/cross/layout_cross.hpp"
+#include "history.hpp"
 #include "ttnte/utils/exception.hpp"
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
@@ -6,6 +7,33 @@
 #include <torch/extension.h>
 
 namespace py = pybind11;
+
+pybind11::list ttnte::bindings::sweep_history(
+  const std::vector<ttnte::cross::LayoutCross::SweepRecord>& history)
+{
+  py::list out;
+  for (const auto& h : history)
+    out.append(py::dict(py::arg("phase") = h.forward ? "forward" : "backward",
+      py::arg("ranks") = h.ranks, py::arg("fibers") = h.fibers,
+      py::arg("holdout_error") = h.holdout_error,
+      py::arg("holdout_rms") = h.holdout_rms,
+      py::arg("swept_rms") = h.swept_rms,
+      py::arg("global_error") = h.global_error, py::arg("forced") = h.forced));
+  return out;
+}
+
+void register_CrossRun(py::module_& m)
+{
+  using namespace ttnte::cross;
+
+  py::class_<LayoutCross::RunRecord, ttnte::sampling::RunRecord,
+    std::shared_ptr<LayoutCross::RunRecord>>(m, "CrossRun",
+    "One cross run (transport solve): the common record (a RunRecord) and "
+    "its half-sweeps.")
+    .def_property_readonly("history", [](const LayoutCross::RunRecord& r) {
+      return ttnte::bindings::sweep_history(r.history);
+    });
+}
 
 void register_LayoutCross(py::module_& m)
 {
@@ -25,7 +53,7 @@ void register_LayoutCross(py::module_& m)
                     std::vector<std::vector<int64_t>> patch_shapes,
                     std::vector<torch::Tensor> mass_bands,
                     std::vector<double> lethargy_widths) {
-      CrossProblem p;
+      ttnte::sampling::SamplingProblem p;
       p.num_dim = num_dim;
       p.num_polar = num_polar;
       p.num_azimuthal = num_azimuthal;
@@ -89,6 +117,11 @@ void register_LayoutCross(py::module_& m)
     .def_property_readonly("user_layout",
       [](const LayoutCross& c) { return c.user_layout().to_string(); })
     .def_property_readonly("ranks", &LayoutCross::ranks)
+    .def_property_readonly(
+      "weighting",
+      [](const LayoutCross& s) -> decltype(auto) { return s.weighting(); },
+      "Weighting factors in effect: those enabled that the problem has data "
+      "for (lethargy widths, mass bands).")
     // Testing aids
     .def("index_set", &LayoutCross::index_set, py::arg("left"), py::arg("k"),
       "(|set|, 4) components (mu, gamma, s, E; -1 free) of left_[k] or "
@@ -132,22 +165,15 @@ void register_LayoutCross(py::module_& m)
     .def_property_readonly(
       "history",
       [](const LayoutCross& c) {
-        py::list out;
-        for (const auto& h : c.history())
-          out.append(
-            py::dict(py::arg("phase") = h.forward ? "forward" : "backward",
-              py::arg("ranks") = h.ranks, py::arg("fibers") = h.fibers,
-              py::arg("holdout_error") = h.holdout_error,
-              py::arg("holdout_rms") = h.holdout_rms,
-              py::arg("swept_rms") = h.swept_rms,
-              py::arg("global_error") = h.global_error,
-              py::arg("forced") = h.forced));
-        return out;
+        return ttnte::bindings::sweep_history(c.history());
       },
       "Per half-sweep of the last run: phase, ranks, fibers swept so far, "
       "and (backward only) hold-out error and the RMS norms of the hold-out "
       "pool and of all swept fibers (weighted)")
-    .def_property_readonly("num_fibers", &LayoutCross::num_fibers)
+    .def_property_readonly(
+      "record", &LayoutCross::record, "The last run's record (a CrossRun)")
+    .def_property_readonly("num_fibers",
+      [](const LayoutCross& s) -> decltype(auto) { return s.num_fibers(); })
     .def_property_readonly("total_fibers", &LayoutCross::total_fibers)
     .def_property_readonly("holdout_error", &LayoutCross::holdout_error,
       "Error the last check was accepted or rejected on: the pool's, or the "
@@ -155,13 +181,17 @@ void register_LayoutCross(py::module_& m)
     .def_property_readonly("global_error", &LayoutCross::global_error,
       "Estimated global relative error at the last check, NaN if the pool "
       "alone accepted it")
-    .def_property_readonly("converged", &LayoutCross::converged)
+    .def_property_readonly("converged",
+      [](const LayoutCross& s) -> decltype(auto) { return s.converged(); })
     .def_property_readonly("stalled", &LayoutCross::stalled,
       "Whether the last run stopped on stalled passes (stall_passes)")
     .def_property_readonly("sweeps_done", &LayoutCross::sweeps_done)
-    .def_property_readonly("sweep_seconds", &LayoutCross::sweep_seconds)
-    .def_property_readonly("seconds", &LayoutCross::seconds)
-    .def_property_readonly("timings", &LayoutCross::timings)
+    .def_property_readonly("sweep_seconds",
+      [](const LayoutCross& s) -> decltype(auto) { return s.sweep_seconds(); })
+    .def_property_readonly("seconds",
+      [](const LayoutCross& s) -> decltype(auto) { return s.seconds(); })
+    .def_property_readonly("timings",
+      [](const LayoutCross& s) -> decltype(auto) { return s.timings(); })
     .def_property_readonly(
       "sweep_calls",
       [](const LayoutCross& c) {

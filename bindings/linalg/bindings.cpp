@@ -9,6 +9,8 @@ void register_amen_internal(py::module_& m);
 void register_matrix_ops(py::module_& m);
 void register_banded_lu(py::module_& m);
 void register_banded_cholesky(py::module_& m);
+void register_gram_schmidt(py::module_& m);
+void register_deim(py::module_& m);
 void register_dense_lu(py::module_& m);
 void register_schur(py::module_& m);
 void register_krylov(py::module_& m);
@@ -34,6 +36,8 @@ void init_linalg(py::module_& m)
   register_matrix_ops(m);
   register_banded_lu(m);
   register_banded_cholesky(m);
+  register_gram_schmidt(m);
+  register_deim(m);
   register_dense_lu(m);
   register_schur(m);
   register_krylov(m);

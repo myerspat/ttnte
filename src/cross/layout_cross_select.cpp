@@ -69,7 +69,7 @@ double LayoutCross::block_cost(int64_t key) const
   double unswept = 0.0;
   for (int64_t m = m0; m < m1; m++)
     for (int64_t a = a0; a < a1; a++) {
-      const double* const* row = &slot_[(m * Ng + a) * G];
+      const double* const* row = &store_->slots()[(m * Ng + a) * G];
       for (int64_t g = e0; g < e1; g++)
         unswept += row[g] ? 0.0 : 1.0;
     }

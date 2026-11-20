@@ -26,7 +26,7 @@ int64_t LayoutCross::max_rank() const noexcept
                               : std::numeric_limits<int64_t>::max();
 }
 
-LayoutCross::LayoutCross(CrossProblem problem, CrossConfig config)
+LayoutCross::LayoutCross(sampling::SamplingProblem problem, CrossConfig config)
   : problem_(std::move(problem)), config_(std::move(config)),
     rng_(config_.seed), sample_rng_(config_.seed ^ SAMPLE_SEED_MIX)
 {
@@ -42,33 +42,6 @@ LayoutCross::LayoutCross(CrossProblem problem, CrossConfig config)
       !P.harmonics.defined() || P.harmonics.size(0) != num_directions_) {
     throw utils::runtime_error(ctx("LayoutCross"),
       "weights and harmonics must have one row per direction");
-  }
-  // The fiber layout: weighting writes through raw pointers at these
-  // offsets, so they must tile the fiber exactly
-  if (!P.patch_offsets.empty()) {
-    if (P.patch_offsets.size() != P.patch_shapes.size() ||
-        P.patch_offsets.front() != 0) {
-      throw utils::runtime_error(ctx("LayoutCross"),
-        "patch_offsets must start at 0 with one shape per patch");
-    }
-    for (size_t q = 0; q < P.patch_offsets.size(); q++) {
-      const int64_t end =
-        q + 1 < P.patch_offsets.size() ? P.patch_offsets[q + 1] : P.num_space;
-      int64_t n = 1;
-      for (int64_t d : P.patch_shapes[q])
-        n *= d;
-      if (end - P.patch_offsets[q] != n) {
-        throw utils::runtime_error(
-          ctx("LayoutCross"), "Patch " + std::to_string(q) +
-                                ": offsets and control-point shape disagree");
-      }
-      if (!P.mass_bands.empty() &&
-          (P.mass_bands[q].dim() != 2 || P.mass_bands[q].size(0) != n)) {
-        throw utils::runtime_error(
-          ctx("LayoutCross"), "Patch " + std::to_string(q) +
-                                ": its mass band needs one row per dof");
-      }
-    }
   }
   // init_right() sweeps every group of these to choose the initial energies
   // and right sets; there is no sensible default
@@ -135,18 +108,17 @@ LayoutCross::LayoutCross(CrossProblem problem, CrossConfig config)
     n_.push_back(n);
   }
 
-  // Weights of the samples
+  // The fiber store, weighted in the factors asked for (it checks the patch
+  // layout, mass bands and lethargy widths)
+  store_ = sampling::FiberStore::create(problem_, config_.weighting);
+
+  // Separable quadrature weights, for unweighting split angle cores
   auto w = P.weights.to(torch::kFloat64).contiguous();
-  angle_weight_.assign(num_directions_, 1.0);
-  energy_weight_.assign(P.num_groups, 1.0);
   auto [wu, wv] =
     outer_factors(w.reshape({P.num_polar, P.num_azimuthal}), 1e-10);
   polar_weight_ = wu;
   azimuthal_weight_ = wv;
-  if (config_.weighted) {
-    const double* wp = w.data_ptr<double>();
-    for (int64_t d = 0; d < num_directions_; d++)
-      angle_weight_[d] = std::sqrt(wp[d]);
+  if (store_->weighting().angle) {
     const bool split =
       P.num_dim > 1 && layout_.core_of(tensor::Dimension::POLAR) !=
                          layout_.core_of(tensor::Dimension::AZIMUTHAL);
@@ -155,62 +127,27 @@ LayoutCross::LayoutCross(CrossProblem problem, CrossConfig config)
         "Weighting a layout that splits polar from azimuthal angle needs a "
         "product quadrature");
     }
-    if (!P.lethargy_widths.empty()) {
-      if (static_cast<int64_t>(P.lethargy_widths.size()) != P.num_groups) {
-        throw utils::runtime_error(
-          ctx("LayoutCross"), "lethargy_widths must have one entry per group");
-      }
-      for (int64_t g = 0; g < P.num_groups; g++) {
-        if (!(P.lethargy_widths[g] > 0.0))
-          throw utils::runtime_error(
-            ctx("LayoutCross"), "lethargy_widths must be positive");
-        energy_weight_[g] = 1.0 / std::sqrt(P.lethargy_widths[g]);
-      }
-    }
-    for (const auto& band : P.mass_bands) {
-      auto factor = band.to(torch::kFloat64).clone().contiguous();
-      const int64_t kd = factor.size(1) - 1;
-      if (linalg::banded::cholesky_factor(
-            factor.data_ptr<double>(), factor.size(0), kd) != 0) {
-        throw utils::runtime_error(
-          ctx("LayoutCross"), "A patch mass matrix is not positive definite");
-      }
-      mass_factors_.push_back(factor);
-      mass_kd_.push_back(kd);
-      // Dense R = L^T from the lower band, when it fits (BLAS-3 batches)
-      const int64_t n = factor.size(0);
-      torch::Tensor dense;
-      if (n <= DENSE_MASS_MAX) {
-        dense = torch::zeros({n, n}, torch::kFloat64);
-        const double* f = factor.data_ptr<double>();
-        double* R = dense.data_ptr<double>();
-        for (int64_t j = 0; j < n; j++)
-          for (int64_t i = j; i <= std::min(n - 1, j + kd); i++)
-            R[j * n + i] = f[j * (kd + 1) + (i - j)];
-      }
-      mass_dense_.push_back(dense);
-    }
-    if (!mass_factors_.empty() &&
-        mass_factors_.size() != P.patch_offsets.size()) {
-      throw utils::runtime_error(
-        ctx("LayoutCross"), "One mass band per patch is required");
-    }
   }
+}
+
+void LayoutCross::restart()
+{
+  // A fresh sequence of runs: no warm-start index sets, the random streams
+  // from their seeds (as constructed)
+  prior_right_.clear();
+  rng_.seed(config_.seed);
+  sample_rng_.seed(config_.seed ^ SAMPLE_SEED_MIX);
 }
 
 void LayoutCross::reset()
 {
-  fiber_blocks_.clear();
-  slot_.assign(num_directions_ * size_[E], nullptr);
+  store_->clear();
   fitted_.assign(num_directions_ * size_[E], 0);
-  num_swept_ = 0;
-  swept_sq_ = 0.0;
   holdout_rms_ = 0.0;
   force_.clear();
   grow_.clear();
   pool_.clear();
   passes_.clear();
-  sweep_seconds_ = 0.0;
   IndexSet unset;
   unset.defined = false;
   IndexSet empty;
@@ -507,7 +444,11 @@ void LayoutCross::run()
   // exclude that sweeping, which is counted under "sweep" (and includes
   // the weighting of the new fibers): `sampling` reads that counter before
   // and after, and the difference is subtracted
-  auto sampling = [this] { return timings_["sweep"]; };
+  auto sampling = [this] {
+    const auto& t = store_->timings();
+    const auto it = t.find("sweep");
+    return it == t.end() ? 0.0 : it->second;
+  };
 
   // Initial right index sets: the previous run's (warm start, so the
   // fibers it swept are sampled again), else built from the initial
@@ -543,7 +484,7 @@ void LayoutCross::run()
     // core fitted by least squares and the last bond grown from its misfit.
     // The forward record has no check, so its error fields are NaN
     forward();
-    history_.push_back({true, ranks(), num_swept_, nan, nan, nan, nan,
+    history_.push_back({true, ranks(), store_->num_swept(), nan, nan, nan, nan,
       static_cast<int64_t>(force_.size())});
 
     // Backward: cores K - 1 ... 1 truncated and the right index sets
@@ -561,8 +502,9 @@ void LayoutCross::run()
     // Backward record: the ranks, the check's errors and norms, and the
     // pairs forced so far
     const auto r = ranks();
-    history_.push_back({false, r, num_swept_, pool_error_, holdout_rms_,
-      std::sqrt(swept_sq_ / std::max<double>(num_swept_, 1)), global_error_,
+    const int64_t swept = store_->num_swept();
+    history_.push_back({false, r, swept, pool_error_, holdout_rms_,
+      std::sqrt(store_->swept_sq() / std::max<double>(swept, 1)), global_error_,
       static_cast<int64_t>(force_.size())});
 
     if (err <= accept)
@@ -582,7 +524,7 @@ void LayoutCross::run()
   }
 
   // Results of the run: the error the last check accepted or rejected on
-  holdout_error_ = err;
+  error_ = err;
   converged_ = err <= accept;
   if (config_.warm_start)
     prior_right_ = right_;
@@ -594,9 +536,8 @@ void LayoutCross::run()
   timings_["unweight"] += elapsed(t1);
 
   // Release the fiber store: the fibers are only needed during the run
-  total_fibers_ += num_swept_;
-  fiber_blocks_.clear();
-  std::fill(slot_.begin(), slot_.end(), nullptr);
+  total_fibers_ += store_->num_swept();
+  store_->release();
   seconds_ = elapsed(t0);
 }
 
@@ -693,6 +634,14 @@ std::vector<int64_t> LayoutCross::forced_block_keys(
   if (first < 0 || last < first || last >= K_)
     throw utils::runtime_error(ctx("forced_block_keys"), "Invalid core range");
   return forced_keys(core_mask(first, last));
+}
+
+sampling::RunRecord::Ptr LayoutCross::record() const
+{
+  auto out = std::make_shared<RunRecord>();
+  fill_record(*out);
+  out->history = history_;
+  return out;
 }
 
 } // namespace ttnte::cross

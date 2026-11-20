@@ -30,6 +30,15 @@ void lu_solve(const double* a, int64_t n, const int64_t* ipiv, double* b)
   dgetrs_("T", &m, &one, a, &m, lapack::to_lapack(ipiv, n), b, &m, &info, 1);
 }
 
+void lu_solve_many(
+  const double* a, int64_t n, const int64_t* ipiv, double* b, int64_t nrhs)
+{
+  // Row k of b is column k of the column-major (n, nrhs) right-hand side
+  const int m = static_cast<int>(n), k = static_cast<int>(nrhs);
+  int info = 0;
+  dgetrs_("T", &m, &k, a, &m, lapack::to_lapack(ipiv, n), b, &m, &info, 1);
+}
+
 torch::Tensor batched_lu_factor_(torch::Tensor& a)
 {
   if (a.dim() == 3 && a.size(1) != a.size(2)) {

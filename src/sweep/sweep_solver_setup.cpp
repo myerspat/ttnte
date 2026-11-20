@@ -1,4 +1,5 @@
 // SweepSolver: Construction, setup, partitioning and the sweep task graphs.
+#include "ttnte/sweep/projected_transport.hpp"
 #include "ttnte/sweep/sweep_driver.hpp"
 
 namespace ttnte::sweep {
@@ -145,62 +146,97 @@ std::vector<int64_t> SweepSolver::initial_directions() const
   return out;
 }
 
-void SweepSolver::build_crosses()
+void SweepSolver::build_samplers()
 {
-  crosses_.clear();
-  if (config_.transport != TransportSolve::CROSS)
+  samplers_.clear();
+  mass_bands_.clear(); // a new setup: new patches
+  if (!sampled_transport())
     return;
-  // TODO: exchange tasks and reductions for multi-rank crosses
+  // TODO: exchange tasks and reductions for multi-rank samplers
   if (comm_.size() > 1)
+    throw utils::runtime_error(ctx("setup"),
+      "Sampled (CROSS, GALERKIN) transport solves are serial in space for now");
+  if (config_.sampling_inner_factor <= 0.0)
     throw utils::runtime_error(
-      ctx("setup"), "CROSS transport solves are serial in space for now");
-  if (config_.cross_inner_factor <= 0.0)
+      ctx("setup"), "sampling_inner_factor must be positive");
+  // (3.9)'s reference: under source iteration the previous transport solve
+  // is this one's input (Guo & Peng); under GMRES each solve's input is a
+  // Krylov vector, so a run compares only its own full solves (Han et al.)
+  auto galerkin_config = config_.galerkin;
+  if (galerkin_config.phi_old == galerkin::GalerkinPhiOld::AUTO)
+    galerkin_config.phi_old = config_.inner_solver == InnerSolver::RICHARDSON
+                                ? galerkin::GalerkinPhiOld::PREVIOUS_RUN
+                                : galerkin::GalerkinPhiOld::WITHIN_RUN;
+  // Han et al.'s DEIM stage is a source iteration: each run one iterate
+  const bool deim = config_.transport == TransportSolve::GALERKIN &&
+                    galerkin_config.deim.enabled;
+  if (deim && config_.inner_solver != InnerSolver::RICHARDSON)
+    throw utils::runtime_error(ctx("setup"),
+      "galerkin.deim needs the RICHARDSON inner solver (source iteration)");
+  for (size_t s = 0; s < group_indices_.size(); s++) {
+    if (config_.transport == TransportSolve::GALERKIN)
+      samplers_.push_back(galerkin::GreedyGalerkin::create(sampling_problem(s),
+        ProjectedTransport::create(*this, s,
+          ProjectedTransport::Options {
+            .spatial_basis =
+              galerkin_config.sample == galerkin::GalerkinSample::PAIR,
+            .scattering = deim}),
+        galerkin_config));
+    else
+      samplers_.push_back(
+        cross::LayoutCross::create(sampling_problem(s), config_.cross));
+  }
+}
+
+sampling::SamplingProblem SweepSolver::sampling_problem(size_t s)
+{
+  if (s >= group_indices_.size())
     throw utils::runtime_error(
-      ctx("setup"), "cross_inner_factor must be positive");
+      ctx("sampling_problem"), "Group set out of range");
   const auto modes = angular_modes();
-  cross::CrossProblem base;
-  base.num_dim = ndim_;
-  base.num_polar = modes[0];
-  base.num_azimuthal = ndim_ == 1 ? 1 : modes[1];
-  base.num_space = fiber_length_;
-  base.weights = weights_;
-  base.harmonics = harmonics_;
-  base.initial_directions = initial_directions();
-  base.patch_offsets = fiber_offsets_;
-  for (const auto& P : patches_) {
-    base.patch_shapes.push_back(P.disc->shape());
-    if (config_.cross.weighted) {
-      base.mass_bands.push_back(
+  sampling::SamplingProblem problem;
+  problem.num_dim = ndim_;
+  problem.num_polar = modes[0];
+  problem.num_azimuthal = ndim_ == 1 ? 1 : modes[1];
+  problem.num_space = fiber_length_;
+  problem.weights = weights_;
+  problem.harmonics = harmonics_;
+  problem.initial_directions = initial_directions();
+  problem.patch_offsets = fiber_offsets_;
+  // The problem carries the data of every weighting factor; each sampler
+  // applies the factors its own config enables. The mass bands are packed
+  // once per setup and shared by every set's problem (FiberStore clones
+  // them before factoring)
+  if (mass_bands_.size() != patches_.size()) {
+    mass_bands_.clear();
+    for (const auto& P : patches_)
+      mass_bands_.push_back(
         linalg::banded::symmetric_band_from_pairs(P.disc->pair_row(),
           P.disc->pair_col(), P.disc->mass_values(), P.disc->num_dofs())
           .first);
-    }
   }
-  // Energy weighting by lethargy when the cross sections carry their group
-  // boundaries (the server checked them: G + 1, decreasing, positive)
-  const auto widths = config_.cross.weighted ? xs_server_->lethargy_widths()
-                                             : std::vector<double> {};
+  for (const auto& P : patches_)
+    problem.patch_shapes.push_back(P.disc->shape());
+  problem.mass_bands = mass_bands_;
+  // Lethargy widths when the cross sections carry their group boundaries
+  // (the server checked them: G + 1, decreasing, positive)
+  const auto widths = xs_server_->lethargy_widths();
   if (!widths.empty() && static_cast<int64_t>(widths.size()) != num_groups_)
     throw utils::runtime_error(ctx("setup"),
       "The cross-section server's group boundaries do not match the groups");
-  for (size_t s = 0; s < group_indices_.size(); s++) {
-    auto problem = base;
-    problem.num_groups = static_cast<int64_t>(group_indices_[s].size());
-    // Each set's cross sees only its own groups, and so only their widths
-    for (int64_t g :
-      widths.empty() ? std::vector<int64_t> {} : group_indices_[s])
-      problem.lethargy_widths.push_back(widths[g]);
-    problem.sweep = [this, s](const std::vector<FiberBlock>& blocks,
-                      double* out, const FiberDone& done) {
-      auto global = blocks;
-      for (auto& b : global)
-        for (auto& g : b.groups)
-          g = group_indices_[s][g];
-      sweep_fibers(global, out, done);
-    };
-    crosses_.push_back(
-      cross::LayoutCross::create(std::move(problem), config_.cross));
-  }
+  problem.num_groups = static_cast<int64_t>(group_indices_[s].size());
+  // Each set's sampler sees only its own groups, and so only their widths
+  for (int64_t g : widths.empty() ? std::vector<int64_t> {} : group_indices_[s])
+    problem.lethargy_widths.push_back(widths[g]);
+  problem.sweep = [this, s](const std::vector<FiberBlock>& blocks, double* out,
+                    const FiberDone& done) {
+    auto global = blocks;
+    for (auto& b : global)
+      for (auto& g : b.groups)
+        g = group_indices_[s][g];
+    sweep_fibers(global, out, done);
+  };
+  return problem;
 }
 
 void SweepSolver::build_range_dag()
@@ -226,15 +262,16 @@ void SweepSolver::build_range_dag()
 
 void SweepSolver::reset_state(bool unit_scalar_flux)
 {
-  cross_tolerances_.clear();
-  cross_fibers_.clear();
-  cross_max_ranks_.clear();
-  cross_errors_.clear();
-  cross_ranks_.clear();
-  cross_histories_.clear();
-  cross_seconds_ = 0.0;
-  cross_sweep_seconds_ = 0.0;
-  cross_timings_.clear();
+  // A new solve: the samplers start over (no stage, warm start or reference
+  // carried from the last solve), and no within-set tolerance is set yet
+  for (auto& sampler : samplers_)
+    sampler->restart();
+  sampling_tol_ = 0.0;
+  stop_tol_ = 0.0;
+  sampling_records_.clear();
+  sampling_seconds_ = 0.0;
+  sampling_sweep_seconds_ = 0.0;
+  sampling_timings_.clear();
   solve_timings_.clear();
   rhs_ratio_.assign(group_indices_.size(), 0.0);
   anchor_x_.assign(group_indices_.size(), {});
@@ -672,7 +709,7 @@ void SweepSolver::setup(const math::QuadratureSet::Ptr& qset,
   // quadrature (union of the knot spans, the larger degree), the second
   // face with the exact negative of the first's normal, so the outflow of
   // one side is the inflow of the other
-  std::map<std::pair<size_t, int64_t>, std::array<torch::Tensor, 4>> couplings;
+  std::map<std::pair<size_t, int64_t>, std::array<torch::Tensor, 6>> couplings;
   for (size_t i = 0; i < nodes.size() && ndim_ > 1; i++) {
     auto& P = nodes[i];
     for (int64_t dim = 0; dim < ndim_; dim++) {
@@ -703,7 +740,7 @@ void SweepSolver::setup(const math::QuadratureSet::Ptr& qset,
         auto pairs = [](const FacePoints& own, const FacePoints& src) {
           const int64_t q = own.R.size(0), na = own.R.size(1),
                         nb = src.R.size(1);
-          return std::array<torch::Tensor, 4> {torch::arange(q, torch::kInt64)
+          return std::array<torch::Tensor, 6> {torch::arange(q, torch::kInt64)
                                                  .view({q, 1, 1})
                                                  .expand({q, na, nb})
                                                  .reshape({-1})
@@ -718,7 +755,8 @@ void SweepSolver::setup(const math::QuadratureSet::Ptr& qset,
               .contiguous(),
             (own.R.unsqueeze(2) * src.R.unsqueeze(1))
               .reshape({-1})
-              .contiguous()};
+              .contiguous(),
+            src.R.contiguous(), src.index.contiguous()};
         };
         couplings[{i, 2 * dim + (is_upper ? 1 : 0)}] = pairs(fa, fb);
         couplings[{j, 2 * static_cast<int64_t>(conn.dim) +
@@ -773,6 +811,8 @@ void SweepSolver::setup(const math::QuadratureSet::Ptr& qset,
             link.coupling_a = coupling->second[1];
             link.coupling_b = coupling->second[2];
             link.coupling_val = coupling->second[3];
+            link.coupling_basis = coupling->second[4];
+            link.coupling_index = coupling->second[5];
           } else {
             link.trace_map =
               build_trace_map(dim, conn, *nodes[link.neighbor].disc)
@@ -998,7 +1038,7 @@ void SweepSolver::setup(const math::QuadratureSet::Ptr& qset,
     std::max<int64_t>(1, config_.num_threads));
   build_dag();
   build_range_dag();
-  build_crosses();
+  build_samplers();
   is_setup_ = true;
 
   if (config_.verbose && config_.progress_seconds >= 0 && comm_.rank() == 0) {

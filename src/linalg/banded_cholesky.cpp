@@ -36,6 +36,13 @@ void cholesky_solve_upper(const double* ab, int64_t n, int64_t kd, double* b)
   dtbsv_("L", "T", "N", &m, &k, ab, &ld, b, &one, 1, 1, 1);
 }
 
+void cholesky_solve_lower(const double* ab, int64_t n, int64_t kd, double* b)
+{
+  const int m = static_cast<int>(n), k = static_cast<int>(kd), ld = k + 1,
+            one = 1;
+  dtbsv_("L", "N", "N", &m, &k, ab, &ld, b, &one, 1, 1, 1);
+}
+
 std::pair<torch::Tensor, int64_t> symmetric_band_from_pairs(
   const torch::Tensor& rows, const torch::Tensor& cols,
   const torch::Tensor& values, int64_t n)

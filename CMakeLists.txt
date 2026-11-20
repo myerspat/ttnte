@@ -177,6 +177,8 @@ add_subdirectory(bindings/solvers)
 add_subdirectory(bindings/sweep)
 add_subdirectory(bindings/tensor)
 add_subdirectory(bindings/cross)
+add_subdirectory(bindings/sampling)
+add_subdirectory(bindings/galerkin)
 add_subdirectory(bindings/python)
 add_subdirectory(bindings/math)
 
@@ -195,7 +197,9 @@ add_library(
   ${SOLVERS_SRC}
   ${SWEEP_SRC}
   ${TENSOR_SRC}
+  ${SAMPLING_SRC}
   ${CROSS_SRC}
+  ${GALERKIN_SRC}
   ${PY_SRC}
   ${PHYSICS_SRC}
   ${MATH_SRC})
@@ -221,7 +225,7 @@ endif()
 # so one runtime serves torch and ttnte and torch.set_num_threads /
 # at::set_num_threads govern both. The library is recorded by its soname, so at
 # run time it binds to whichever copy torch (imported first) has loaded.
-# Performance settings of the cross (src/cross/layout_cross_detail.hpp): they
+# Performance settings of the samplers (src/sampling/sampling_detail.hpp): they
 # change speed or memory, never the results beyond round-off, and depend on the
 # machine (cores, memory, BLAS)
 set(TTNTE_DENSE_MASS_MAX
@@ -232,7 +236,7 @@ set(TTNTE_SERIAL_ROWS
     CACHE STRING "Fewer fiber rows than this are weighted serially")
 set(TTNTE_ROW_CHUNKS_PER_THREAD
     4
-    CACHE STRING "Chunks per thread of the cross's parallel row loops")
+    CACHE STRING "Chunks per thread of the samplers' parallel row loops")
 set(TTNTE_ROW_GRAIN_MIN
     8
     CACHE STRING "Fewest fiber rows per chunk of those loops")
@@ -243,9 +247,10 @@ target_compile_definitions(
           TTNTE_ROW_CHUNKS_PER_THREAD=${TTNTE_ROW_CHUNKS_PER_THREAD}
           TTNTE_ROW_GRAIN_MIN=${TTNTE_ROW_GRAIN_MIN})
 message(
-  STATUS "  Cross tuning: dense mass <= ${TTNTE_DENSE_MASS_MAX}, serial rows < "
-         "${TTNTE_SERIAL_ROWS}, ${TTNTE_ROW_CHUNKS_PER_THREAD} chunks/thread, "
-         ">= ${TTNTE_ROW_GRAIN_MIN} rows/chunk")
+  STATUS
+    "  Sampling tuning: dense mass <= ${TTNTE_DENSE_MASS_MAX}, serial rows < "
+    "${TTNTE_SERIAL_ROWS}, ${TTNTE_ROW_CHUNKS_PER_THREAD} chunks/thread, "
+    ">= ${TTNTE_ROW_GRAIN_MIN} rows/chunk")
 
 # Sweep settings (src/sweep): the reflective boundaries' geometry tolerances
 # (loosen them for meshes or quadratures that are only approximately axis
@@ -271,6 +276,35 @@ target_compile_definitions(
 message(STATUS "  Sweep settings: axis aligned <= ${TTNTE_AXIS_ALIGNED_TOL}, "
                "quadrature match <= ${TTNTE_REFLECTION_MATCH_TOL}, "
                "${TTNTE_FIBER_TASKS_PER_THREAD} fiber tasks/thread")
+
+# Galerkin settings (src/galerkin, src/sweep/projected_transport.cpp): in Han et
+# al.'s DEIM stage, singular values of the angular coefficients at most this
+# times the largest are numerically zero and their modes dropped (the accuracy
+# knob is GalerkinConfig.svd_tol); a DEIM flux grown this many times its norm at
+# the switch has diverged; the angular Galerkin update keeps every unit's LU for
+# its second pass up to this many MB (else factors again)
+set(TTNTE_DEIM_ZERO_MODE_TOL
+    1e-14
+    CACHE STRING
+          "Relative singular value below which a DEIM mode is numerically zero")
+set(TTNTE_DEIM_DIVERGENCE_GROWTH
+    1e8
+    CACHE STRING
+          "Growth of the DEIM flux norm since the switch reported as divergence"
+)
+set(TTNTE_ANGULAR_FACTOR_MB
+    2048
+    CACHE STRING "MB of LU factors the angular Galerkin update keeps")
+target_compile_definitions(
+  ttnte_static
+  PRIVATE TTNTE_DEIM_ZERO_MODE_TOL=${TTNTE_DEIM_ZERO_MODE_TOL}
+          TTNTE_DEIM_DIVERGENCE_GROWTH=${TTNTE_DEIM_DIVERGENCE_GROWTH}
+          TTNTE_ANGULAR_FACTOR_MB=${TTNTE_ANGULAR_FACTOR_MB})
+message(
+  STATUS "  Galerkin settings: DEIM zero modes <= "
+         "${TTNTE_DEIM_ZERO_MODE_TOL} s_max, divergence at "
+         "${TTNTE_DEIM_DIVERGENCE_GROWTH}x the switch's norm, angular "
+         "update factors <= ${TTNTE_ANGULAR_FACTOR_MB} MB")
 
 option(TTNTE_OPENMP "Compile with OpenMP (parallel at::parallel_for)" ON)
 if(TTNTE_OPENMP)
@@ -313,7 +347,9 @@ add_library(
   ${SOLVERS_BINDINGS}
   ${SWEEP_BINDINGS}
   ${TENSOR_BINDINGS}
+  ${SAMPLING_BINDINGS}
   ${CROSS_BINDINGS}
+  ${GALERKIN_BINDINGS}
   ${PY_BINDINGS}
   ${MATH_BINDINGS})
 

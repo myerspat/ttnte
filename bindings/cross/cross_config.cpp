@@ -16,7 +16,8 @@ void register_CrossConfig(py::module_& m)
       "Order and grouping of (polar, azimuthal, space, energy) into cores; a "
       "string or ttnte.tensor.Layout. Empty: polar|azimuthal|space|energy.")
     .def_readwrite("tol", &CrossConfig::tol)
-    .def_readwrite("weighted", &CrossConfig::weighted)
+    .def_readwrite("weighting", &CrossConfig::weighting,
+      "Factors of the L2 weighting (a Weighting; all enabled by default).")
     .def_readwrite("keep_angular_flux", &CrossConfig::keep_angular_flux)
     .def_readwrite("holdout", &CrossConfig::holdout)
     .def_readwrite("resampled_pool", &CrossConfig::resampled_pool,

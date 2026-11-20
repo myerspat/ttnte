@@ -139,6 +139,48 @@ struct SweepWorkspace {
 void sweep_unit(
   const UnitSweep& unit, const SweepBlock& block, SweepWorkspace& workspace);
 
+/// @brief The inflow of one face for (direction d, group g) read from its
+/// FaceInflow's buffer, as sweep_unit() adds it to the right-hand side:
+///   b_v += sum_q c_q R_v(q) R^src_u(q) trace_u
+/// (lagged neighbor traces, reflected traces). Only the face's dofs of b
+/// change.
+/// @param unit The unit.
+/// @param block The block (omega, num_groups).
+/// @param d Direction.
+/// @param g Group (global).
+/// @param f Face.
+/// @param c (max face points) scratch.
+/// @param b (N) the unit's right-hand side, accumulated.
+/// @return Whether the face has inflow for d (nothing added otherwise).
+bool buffered_inflow(const UnitSweep& unit, const SweepBlock& block, int64_t d,
+  int64_t g, size_t f, double* c, double* b);
+
+/// @brief Transport residual of one unit for one direction:
+///   r_g = sum_m Y_m(d) s_{m,g} + inflow_g - L_{d,g} x_g
+/// for every group of the block, with L, the source and the inflow
+/// assembled exactly as sweep_unit() assembles them (the same helpers), so
+/// a swept fiber has a residual at rounding level whatever the local
+/// solver. The inflow of a face comes from `upstream` where given (the
+/// candidate flux of the upwind unit, for faces whose upwind unit is swept
+/// before this one), else from the FaceInflow's buffer (lagged and
+/// reflected traces). Thread-safe like sweep_unit().
+/// @param unit The unit (psi, fibers, moments, traces out and factors are
+/// ignored).
+/// @param block Exactly one direction, and the groups.
+/// @param x (num_block_groups, stride) candidate flux: group bg's dofs at
+/// x + bg * stride.
+/// @param stride Distance between the groups of x and of r.
+/// @param upstream Per face: (num_block_groups, source face dofs) upwind
+/// values, or nullptr to read the FaceInflow's buffer.
+/// @param r (num_block_groups, stride) output, overwritten at the unit's N
+/// dofs of each group.
+/// @param workspace Scratch.
+/// @throws std::runtime_error If the block has more than one direction.
+void unit_residual(const UnitSweep& unit, const SweepBlock& block,
+  const double* x, int64_t stride,
+  const std::array<const double*, MAX_FACES>& upstream, double* r,
+  SweepWorkspace& workspace);
+
 /// @brief Accumulate a group-to-group transfer source of one unit, in raw
 /// loops:
 ///   out_{m,g} += scale * M sum_{g' in src} T_{l(m), g <- g'} phi_{m,g'}

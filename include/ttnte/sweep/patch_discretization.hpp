@@ -41,6 +41,11 @@ struct FaceGeometry {
   /// (P_f) int64 position of each face pair in the patch's coalesced volume
   /// pair list (face dofs only couple to dofs they share volume support with).
   torch::Tensor pair_volume_index;
+  /// (Qf, Af) values R_a(q) of the Af face basis functions that do not
+  /// vanish at each quadrature point, and their (Qf, Af) int64 face-local
+  /// indices (the factors of pair_val), for projecting onto the face.
+  torch::Tensor basis_values;
+  torch::Tensor basis_index;
   /// Physical measure of the face, sum_q |n_q| w_q.
   double area = 0.0;
 

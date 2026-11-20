@@ -1,6 +1,7 @@
 #include "ttnte/sweep/sweep_config.hpp"
 #include "../utils/kwargs_init.hpp"
 #include <pybind11/pybind11.h>
+#include <string>
 
 namespace py = pybind11;
 
@@ -49,6 +50,9 @@ void register_SweepConfig(py::module_& m)
     .value("EXACT", TransportSolve::EXACT, "Sweep every (direction, group)")
     .value("CROSS", TransportSolve::CROSS,
       "Sweep the pairs chosen by a TT-cross (low-rank angular flux)")
+    .value("GALERKIN", TransportSolve::GALERKIN,
+      "Sweep directions chosen by residual-greedy Galerkin sampling (Guo & "
+      "Peng) and fill the rest by reduced Galerkin solves")
     .export_values();
 
   py::class_<SweepConfig>(m, "SweepConfig")
@@ -78,24 +82,31 @@ void register_SweepConfig(py::module_& m)
     .def_readwrite("verbose", &SweepConfig::verbose)
     .def_readwrite("progress_seconds", &SweepConfig::progress_seconds)
     .def_readwrite("transport", &SweepConfig::transport)
-    .def_readwrite("cross_inner_factor", &SweepConfig::cross_inner_factor,
-      "CROSS transport solves to this fraction of the within-set tolerance.")
-    .def_readwrite("cross_relax", &SweepConfig::cross_relax,
-      "Relax each GMRES product's cross accuracy as the residual drops.")
-    .def_readwrite("cross_max_tol", &SweepConfig::cross_max_tol,
-      "Loosest relaxed cross tolerance.")
-    .def_readwrite("cross_threads", &SweepConfig::cross_threads,
-      "Intra-op threads of the cross's linear algebra (capped by "
+    .def_readwrite("sampling_inner_factor", &SweepConfig::sampling_inner_factor,
+      "Sampled (CROSS, GALERKIN) transport solves to this fraction of the "
+      "within-set tolerance.")
+    .def_readwrite("sampling_relax", &SweepConfig::sampling_relax,
+      "Relax the sampled-solve accuracy as the solve converges: each GMRES "
+      "product by the residual, each Richardson sweep by the last change of "
+      "the moments (down to sampling_inner_factor times the within-set "
+      "tolerance at convergence).")
+    .def_readwrite("sampling_max_tol", &SweepConfig::sampling_max_tol,
+      "Loosest relaxed sampled-solve tolerance.")
+    .def_readwrite("sampling_threads", &SweepConfig::sampling_threads,
+      "Intra-op threads of a sampler's linear algebra (capped by "
       "num_threads; <= 0: num_threads).")
     .def_readwrite("global_inner_tolerance",
       &SweepConfig::global_inner_tolerance,
       "Within-set tolerances relative to the whole scalar flux: multiplied by "
       "||phi|| / ||phi_s||, capped at GLOBAL_TOLERANCE_CAP (sweep_config.hpp).")
     .def_readwrite("certify", &SweepConfig::certify,
-      "CROSS: certify the converged solve with one exact transport solve of "
-      "every group set (see SweepDriver.certification_error).")
+      "CROSS, GALERKIN: certify the converged solve with one exact transport "
+      "solve of every group set (see SweepDriver.certification_error). The "
+      "angular flux follows it only with store_angular_flux; a kept low-rank "
+      "flux (keep_angular_flux) is the one from before it.")
     .def_readwrite("local_tol", &SweepConfig::local_tol)
     .def_readwrite("local_restart", &SweepConfig::local_restart)
     .def_readwrite("local_max_iter", &SweepConfig::local_max_iter)
-    .def_readwrite("cross", &SweepConfig::cross);
+    .def_readwrite("cross", &SweepConfig::cross)
+    .def_readwrite("galerkin", &SweepConfig::galerkin);
 }
